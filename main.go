@@ -820,6 +820,11 @@ func (s *NetState) renewDelegation() {
 
 	tipU256, _ := uint256.FromBig(tip)
 	feeCapU256, _ := uint256.FromBig(feeCap)
+
+	tx := types.NewTx(&types.SetCodeTx{
+		ChainID:   chainU256,
+		Nonce:     sponNonce,
+		To:        s.srcAddr,
 		Gas:       60_000,
 		GasTipCap: tipU256,
 		GasFeeCap: feeCapU256,
