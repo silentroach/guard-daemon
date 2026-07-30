@@ -1,0 +1,38 @@
+{
+  "name": "guard-daemon-tooling",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.18.0",
+    "npm": ">=11.6.0 <12"
+  },
+  "scripts": {
+    "audit": "npm audit --audit-level=high",
+    "contracts:build": "tsx scripts/compileContracts.ts",
+    "contracts:test": "tsx --test test/contracts/reproducibility.test.ts",
+    "format": "prettier --write \"scripts/**/*.ts\" \"test/**/*.ts\" \"*.json\" \"*.mjs\"",
+    "format:check": "prettier --check \"scripts/**/*.ts\" \"test/**/*.ts\" \"*.json\" \"*.mjs\"",
+    "lint": "eslint scripts test",
+    "test": "npm run contracts:test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "17.4.2",
+    "ethers": "6.17.0",
+    "solc": "0.8.36"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "eslint": "10.8.0",
+    "globals": "17.8.0",
+    "prettier": "3.9.6",
+    "tsx": "4.23.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.65.0"
+  },
+  "overrides": {
+    "tmp": "0.2.7"
+  }
+}

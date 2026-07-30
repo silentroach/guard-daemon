@@ -1,0 +1,11 @@
+title = "Проверка секретов guard-daemon"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "evm-private-key"
+description = "Приватный ключ EVM в присваивании конфигурации"
+regex = '''(?i)private[_-]?key\s*[=:]\s*["']?(?:0x)?([0-9a-f]{64})\b'''
+secretGroup = 1
+keywords = ["private", "key"]

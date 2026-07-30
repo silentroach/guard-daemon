@@ -1,14 +1,14 @@
 /**
  * scripts/deployPermitSweeper.ts
- * 
+ *
  * Компилирует и деплоит PermitSweeper на все сети одновременно.
- * 
+ *
  * Требования:
  *   npm install ethers solc dotenv
- * 
+ *
  * Usage:
  *   npx tsx scripts/deployPermitSweeper.ts
- * 
+ *
  * Результат: адреса контрактов на каждой сети
  */
 
@@ -77,7 +77,10 @@ const NETWORKS: NetworkConfig[] = [
 function compileContract(): { bytecode: string; abi: any[] } {
   console.log("📦 Compiling PermitSweeper.sol...\n");
 
-  const source = readFileSync(resolve("./contracts/PermitSweeper.sol"), "utf-8");
+  const source = readFileSync(
+    resolve("./contracts/PermitSweeper.sol"),
+    "utf-8",
+  );
 
   const input = {
     language: "Solidity",
@@ -129,10 +132,12 @@ function compileContract(): { bytecode: string; abi: any[] } {
 async function deployOnNetwork(
   network: NetworkConfig,
   bytecode: string,
-  abi: any[]
+  abi: any[],
 ): Promise<string | null> {
   try {
-    console.log(`\n🚀 Deploying on ${network.name} (Chain ${network.chainId})...`);
+    console.log(
+      `\n🚀 Deploying on ${network.name} (Chain ${network.chainId})...`,
+    );
 
     // Get sponsor private key
     const sponsorKey = process.env.SPONSOR_PRIVATE_KEY;
@@ -209,7 +214,9 @@ async function deployOnNetwork(
     // Verify it's actually deployed
     const code = await provider.getCode(address);
     if (code === "0x") {
-      console.error(`   ❌ Code not found at address (deployment may have failed)`);
+      console.error(
+        `   ❌ Code not found at address (deployment may have failed)`,
+      );
       return null;
     }
 
@@ -274,7 +281,9 @@ async function main() {
 
   for (const result of results) {
     const status = result.address ? "✅" : "❌";
-    console.log(`${status} ${result.network.padEnd(12)} ${result.address || "(failed)"}`);
+    console.log(
+      `${status} ${result.network.padEnd(12)} ${result.address || "(failed)"}`,
+    );
   }
 
   if (addresses.size > 0) {

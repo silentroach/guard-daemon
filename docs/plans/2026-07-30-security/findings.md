@@ -23,12 +23,12 @@
 | GD-015 | High | Non-standard ERC-20 return data ломает rescue | `contracts/RescuerV2.sol` | Task 03 | No-return/false/malformed token tests | OPEN |
 | GD-016 | High | Permit path неиспользуем, сложен и создаёт дополнительный риск | `contracts/PermitSweeper.sol`, `main.go`, `scripts/*Permit*` | Tasks 02, 03, 04, 10 | Полное отсутствие PermitSweeper в production ABI/artifacts/docs | OPEN |
 | GD-017 | Medium | Deployment scripts допускают partial success/stale config | `scripts/*.ts` | Task 04 | Non-zero failure и atomic update tests | OPEN |
-| GD-018 | Medium | Deployment/compiler/Node build невоспроизводим | `scripts/*.ts`, отсутствующие Node manifests | Tasks 01, 04 | Pinned clean-build artifact equality | OPEN |
-| GD-019 | Medium | Устаревшие dependencies и advisories | `go.mod`, `go.sum` | Tasks 01, 09 | `govulncheck`/dependency review gate | OPEN |
-| GD-020 | Medium | Нет tests, GitHub Actions и Dependabot | repository test/`.github` baseline | Tasks 01, 09 | Required workflows и Dependabot validation | OPEN |
+| GD-018 | Medium | Deployment/compiler/Node build невоспроизводим | `scripts/*.ts`, отсутствующие Node manifests | Tasks 01, 04 | `flake.lock`, `package-lock.json`, `test/contracts/reproducibility.test.ts`, [review 01](reviews/01-foundation.md); deployment manifests остаются Task 04 | PARTIAL |
+| GD-019 | Medium | Устаревшие dependencies и advisories | `go.mod`, `go.sum` | Tasks 01, 09 | `make vuln`, `make audit`, [review 01](reviews/01-foundation.md); финальный dependency gate остаётся Task 09 | PARTIAL |
+| GD-020 | Medium | Нет tests, GitHub Actions и Dependabot | repository test/`.github` baseline | Tasks 01, 09 | `.github/workflows/*.yml`, `.github/dependabot.yml`, [review 01](reviews/01-foundation.md); полный security test gate остаётся Task 09 | PARTIAL |
 | GD-021 | Medium | Документированные config fields не реализованы | `README.md`, `guard-daemon-HELP_RU.txt`, `main.go` | Task 05 | Schema-to-doc parity test | OPEN |
-| GD-022 | Medium | Private RPC URL и secrets могут попасть в logs/repo | отсутствие `.gitignore`, config/log paths | Tasks 01, 05, 08 | Secret/redaction scans | OPEN |
-| GD-023 | Medium | Incident-specific identifiers остаются в source/docs | `main.go`, contract comments, public docs | Tasks 01, 02, 03, 10 | Repository-wide identifier scan без публикации значений | OPEN |
+| GD-022 | Medium | Private RPC URL и secrets могут попасть в logs/repo | отсутствие `.gitignore`, config/log paths | Tasks 01, 05, 08 | `.gitignore`, `.gitleaks.toml`, `make secret-scan`, [review 01](reviews/01-foundation.md); runtime redaction остаётся Tasks 05 и 08 | PARTIAL |
+| GD-023 | Medium | Incident-specific identifiers остаются в source/docs | `main.go`, contract comments, public docs | Tasks 01, 02, 03, 10 | Repository-wide scan и очищенный `.env.example`, [review 01](reviews/01-foundation.md); удаление из owned paths остаётся Tasks 02, 03 и 10 | PARTIAL |
 | GD-024 | Medium | Unknown token невозможно доказательно считать экономически спасённым | `main.go` unknown token/outcome paths | Tasks 07, 08 | Trust-tier tests и `token-reported` outcome | OPEN |
 | GD-025 | Medium | Service/root/log-health/deployment operations небезопасны или неточны | public help/operations baseline | Task 10 | Local hardening/rehearsal tests | OPEN |
 | GD-026 | Medium | Публичная документация не полностью русскоязычна и содержит phantom claims | `README.md`, `guard-daemon-HELP_RU.txt` | Task 10 | Language/config/command validation | OPEN |

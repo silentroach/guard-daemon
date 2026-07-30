@@ -269,7 +269,6 @@ var NETWORKS = []Network{
 	},
 }
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // State
 // ─────────────────────────────────────────────────────────────────────────────
@@ -286,7 +285,7 @@ type NetState struct {
 	permitABI        abi.ABI
 	fwdABI           abi.ABI
 	tokenMap         map[common.Address]Token
-	tokenMu          sync.Mutex // guards tokenMap, retryMap, retryAttempts
+	tokenMu          sync.Mutex               // guards tokenMap, retryMap, retryAttempts
 	retryMap         map[common.Address]Token // tokens with a reverted sweep, pending retry
 	retryAttempts    map[common.Address]int   // bounded retry counter per token
 	rescuer          common.Address
@@ -430,14 +429,14 @@ func (s *NetState) run() error {
 
 // verifyStartupSanity performs cheap read-only checks before the daemon
 // starts watching/sweeping on this network:
-//   1. RPC's reported chain ID matches the configured Network.ChainID —
-//      catches a misconfigured RPC endpoint pointing at the wrong chain.
-//   2. If a RescuerV2 is configured, its on-chain immutable destination()
-//      matches DESTINATION_ADDRESS from .env — catches the case where
-//      .env's destination was ever changed without redeploying the
-//      contract (the contract's baked-in destination is what actually
-//      receives funds; the .env value is otherwise just used for display
-//      and logging, so a drift here would be silent and dangerous).
+//  1. RPC's reported chain ID matches the configured Network.ChainID —
+//     catches a misconfigured RPC endpoint pointing at the wrong chain.
+//  2. If a RescuerV2 is configured, its on-chain immutable destination()
+//     matches DESTINATION_ADDRESS from .env — catches the case where
+//     .env's destination was ever changed without redeploying the
+//     contract (the contract's baked-in destination is what actually
+//     receives funds; the .env value is otherwise just used for display
+//     and logging, so a drift here would be silent and dangerous).
 func (s *NetState) verifyStartupSanity() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -478,7 +477,6 @@ func (s *NetState) verifyStartupSanity() error {
 
 	return nil
 }
-
 
 // s.tokenMap, otherwise builds a best-effort Token for an unknown/airdrop
 // token by querying symbol()/decimals() on-chain (falls back to address
@@ -1213,7 +1211,6 @@ func sanitizeSymbol(s string) string {
 	}
 	return out
 }
-
 
 func mustEnv(k string) string {
 	v := os.Getenv(k)

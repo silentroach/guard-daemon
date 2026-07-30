@@ -1,0 +1,58 @@
+# Локальная конфигурация и секреты
+.env
+.env.*
+!.env.example
+.direnv/
+.envrc
+secrets/
+keys/
+keystore/
+UTC--*
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# Локальное состояние
+data/
+state/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+data/*.lock
+state/*.lock
+
+# Go
+guard-daemon
+guard-daemon.exe
+*.test
+*.out
+coverage/
+coverage.*
+
+# Node.js и TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# Результаты компиляции и деплоя
+artifacts/
+build/
+cache/
+out/
+broadcast/
+deployments/tmp/
+deployment-manifest.local.*
+deployment-manifest.tmp.*
+
+# Редакторы и временные файлы
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.tmp
+*.log

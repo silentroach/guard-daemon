@@ -1,12 +1,12 @@
 /**
  * scripts/deployRescuerV2.ts
- * 
+ *
  * Компилирует и деплоит RescuerV2 на все сети.
  * RescuerV2 используется как forwarder для EIP-7702 делегации.
- * 
+ *
  * Usage:
  *   npx tsx scripts/deployRescuerV2.ts
- * 
+ *
  * Поддерживает Infura/Alchemy RPC через .env переменные
  */
 
@@ -32,21 +32,21 @@ const ALCHEMY_KEY = process.env.ALCHEMY_API_KEY || "";
 const getRPC = (name: string, defaultRpc: string): string => {
   if (INFURA_KEY) {
     const infraMap: Record<string, string> = {
-      "Ethereum": `https://mainnet.infura.io/v3/${INFURA_KEY}`,
-      "Arbitrum": `https://arbitrum-mainnet.infura.io/v3/${INFURA_KEY}`,
-      "Optimism": `https://optimism-mainnet.infura.io/v3/${INFURA_KEY}`,
-      "Polygon": `https://polygon-mainnet.infura.io/v3/${INFURA_KEY}`,
-      "Base":     `https://base-mainnet.infura.io/v3/${INFURA_KEY}`,
+      Ethereum: `https://mainnet.infura.io/v3/${INFURA_KEY}`,
+      Arbitrum: `https://arbitrum-mainnet.infura.io/v3/${INFURA_KEY}`,
+      Optimism: `https://optimism-mainnet.infura.io/v3/${INFURA_KEY}`,
+      Polygon: `https://polygon-mainnet.infura.io/v3/${INFURA_KEY}`,
+      Base: `https://base-mainnet.infura.io/v3/${INFURA_KEY}`,
     };
     if (infraMap[name]) return infraMap[name];
   }
   if (ALCHEMY_KEY) {
     const alchemyMap: Record<string, string> = {
-      "Ethereum": `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-      "Arbitrum": `https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-      "Optimism": `https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-      "Polygon":  `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-      "Base":     `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
+      Ethereum: `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
+      Arbitrum: `https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
+      Optimism: `https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
+      Polygon: `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
+      Base: `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
     };
     if (alchemyMap[name]) return alchemyMap[name];
   }
@@ -54,15 +54,60 @@ const getRPC = (name: string, defaultRpc: string): string => {
 };
 
 const NETWORKS: NetworkConfig[] = [
-  { name: "Ethereum", rpc: getRPC("Ethereum", "https://ethereum-rpc.publicnode.com"), chainId: 1, envKey: "RESCUER_ETHEREUM" },
-  { name: "Base", rpc: getRPC("Base", "https://mainnet.base.org"), chainId: 8453, envKey: "RESCUER_BASE" },
-  { name: "Arbitrum", rpc: getRPC("Arbitrum", "https://arbitrum.drpc.org"), chainId: 42161, envKey: "RESCUER_ARBITRUM" },
-  { name: "Optimism", rpc: getRPC("Optimism", "https://mainnet.optimism.io"), chainId: 10, envKey: "RESCUER_OPTIMISM" },
-  { name: "Polygon", rpc: getRPC("Polygon", "https://polygon.drpc.org"), chainId: 137, envKey: "RESCUER_POLYGON" },
-  { name: "BNB", rpc: "https://bsc-rpc.publicnode.com", chainId: 56, envKey: "RESCUER_BNB" },
-  { name: "Ink", rpc: "https://ink.drpc.org", chainId: 57073, envKey: "RESCUER_INK" },
-  { name: "Linea", rpc: "https://linea.drpc.org", chainId: 59144, envKey: "RESCUER_LINEA" },
-  { name: "Scroll", rpc: "https://rpc.scroll.io", chainId: 534352, envKey: "RESCUER_SCROLL" },
+  {
+    name: "Ethereum",
+    rpc: getRPC("Ethereum", "https://ethereum-rpc.publicnode.com"),
+    chainId: 1,
+    envKey: "RESCUER_ETHEREUM",
+  },
+  {
+    name: "Base",
+    rpc: getRPC("Base", "https://mainnet.base.org"),
+    chainId: 8453,
+    envKey: "RESCUER_BASE",
+  },
+  {
+    name: "Arbitrum",
+    rpc: getRPC("Arbitrum", "https://arbitrum.drpc.org"),
+    chainId: 42161,
+    envKey: "RESCUER_ARBITRUM",
+  },
+  {
+    name: "Optimism",
+    rpc: getRPC("Optimism", "https://mainnet.optimism.io"),
+    chainId: 10,
+    envKey: "RESCUER_OPTIMISM",
+  },
+  {
+    name: "Polygon",
+    rpc: getRPC("Polygon", "https://polygon.drpc.org"),
+    chainId: 137,
+    envKey: "RESCUER_POLYGON",
+  },
+  {
+    name: "BNB",
+    rpc: "https://bsc-rpc.publicnode.com",
+    chainId: 56,
+    envKey: "RESCUER_BNB",
+  },
+  {
+    name: "Ink",
+    rpc: "https://ink.drpc.org",
+    chainId: 57073,
+    envKey: "RESCUER_INK",
+  },
+  {
+    name: "Linea",
+    rpc: "https://linea.drpc.org",
+    chainId: 59144,
+    envKey: "RESCUER_LINEA",
+  },
+  {
+    name: "Scroll",
+    rpc: "https://rpc.scroll.io",
+    chainId: 534352,
+    envKey: "RESCUER_SCROLL",
+  },
 ];
 // NOTE: this is a full redeploy across all 9 active networks — critical:
 // the onlySponsor access-control fix on executeAndSweep needs to be live
@@ -75,12 +120,42 @@ const NETWORKS: NetworkConfig[] = [
 const PERMIT_NETWORKS: NetworkConfig[] = [
   // Temporarily empty — this redeploy round is only for RescuerV2's
   // payable executeAndSweep fix on Base. PermitSweeper is unaffected;
-  { name: "Ethereum", rpc: getRPC("Ethereum", "https://ethereum-rpc.publicnode.com"), chainId: 1, envKey: "PERMIT_SWEEPER_ETHEREUM" },
-  { name: "Base", rpc: getRPC("Base", "https://mainnet.base.org"), chainId: 8453, envKey: "PERMIT_SWEEPER_BASE" },
-  { name: "Arbitrum", rpc: getRPC("Arbitrum", "https://arbitrum.drpc.org"), chainId: 42161, envKey: "PERMIT_SWEEPER_ARBITRUM" },
-  { name: "Optimism", rpc: getRPC("Optimism", "https://mainnet.optimism.io"), chainId: 10, envKey: "PERMIT_SWEEPER_OPTIMISM" },
-  { name: "Polygon", rpc: getRPC("Polygon", "https://polygon.drpc.org"), chainId: 137, envKey: "PERMIT_SWEEPER_POLYGON" },
-  { name: "Ink", rpc: "https://ink.drpc.org", chainId: 57073, envKey: "PERMIT_SWEEPER_INK" },
+  {
+    name: "Ethereum",
+    rpc: getRPC("Ethereum", "https://ethereum-rpc.publicnode.com"),
+    chainId: 1,
+    envKey: "PERMIT_SWEEPER_ETHEREUM",
+  },
+  {
+    name: "Base",
+    rpc: getRPC("Base", "https://mainnet.base.org"),
+    chainId: 8453,
+    envKey: "PERMIT_SWEEPER_BASE",
+  },
+  {
+    name: "Arbitrum",
+    rpc: getRPC("Arbitrum", "https://arbitrum.drpc.org"),
+    chainId: 42161,
+    envKey: "PERMIT_SWEEPER_ARBITRUM",
+  },
+  {
+    name: "Optimism",
+    rpc: getRPC("Optimism", "https://mainnet.optimism.io"),
+    chainId: 10,
+    envKey: "PERMIT_SWEEPER_OPTIMISM",
+  },
+  {
+    name: "Polygon",
+    rpc: getRPC("Polygon", "https://polygon.drpc.org"),
+    chainId: 137,
+    envKey: "PERMIT_SWEEPER_POLYGON",
+  },
+  {
+    name: "Ink",
+    rpc: "https://ink.drpc.org",
+    chainId: 57073,
+    envKey: "PERMIT_SWEEPER_INK",
+  },
 ];
 // NOTE: PermitSweeper's constructor now requires an `owner` argument
 // (the access-control fix on rescueTokens — anyone could previously drain
@@ -90,7 +165,7 @@ const PERMIT_NETWORKS: NetworkConfig[] = [
 
 function compileContract(
   contractName: string,
-  fileName: string
+  fileName: string,
 ): { bytecode: string; abi: any[] } {
   console.log(`📦 Compiling ${fileName}...\n`);
 
@@ -101,7 +176,9 @@ function compileContract(
     sources: { [fileName]: { content: source } },
     settings: {
       optimizer: { enabled: true, runs: 200 },
-      outputSelection: { [fileName]: { [contractName]: ["evm.bytecode.object", "abi"] } },
+      outputSelection: {
+        [fileName]: { [contractName]: ["evm.bytecode.object", "abi"] },
+      },
     },
   };
 
@@ -119,7 +196,9 @@ function compileContract(
 
   const contract = output.contracts?.[fileName]?.[contractName];
   if (!contract) {
-    console.error(`❌ Contract ${contractName} not found in compilation output`);
+    console.error(
+      `❌ Contract ${contractName} not found in compilation output`,
+    );
     process.exit(1);
   }
 
@@ -137,10 +216,12 @@ async function deployOnNetwork(
   bytecode: string,
   abi: any[],
   constructorArgs: string[],
-  constructorArgLabels: string[]
+  constructorArgLabels: string[],
 ): Promise<string | null> {
   try {
-    console.log(`\n🚀 Deploying on ${network.name} (Chain ${network.chainId})...`);
+    console.log(
+      `\n🚀 Deploying on ${network.name} (Chain ${network.chainId})...`,
+    );
 
     const sponsorKey = process.env.SPONSOR_PRIVATE_KEY;
     if (!sponsorKey) {
@@ -195,7 +276,9 @@ async function deployOnNetwork(
 
     const code = await provider.getCode(address);
     if (code === "0x") {
-      console.error(`   ❌ Code not found at address (deployment may have failed)`);
+      console.error(
+        `   ❌ Code not found at address (deployment may have failed)`,
+      );
       return null;
     }
 
@@ -228,7 +311,7 @@ async function main() {
   console.log("═══════════════════════════════════════════════════════");
   console.log("  RescuerV2 + PermitSweeper Multi-Network Deployer");
   console.log("═══════════════════════════════════════════════════════");
-  
+
   if (INFURA_KEY) {
     console.log(`✅ Using Infura RPC (INFURA_API_KEY set)`);
   } else if (ALCHEMY_KEY) {
@@ -255,8 +338,11 @@ async function main() {
 
   for (const network of NETWORKS) {
     const address = await deployOnNetwork(
-      network, rescuerCompiled.bytecode, rescuerCompiled.abi,
-      [destination, sponsorAddress], ["Destination", "Sponsor"]
+      network,
+      rescuerCompiled.bytecode,
+      rescuerCompiled.abi,
+      [destination, sponsorAddress],
+      ["Destination", "Sponsor"],
     );
     rescuerResults.push({ network: network.name, address });
     if (address) addresses.set(network.envKey, address);
@@ -272,8 +358,11 @@ async function main() {
 
   for (const network of PERMIT_NETWORKS) {
     const address = await deployOnNetwork(
-      network, permitCompiled.bytecode, permitCompiled.abi,
-      [sponsorAddress], ["Owner"]
+      network,
+      permitCompiled.bytecode,
+      permitCompiled.abi,
+      [sponsorAddress],
+      ["Owner"],
     );
     permitResults.push({ network: network.name, address });
     if (address) addresses.set(network.envKey, address);
@@ -287,17 +376,21 @@ async function main() {
   console.log("\nRescuerV2:");
   for (const result of rescuerResults) {
     const status = result.address ? "✅" : "❌";
-    console.log(`${status} ${result.network.padEnd(12)} ${result.address || "(failed)"}`);
+    console.log(
+      `${status} ${result.network.padEnd(12)} ${result.address || "(failed)"}`,
+    );
   }
 
   console.log("\nPermitSweeper:");
   for (const result of permitResults) {
     const status = result.address ? "✅" : "❌";
-    console.log(`${status} ${result.network.padEnd(12)} ${result.address || "(failed)"}`);
+    console.log(
+      `${status} ${result.network.padEnd(12)} ${result.address || "(failed)"}`,
+    );
   }
 
-  const rescuerFailed = rescuerResults.filter(r => !r.address);
-  const rescuerSucceeded = rescuerResults.filter(r => r.address);
+  const rescuerFailed = rescuerResults.filter((r) => !r.address);
+  const rescuerSucceeded = rescuerResults.filter((r) => r.address);
 
   if (addresses.size > 0) {
     saveAddressesToEnv(addresses);
@@ -310,25 +403,43 @@ async function main() {
   // failure behind a generic "Ready to use!" message.
   if (rescuerFailed.length > 0) {
     console.log("\n" + "⚠".repeat(20));
-    console.log("🚨 CRITICAL: RescuerV2 deployment FAILED on " + rescuerFailed.length + " network(s):");
+    console.log(
+      "🚨 CRITICAL: RescuerV2 deployment FAILED on " +
+        rescuerFailed.length +
+        " network(s):",
+    );
     for (const r of rescuerFailed) {
-      console.log(`   ❌ ${r.network} — .env still points at the OLD contract there (if any),`);
-      console.log(`      which does NOT have the onlySponsor access-control fix.`);
+      console.log(
+        `   ❌ ${r.network} — .env still points at the OLD contract there (if any),`,
+      );
+      console.log(
+        `      which does NOT have the onlySponsor access-control fix.`,
+      );
     }
-    console.log("   DO NOT run the daemon against these networks with real keys");
+    console.log(
+      "   DO NOT run the daemon against these networks with real keys",
+    );
     console.log("   until RescuerV2 is redeployed successfully there.");
     console.log("⚠".repeat(20));
   }
 
   if (rescuerSucceeded.length > 0) {
-    console.log(`\n✅ RescuerV2 deployed successfully on ${rescuerSucceeded.length}/${rescuerResults.length} network(s) — onlySponsor fix is live there.`);
+    console.log(
+      `\n✅ RescuerV2 deployed successfully on ${rescuerSucceeded.length}/${rescuerResults.length} network(s) — onlySponsor fix is live there.`,
+    );
   } else if (rescuerResults.length > 0) {
-    console.log("\n❌ RescuerV2 deployment did not succeed on ANY network. The critical");
-    console.log("   access-control fix is NOT live anywhere. Do not use with real keys.");
+    console.log(
+      "\n❌ RescuerV2 deployment did not succeed on ANY network. The critical",
+    );
+    console.log(
+      "   access-control fix is NOT live anywhere. Do not use with real keys.",
+    );
   }
 
   if (addresses.size === 0) {
-    console.log("\n❌ No successful deployments at all — nothing saved to .env.");
+    console.log(
+      "\n❌ No successful deployments at all — nothing saved to .env.",
+    );
   }
 
   console.log("═".repeat(60) + "\n");
