@@ -26,8 +26,8 @@ data/*.lock
 state/*.lock
 
 # Go
-guard-daemon
-guard-daemon.exe
+/guard-daemon
+/guard-daemon.exe
 *.test
 *.out
 coverage/

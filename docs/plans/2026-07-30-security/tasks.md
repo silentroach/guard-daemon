@@ -28,7 +28,7 @@
 ## Индекс задач
 
 - [x] [`DONE` Task 01: Воспроизводимая основа и безопасность репозитория](tasks/01-foundation.md)
-- [ ] [`PENDING` Task 02: Архитектура Go и тестируемые границы](tasks/02-go-architecture.md)
+- [x] [`DONE` Task 02: Архитектура Go и тестируемые границы](tasks/02-go-architecture.md)
 - [ ] [`PENDING` Task 03: Усиление смарт-контрактов](tasks/03-contract-hardening.md)
 - [ ] [`PENDING` Task 04: Воспроизводимый деплой и аттестация runtime](tasks/04-deployment-attestation.md)
 - [ ] [`PENDING` Task 05: Типизированная конфигурация и настоящий dry run](tasks/05-config-dry-run.md)

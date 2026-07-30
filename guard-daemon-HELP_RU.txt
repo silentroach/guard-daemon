@@ -40,9 +40,9 @@ airdrops) и мгновенно пересылает их на безопасн�
    cd guard-daemon
 
 3. Собери:
-   go mod tidy
-   go build -o guard-daemon.exe main.go
-   (Linux/Mac: go build -o guard-daemon main.go)
+   go mod download
+   go build -mod=readonly -o guard-daemon.exe ./cmd/guard-daemon
+   (Linux/macOS: go build -mod=readonly -o guard-daemon ./cmd/guard-daemon)
 
 4. Настрой .env:
    cp .env.example .env
@@ -56,9 +56,9 @@ airdrops) и мгновенно пересылает их на безопасн�
    ./guard-daemon.exe
 
 Ожидаемый вывод:
-   08:22:15.874 [Base     ] ⚡ OFC Transfer! tx=0xe42a...
-   08:22:16.637 [Base     ] -> renewAndSweep(OFC) tx=0xea5...
-   08:22:17.741 [Base     ] ✓ Swept OFC → destination
+   [Base     ] rescue_startup_verified
+   [Base     ] watcher_candidate_inserted
+   [Base     ] rescue_operation_confirmed
 
 
 НАСТРОЙКА .env
@@ -86,8 +86,8 @@ airdrops) и мгновенно пересылает их на безопасн�
 Конфигурация сетей:
 
   RESCUER_BASE
-    Адрес контракта RescuerV2 на Base (заполняется при деплое).
-    По умолчанию: 0x63635ac6b448965d08c03e9dab3066bebf050c09
+    Адрес контракта RescuerV2 на Base (заполняется после проверенного деплоя).
+    Без явного значения Rescuer для сети не настроен.
 
   RESCUER_ETHEREUM, RESCUER_ARBITRUM, RESCUER_OPTIMISM, и т.д.
     Адреса для остальных сетей.
@@ -127,11 +127,9 @@ Type-4 транзакции на уровне протокола ("transaction t
 supported"). Это не баг демона и не проблема RPC — делегация там
 принципиально невозможна.
 
-Soneium, 0G, DACC, X1ecochain временно закомментированы в main.go —
-либо ещё не задеплоены, либо (Soneium) делегация стабильно не
-проходит на практике, несмотря на то что сеть заявлена как
-поддерживающая EIP-7702 в документации. Раскомментируй и
-задеплой заново, если появится конкретная необходимость.
+Дополнительные сети не входят в совместимый список internal/config.
+Их включение требует отдельной проверки EIP-7702, настройки Rescuer
+и изменения конфигурации.
 
 Для каждой сети требуется:
   - Задеплоенный RescuerV2 (адрес в .env)
@@ -352,12 +350,10 @@ destination=... baked in, but .env DESTINATION_ADDRESS=..."
     свипа — демон дополнительно проверяет реальный баланс,
     т.к. при проигранной nonce-гонке транзакция могла молча
     исполниться через чужую (атакующего) делегацию
-  ✓ PermitSweeper.permitAndTransfer() больше не принимает `to`
-    как параметр — подпись permit подтверждает только (owner,
-    spender, value, deadline), но НЕ получателя. Раньше это
-    позволяло скопировать чужую подпись из mempool и вывести
-    средства на свой адрес первым. Теперь получатель жёстко
-    зашит как immutable owner
+  ✓ Permit flow в Go daemon отсутствует: ABI, адрес и fallback
+    не загружаются. Production path использует только RescuerV2.
+    Legacy contract и deployment artifacts удаляются отдельными
+    задачами усиления контракта и воспроизводимого деплоя.
 
 Рекомендации:
 
@@ -366,10 +362,9 @@ destination=... baked in, but .env DESTINATION_ADDRESS=..."
   ⚠ Используйте аппаратный кошелёк для спонсора, если возможно
   ⚠ Мониторьте логи на необычную активность
   ⚠ Планируйте миграцию на новый кошелёк со свежим ключом
-  ⚠ После любого редеплоя RescuerV2/PermitSweeper внимательно
-    читайте итоговую сводку деплой-скрипта — она теперь явно
-    и отдельно предупреждает, если критичный фикс (onlySponsor)
-    не задеплоился хоть где-то, а не просто пишет общий "успех"
+  ⚠ После любого редеплоя RescuerV2 отдельно проверяйте runtime
+    и immutable параметры. Общий положительный вывод legacy
+    deployment script не доказывает безопасный деплой.
 
   ✓ После успешного rescue не используйте старый адрес для нового value
   ✓ Поделитесь опытом в сообществе (помогает другим в похожей ситуации)

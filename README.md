@@ -70,7 +70,7 @@ Funds arrive at DESTINATION_ADDRESS
 
 zkSync Era was removed permanently — its sequencer rejects EIP-7702 `SetCodeTx` (Type-4) transactions entirely at the protocol level (`transaction type is not supported`), so delegation can never work there. This isn't a daemon bug or an RPC issue; there's nothing to fix.
 
-Soneium, 0G, DACC, and X1ecochain are commented out in `main.go`'s network list — either not yet deployed, or (in Soneium's case) EIP-7702 delegation reliably fails there in practice despite being listed as supported in some docs. Uncomment and redeploy if/when there's a concrete need to watch them again.
+Дополнительные сети не входят в совместимый список `internal/config`. Их включение требует отдельной проверки EIP-7702, настройки Rescuer и изменения конфигурации.
 
 Each network requires:
 - Deployed `RescuerV2.sol` contract (address in `.env`)
@@ -94,12 +94,12 @@ The daemon verifies at startup (before watching/sweeping on a network) that the 
 git clone https://github.com/Serge693/guard-daemon.git
 cd guard-daemon
 
-# Install Go dependencies
-go mod tidy
+# Проверить и загрузить закреплённые зависимости Go
+go mod download
 
-# Build binary
-go build -o guard-daemon.exe main.go
-# (On Linux/Mac: go build -o guard-daemon main.go)
+# Собрать исполняемый файл
+go build -mod=readonly -o guard-daemon.exe ./cmd/guard-daemon
+# Linux/macOS: go build -mod=readonly -o guard-daemon ./cmd/guard-daemon
 ```
 
 ### 3. Configure
@@ -202,7 +202,7 @@ npx tsx scripts/deployRescuerV2.ts
 # Saved to .env automatically
 ```
 
-The script reports RescuerV2 and PermitSweeper deployment results **separately**, and loudly warns if RescuerV2 (the security-critical contract) failed on any network — a successful PermitSweeper deployment elsewhere can't mask that. Read the summary output; don't assume "it printed something positive" means the daemon is safe to run.
+Текущий deployment script всё ещё содержит устаревшие Permit artifacts, которые принадлежат последующей задаче воспроизводимого деплоя. Go daemon их не загружает и не использует. До удаления legacy-части проверяйте результат RescuerV2 отдельно и не считайте общий положительный вывод доказательством безопасного деплоя.
 
 ### Option B: Manual deployment
 
@@ -278,7 +278,7 @@ Every ~12 seconds (WebSocket mode) or per polling interval (HTTP mode):
 ✅ **Bounded retries** — a token whose sweep fails repeatedly (e.g. a broken or malicious ERC-20) is retried up to 3 times, then given up on — enforced centrally in `renewAndSweep()` so it can't be bypassed by any calling path  
 ✅ **Gas cost caps** on every sponsor-paid transaction type (sweep, delegation renewal, ETH sweep) — bounds worst-case cost per attempt regardless of network fee spikes  
 ✅ **Post-receipt balance verification** — a successful transaction receipt alone doesn't prove tokens actually moved (if the EIP-7702 authorization lost a nonce race, the call could silently execute against a different, attacker-controlled delegation instead). The daemon re-checks the real balance before logging success  
-✅ **PermitSweeper has no caller-suppliable recipient** — the EIP-2612 permit signature it relies on authorizes *(owner, spender, value, deadline)* only; it says nothing about where funds end up. An earlier version took `to` as a parameter, which meant anyone who observed a valid permit signature (e.g. in the mempool) could front-run it with their own address. Destination is now hardcoded to the immutable `owner`
+**Legacy Permit artifacts не являются частью Go daemon** — их contract и deployment surface будут полностью удалены отдельными задачами усиления контракта и воспроизводимого деплоя
 
 ### What this tool does NOT do
 
@@ -286,7 +286,7 @@ Every ~12 seconds (WebSocket mode) or per polling interval (HTTP mode):
 ❌ **Does not guarantee winning the race** — bot with better infrastructure may still get there first  
 ❌ **Does not prevent delegation replacement** — if bot knows the key, it can set its own delegation  
 ❌ **Does not work for claim functions with msg.sender verification** — if claim contract validates who's calling (e.g., signature covers msg.sender), atomic approach fails  
-❌ **`PermitSweeper.permitAndTransfer()` is deployed but not wired into the daemon's sweep logic** — the ABI and address are loaded (shown in startup logs), but nothing currently calls it. RescuerV2/EIP-7702 handles sweeping on its own; treat PermitSweeper as inactive unless you specifically build something that calls it
+❌ **Go daemon не поддерживает Permit flow** — ABI, адрес и fallback не загружаются; production path использует только RescuerV2/EIP-7702
 
 ### Contract deployment note
 
@@ -301,7 +301,7 @@ If `RescuerV2` is ever redeployed for any reason, **the daemon's own startup che
 3. **Monitor logs** — if you see `Delegation dropped` frequently, bot is actively competing
 4. **Plan migration** — use this as a temporary rescue mechanism while you migrate to a new wallet with a fresh key
 5. **Don't reuse the compromised key** — even after migration, for anything new
-6. **After any RescuerV2/PermitSweeper redeploy, verify the deploy script's summary explicitly** — it reports RescuerV2 and PermitSweeper success/failure separately, and warns loudly if the critical access-control fix didn't actually deploy anywhere, rather than reporting generic success from an unrelated contract
+6. **После любого редеплоя RescuerV2 отдельно проверьте runtime и immutable параметры** — общий положительный вывод legacy deployment script не является доказательством безопасного деплоя
 
 ## Troubleshooting
 
