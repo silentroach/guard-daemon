@@ -50,7 +50,9 @@
 ## Критерии приёмки
 
 - В публичных документах нет обычных англоязычных абзацев, персональных данных, реальных keys/private URLs и incident-specific defaults.
-- Все команды проверены на clean clone в pinned Nix environment.
+- Все команды проверены на clean clone с документированными native tool
+  versions без зависимости от Nix; дополнительный локальный запуск через
+  `nix develop` разрешён, но не заменяет CI-compatible evidence.
 - Каждая настройка автоматически сверяется с typed config schema.
 - Quick start не способен случайно выполнить live transaction.
 - Service hardening соответствует фактическим файлам установки и не требует `root` для daemon.

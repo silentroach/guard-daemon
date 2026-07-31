@@ -19,7 +19,8 @@
 ## Границы задачи
 
 - `.gitignore` и правила secret hygiene.
-- `flake.nix`/`flake.lock` либо эквивалентный pinned Nix environment.
+- Необязательное локальное `flake.nix`/`flake.lock` и независимая от Nix
+  настройка закреплённых CI toolchains.
 - `package.json`, lock-файл и TypeScript configuration.
 - `go.mod`/`go.sum` и безопасное обновление dependencies.
 - Базовые команды format, build, test, lint, vulnerability scan и secret scan.
@@ -50,7 +51,8 @@
 
 После согласования версий coordinator может запустить три subagent:
 
-- **Nix/Node:** только `/flake.nix`, `/flake.lock`, `/package.json`, `/package-lock.json`, `/tsconfig.json`.
+- **Локальное окружение/Node:** только `/flake.nix`, `/flake.lock`,
+  `/package.json`, `/package-lock.json`, `/tsconfig.json`.
 - **Go dependencies:** только `/go.mod`, `/go.sum` и отчёт совместимости в `/docs/development/dependencies.md`.
 - **Безопасность репозитория и CI:** только `/.gitignore`, `/.github/workflows/**`, `/.github/dependabot.yml`, конфигурация secret scan и `/docs/development/ci.md`.
 
@@ -58,7 +60,8 @@ Subagents не редактируют файлы чужого ownership. Coordin
 
 ## Критерии приёмки
 
-- Fresh clone входит в pinned Nix environment одной задокументированной командой.
+- Fresh clone запускает проверки обычными repository commands после настройки
+  документированных tool versions; Nix остаётся необязательным локальным путём.
 - Go daemon собирается с `CGO_ENABLED=0` и `-mod=readonly`.
 - Solidity contracts воспроизводимо компилируются pinned compiler.
 - TypeScript scripts type-check без глобально установленных packages.
@@ -76,7 +79,6 @@ Subagents не редактируют файлы чужого ownership. Coordin
 Выполнить через repository-provided commands:
 
 ```text
-nix develop
 go mod verify
 go build -mod=readonly ./...
 go vet ./...

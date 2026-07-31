@@ -1,5 +1,15 @@
 # Обязательные проверки разработки
 
+GitHub Actions не устанавливает и не вызывает Nix. CI на `ubuntu-24.04`
+настраивает Go `1.26.5`, Node.js `24.18.1` и npm `11.16.0` через официальные
+setup actions, закреплённые полными commit SHA. `actionlint`, ShellCheck,
+`govulncheck` и `gitleaks` также устанавливаются по точным версиям; архив
+ShellCheck проверяется по SHA-256.
+
+Локально разрешено войти в необязательное окружение `nix develop`, но все
+приведённые ниже команды являются обычными repository commands и не зависят от
+Nix.
+
 Установите Node.js-зависимости без изменения lock-файла:
 
 ```sh
@@ -65,4 +75,8 @@ make contracts-test
 
 ## Кеши CI
 
-CI сохраняет только Go module/build cache и npm download cache. `.env`, key files, generated deployment manifests и иное локальное состояние в cache paths не входят. Workflows имеют только `contents: read`, не используют GitHub environments и не получают production secrets.
+CI использует встроенные caches `actions/setup-go` и `actions/setup-node` только
+для Go modules/build и npm downloads. `.env`, key files, generated deployment
+manifests и иное локальное состояние в cache paths не входят. Workflows имеют
+только `contents: read`, не используют GitHub environments и не получают
+production secrets.
