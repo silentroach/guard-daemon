@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -26,7 +26,6 @@ interface CompilerOutput {
 
 const compilerVersion = "0.8.36";
 const contracts = [
-  { contractName: "PermitSweeper", sourceName: "PermitSweeper.sol" },
   { contractName: "RescuerV2", sourceName: "RescuerV2.sol" },
 ] as const;
 
@@ -79,6 +78,7 @@ export const compileContracts = (
     );
   }
 
+  rmSync(outputDirectory, { force: true, recursive: true });
   mkdirSync(outputDirectory, { recursive: true });
   return contracts.map(({ contractName, sourceName }) => {
     const contract = output.contracts?.[sourceName]?.[contractName];

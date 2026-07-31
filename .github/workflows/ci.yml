@@ -14,6 +14,8 @@ env:
   NODE_VERSION: "24.18.1"
   NPM_VERSION: "11.16.0"
   ACTIONLINT_VERSION: "v1.7.12"
+  FOUNDRY_VERSION: "v1.7.1"
+  FOUNDRY_SHA256: "cf7e688ed0c4c48adffca788b496076e31060b67ac5afe1e43dbb5499c20c88b"
   SHELLCHECK_VERSION: "0.11.0"
   SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
 
@@ -46,6 +48,8 @@ jobs:
         run: npm install --global "npm@${NPM_VERSION}"
       - name: Установить Node.js-зависимости
         run: npm ci
+      - name: Установить Foundry
+        run: bash scripts/install-foundry-ci.sh
       - name: Установить actionlint
         run: |
           mkdir -p "${RUNNER_TEMP}/bin"
@@ -85,6 +89,8 @@ jobs:
     name: TypeScript и контракты
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      FOUNDRY_PROFILE: ci
     steps:
       - name: Получить исходный код
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -99,5 +105,7 @@ jobs:
         run: npm install --global "npm@${NPM_VERSION}"
       - name: Установить Node.js-зависимости
         run: npm ci
+      - name: Установить Foundry
+        run: bash scripts/install-foundry-ci.sh
       - name: Проверить TypeScript и контракты
         run: make node-ci
