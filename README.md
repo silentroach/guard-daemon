@@ -72,11 +72,10 @@ zkSync Era was removed permanently — its sequencer rejects EIP-7702 `SetCodeTx
 
 Дополнительные сети не входят в совместимый список `internal/config`. Их включение требует отдельной проверки EIP-7702, настройки Rescuer и изменения конфигурации.
 
-Each network requires:
-- Deployed `RescuerV2.sol` contract (address in `.env`)
-- Sufficient gas in sponsor wallet
-
-The daemon verifies at startup (before watching/sweeping on a network) that the RPC's chain ID matches config and that the deployed contract's on-chain `destination()` matches `.env`. It refuses to start on that network if either check fails, rather than proceeding with a misconfiguration.
+Каждая включённая сеть требует проверенного deployment manifest `RescuerV2` и
+отдельного ограниченного sponsor. Текущий startup ещё не использует новый API
+quorum-аттестации: эта интеграция принадлежит Task 05. До её завершения нельзя
+считать production-запуск безопасным.
 
 ## Quick Start
 
@@ -114,13 +113,9 @@ SPONSOR_PRIVATE_KEY=0x<your_sponsor_wallet_private_key>
 DESTINATION_ADDRESS=0x<your_safe_wallet_address>
 ```
 
-**Optional:** Deploy RescuerV2 to new networks or override existing addresses:
-
-```bash
-RESCUER_BASE=0x63635ac6b448965d08c03e9dab3066bebf050c09
-RESCUER_ETHEREUM=0x...
-RPC_URL_BASE=https://base-mainnet.g.alchemy.com/v2/YOUR_KEY
-```
+Проверка artifact и deployment tooling выполняется только локально по инструкции
+[`docs/deployment/local-verification.md`](docs/deployment/local-verification.md).
+Repository defaults не содержат адресов production deployment.
 
 ### 4. Run
 
@@ -187,39 +182,16 @@ RPC_URL_POLYGON=https://polygon-mainnet.g.alchemy.com/v2/KEY
 # SPONSOR_MIN_BALANCE=0.01
 ```
 
-## How to Deploy RescuerV2
+## Локальная проверка deployment
 
-If deploying to a new network or updating the contract:
+Единственная поддерживаемая на этом этапе процедура находится в
+[`docs/deployment/local-verification.md`](docs/deployment/local-verification.md).
+Она использует закреплённый canonical artifact и локальный Anvil. Ручная
+компиляция в Remix, копирование непроверенного адреса в `.env` и запуск прежних
+multi-network/Permit scripts не поддерживаются.
 
-**Constructor takes two arguments:** `constructor(address destination, address sponsor)`. `sponsor` is the only address allowed to call `executeAndSweep()` — this is a required security control, not optional. A deploy attempt with only one argument will fail outright (correct, safe behavior — not a bug).
-
-### Option A: Using the provided TypeScript script
-
-```bash
-npm install
-npx tsx scripts/deployRescuerV2.ts
-# Outputs: RESCUER_<NETWORK>=0x...
-# Saved to .env automatically
-```
-
-Текущий deployment script всё ещё содержит устаревшие Permit artifacts, которые принадлежат последующей задаче воспроизводимого деплоя. Go daemon их не загружает и не использует. До удаления legacy-части проверяйте результат RescuerV2 отдельно и не считайте общий положительный вывод доказательством безопасного деплоя.
-
-### Option B: Manual deployment
-
-1. Open `contracts/RescuerV2.sol` in Remix (remix.ethereum.org)
-2. Compile with Solidity 0.8.23
-3. Deploy on your target network
-4. Pass **both** `DESTINATION_ADDRESS` and the sponsor wallet's address as constructor arguments, in that order
-5. Copy deployed address to `.env`
-
-### Verifying Deployment
-
-```bash
-# Check that contract is at the address
-cast code 0x<RESCUER_ADDRESS> --rpc-url <RPC_URL>
-
-# Should output bytecode starting with 0x...
-```
+CLI без `--broadcast` не читает ключ и не обращается к RPC. Production/mainnet
+активация намеренно не документируется до Task 10.
 
 ## Understanding the Flow
 

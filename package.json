@@ -9,17 +9,19 @@
     "npm": ">=11.6.0 <12"
   },
   "scripts": {
+    "artifacts:update": "tsx -e \"import { compileContracts } from './scripts/compileContracts.ts'; compileContracts('artifacts/contracts')\"",
+    "artifacts:verify": "tsx scripts/verifyArtifacts.ts",
     "audit": "npm audit --audit-level=high",
     "contracts:build": "tsx scripts/compileContracts.ts",
     "contracts:test": "tsx --test test/contracts/reproducibility.test.ts",
-    "format": "prettier --write \"scripts/**/*.ts\" \"test/**/*.ts\" \"*.json\" \"*.mjs\"",
-    "format:check": "prettier --check \"scripts/**/*.ts\" \"test/**/*.ts\" \"*.json\" \"*.mjs\"",
+    "deploy:test": "tsx --test test/deploy/cli/*.test.ts test/deploy/integration/*.test.ts",
+    "format": "prettier --write \"scripts/**/*.ts\" \"test/**/*.ts\" \"deployments/**/*.json\" \"*.json\" \"*.mjs\"",
+    "format:check": "prettier --check \"scripts/**/*.ts\" \"test/**/*.ts\" \"deployments/**/*.json\" \"*.json\" \"*.mjs\"",
     "lint": "eslint scripts test",
-    "test": "npm run contracts:test",
+    "test": "npm run contracts:test && npm run deploy:test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "dotenv": "17.4.2",
     "ethers": "6.17.0",
     "solc": "0.8.36"
   },

@@ -30,7 +30,7 @@
 - [x] [`DONE` Task 01: Воспроизводимая основа и безопасность репозитория](tasks/01-foundation.md)
 - [x] [`DONE` Task 02: Архитектура Go и тестируемые границы](tasks/02-go-architecture.md)
 - [x] [`DONE` Task 03: Усиление смарт-контрактов](tasks/03-contract-hardening.md)
-- [ ] [`PENDING` Task 04: Воспроизводимый деплой и аттестация runtime](tasks/04-deployment-attestation.md)
+- [x] [`DONE` Task 04: Воспроизводимый деплой и аттестация runtime](tasks/04-deployment-attestation.md)
 - [ ] [`PENDING` Task 05: Типизированная конфигурация и настоящий dry run](tasks/05-config-dry-run.md)
 - [ ] [`PENDING` Task 06: Надёжное получение событий и жизненный цикл RPC](tasks/06-watcher-rpc.md)
 - [ ] [`PENDING` Task 07: Координатор транзакций, повторы и постусловия](tasks/07-rescue-coordinator.md)

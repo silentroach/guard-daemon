@@ -1,451 +1,489 @@
-/**
- * scripts/deployRescuerV2.ts
- *
- * Компилирует и деплоит RescuerV2 на все сети.
- * RescuerV2 используется как forwarder для EIP-7702 делегации.
- *
- * Usage:
- *   npx tsx scripts/deployRescuerV2.ts
- *
- * Поддерживает Infura/Alchemy RPC через .env переменные
- */
+import { createHash, randomUUID } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
-import { ethers } from "ethers";
-import solc from "solc";
-import { readFileSync, writeFileSync } from "fs";
-import { resolve } from "path";
-import * as dotenv from "dotenv";
+import {
+  ContractFactory,
+  FetchRequest,
+  Interface,
+  JsonRpcProvider,
+  Wallet,
+  getAddress,
+  getBytes,
+} from "ethers";
 
-dotenv.config();
+import {
+  DeploymentInputError,
+  createDeploymentManifest,
+  linkRuntime,
+  loadCanonicalArtifact,
+  normalizeRoles,
+  sourceProvenance,
+} from "./deployment.js";
+import { verifyCanonicalArtifact } from "./verifyArtifacts.js";
 
-interface NetworkConfig {
-  name: string;
-  rpc: string;
-  chainId: number;
-  envKey: string;
+const canonicalArtifactPath = resolve("artifacts/contracts/RescuerV2.json");
+
+interface CLIOptions {
+  readonly broadcast: boolean;
+  readonly chainId: bigint;
+  readonly configKey?: string;
+  readonly configPath?: string;
+  readonly confirmations: number;
+  readonly destination: string;
+  readonly manifestPath?: string;
+  readonly receiptTimeoutMS: number;
+  readonly rpcTimeoutMS: number;
+  readonly rpcURL?: string;
+  readonly sponsor: string;
 }
 
-// Get RPC endpoints from env or use defaults
-const INFURA_KEY = process.env.INFURA_API_KEY || "";
-const ALCHEMY_KEY = process.env.ALCHEMY_API_KEY || "";
+class DeploymentError extends Error {}
 
-const getRPC = (name: string, defaultRpc: string): string => {
-  if (INFURA_KEY) {
-    const infraMap: Record<string, string> = {
-      Ethereum: `https://mainnet.infura.io/v3/${INFURA_KEY}`,
-      Arbitrum: `https://arbitrum-mainnet.infura.io/v3/${INFURA_KEY}`,
-      Optimism: `https://optimism-mainnet.infura.io/v3/${INFURA_KEY}`,
-      Polygon: `https://polygon-mainnet.infura.io/v3/${INFURA_KEY}`,
-      Base: `https://base-mainnet.infura.io/v3/${INFURA_KEY}`,
-    };
-    if (infraMap[name]) return infraMap[name];
+const optionNames = new Set([
+  "--broadcast",
+  "--chain-id",
+  "--config",
+  "--config-key",
+  "--confirmations",
+  "--destination",
+  "--manifest",
+  "--receipt-timeout-ms",
+  "--rpc-timeout-ms",
+  "--rpc-url",
+  "--sponsor",
+]);
+
+const requiredValue = (
+  values: ReadonlyMap<string, string>,
+  name: string,
+): string => {
+  const value = values.get(name);
+  if (!value) {
+    throw new DeploymentInputError(`Не задан обязательный аргумент ${name}`);
   }
-  if (ALCHEMY_KEY) {
-    const alchemyMap: Record<string, string> = {
-      Ethereum: `https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-      Arbitrum: `https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-      Optimism: `https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-      Polygon: `https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-      Base: `https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`,
-    };
-    if (alchemyMap[name]) return alchemyMap[name];
-  }
-  return defaultRpc;
+  return value;
 };
 
-const NETWORKS: NetworkConfig[] = [
-  {
-    name: "Ethereum",
-    rpc: getRPC("Ethereum", "https://ethereum-rpc.publicnode.com"),
-    chainId: 1,
-    envKey: "RESCUER_ETHEREUM",
-  },
-  {
-    name: "Base",
-    rpc: getRPC("Base", "https://mainnet.base.org"),
-    chainId: 8453,
-    envKey: "RESCUER_BASE",
-  },
-  {
-    name: "Arbitrum",
-    rpc: getRPC("Arbitrum", "https://arbitrum.drpc.org"),
-    chainId: 42161,
-    envKey: "RESCUER_ARBITRUM",
-  },
-  {
-    name: "Optimism",
-    rpc: getRPC("Optimism", "https://mainnet.optimism.io"),
-    chainId: 10,
-    envKey: "RESCUER_OPTIMISM",
-  },
-  {
-    name: "Polygon",
-    rpc: getRPC("Polygon", "https://polygon.drpc.org"),
-    chainId: 137,
-    envKey: "RESCUER_POLYGON",
-  },
-  {
-    name: "BNB",
-    rpc: "https://bsc-rpc.publicnode.com",
-    chainId: 56,
-    envKey: "RESCUER_BNB",
-  },
-  {
-    name: "Ink",
-    rpc: "https://ink.drpc.org",
-    chainId: 57073,
-    envKey: "RESCUER_INK",
-  },
-  {
-    name: "Linea",
-    rpc: "https://linea.drpc.org",
-    chainId: 59144,
-    envKey: "RESCUER_LINEA",
-  },
-  {
-    name: "Scroll",
-    rpc: "https://rpc.scroll.io",
-    chainId: 534352,
-    envKey: "RESCUER_SCROLL",
-  },
-];
-// NOTE: this is a full redeploy across all 9 active networks — critical:
-// the onlySponsor access-control fix on executeAndSweep needs to be live
-// everywhere, not just where the last (Superfluid-specific) redeploy
-// happened to target. Soneium/Metis excluded here since they're separately
-// tracked (deploy those explicitly if/when needed again).
+const parsePositiveInteger = (value: string, name: string): number => {
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    throw new DeploymentInputError(`${name} должен быть положительным целым`);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new DeploymentInputError(`${name} выходит за безопасный диапазон`);
+  }
+  return parsed;
+};
 
-// PermitSweeper is only actively configured on the subset of networks
-// where the daemon has PERMIT_SWEEPER_* set in .env — not all 10.
-const PERMIT_NETWORKS: NetworkConfig[] = [
-  // Temporarily empty — this redeploy round is only for RescuerV2's
-  // payable executeAndSweep fix on Base. PermitSweeper is unaffected;
-  {
-    name: "Ethereum",
-    rpc: getRPC("Ethereum", "https://ethereum-rpc.publicnode.com"),
-    chainId: 1,
-    envKey: "PERMIT_SWEEPER_ETHEREUM",
-  },
-  {
-    name: "Base",
-    rpc: getRPC("Base", "https://mainnet.base.org"),
-    chainId: 8453,
-    envKey: "PERMIT_SWEEPER_BASE",
-  },
-  {
-    name: "Arbitrum",
-    rpc: getRPC("Arbitrum", "https://arbitrum.drpc.org"),
-    chainId: 42161,
-    envKey: "PERMIT_SWEEPER_ARBITRUM",
-  },
-  {
-    name: "Optimism",
-    rpc: getRPC("Optimism", "https://mainnet.optimism.io"),
-    chainId: 10,
-    envKey: "PERMIT_SWEEPER_OPTIMISM",
-  },
-  {
-    name: "Polygon",
-    rpc: getRPC("Polygon", "https://polygon.drpc.org"),
-    chainId: 137,
-    envKey: "PERMIT_SWEEPER_POLYGON",
-  },
-  {
-    name: "Ink",
-    rpc: "https://ink.drpc.org",
-    chainId: 57073,
-    envKey: "PERMIT_SWEEPER_INK",
-  },
-];
-// NOTE: PermitSweeper's constructor now requires an `owner` argument
-// (the access-control fix on rescueTokens — anyone could previously drain
-// stray token balances from this contract). Redeploying now closes that
-// even though permitAndTransfer() isn't currently called by the daemon's
-// sweep logic — this just ensures the fix is live whenever it is used.
+export const parseCLIOptions = (args: readonly string[]): CLIOptions => {
+  const values = new Map<string, string>();
+  let broadcast = false;
+  for (let index = 0; index < args.length; index++) {
+    const name = args[index];
+    if (!name || !optionNames.has(name)) {
+      throw new DeploymentInputError(`Неизвестный аргумент ${name ?? ""}`);
+    }
+    if (name === "--broadcast") {
+      if (broadcast) {
+        throw new DeploymentInputError("Аргумент --broadcast указан повторно");
+      }
+      broadcast = true;
+      continue;
+    }
+    if (values.has(name)) {
+      throw new DeploymentInputError(`Аргумент ${name} указан повторно`);
+    }
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new DeploymentInputError(`Для ${name} не задано значение`);
+    }
+    values.set(name, value);
+    index++;
+  }
 
-function compileContract(
-  contractName: string,
-  fileName: string,
-): { bytecode: string; abi: any[] } {
-  console.log(`📦 Compiling ${fileName}...\n`);
+  const chainIDValue = requiredValue(values, "--chain-id");
+  if (!/^[1-9][0-9]*$/.test(chainIDValue)) {
+    throw new DeploymentInputError(
+      "--chain-id должен быть положительным decimal",
+    );
+  }
+  const chainId = BigInt(chainIDValue);
+  const configPath = values.get("--config");
+  const configKey = values.get("--config-key");
+  if ((!configPath && configKey) || (configPath && !configKey)) {
+    throw new DeploymentInputError(
+      "--config и --config-key указываются вместе",
+    );
+  }
+  if (configKey && !/^[A-Z][A-Z0-9_]*$/.test(configKey)) {
+    throw new DeploymentInputError("--config-key имеет недопустимый формат");
+  }
+  const rpcURL = values.get("--rpc-url");
+  const manifestPath = values.get("--manifest");
+  if (broadcast && (!rpcURL || !manifestPath)) {
+    throw new DeploymentInputError(
+      "Для --broadcast обязательны --rpc-url и --manifest",
+    );
+  }
 
-  const source = readFileSync(resolve(`./contracts/${fileName}`), "utf-8");
-
-  const input = {
-    language: "Solidity",
-    sources: { [fileName]: { content: source } },
-    settings: {
-      optimizer: { enabled: true, runs: 200 },
-      outputSelection: {
-        [fileName]: { [contractName]: ["evm.bytecode.object", "abi"] },
-      },
-    },
+  const destination = requiredValue(values, "--destination");
+  const sponsor = requiredValue(values, "--sponsor");
+  normalizeRoles(destination, sponsor, sponsor);
+  return {
+    broadcast,
+    chainId,
+    configKey,
+    configPath: configPath ? resolve(configPath) : undefined,
+    confirmations: parsePositiveInteger(
+      values.get("--confirmations") ?? "1",
+      "--confirmations",
+    ),
+    destination: getAddress(destination),
+    manifestPath: manifestPath ? resolve(manifestPath) : undefined,
+    receiptTimeoutMS: parsePositiveInteger(
+      values.get("--receipt-timeout-ms") ?? "120000",
+      "--receipt-timeout-ms",
+    ),
+    rpcTimeoutMS: parsePositiveInteger(
+      values.get("--rpc-timeout-ms") ?? "10000",
+      "--rpc-timeout-ms",
+    ),
+    rpcURL,
+    sponsor: getAddress(sponsor),
   };
+};
 
-  const output = JSON.parse(solc.compile(JSON.stringify(input)));
-
-  if (output.errors?.length) {
-    for (const err of output.errors) {
-      if (err.severity === "error") {
-        console.error("❌ Compilation error:");
-        console.error(err.formattedMessage);
-        process.exit(1);
-      }
-    }
-  }
-
-  const contract = output.contracts?.[fileName]?.[contractName];
-  if (!contract) {
-    console.error(
-      `❌ Contract ${contractName} not found in compilation output`,
-    );
-    process.exit(1);
-  }
-
-  const bytecode = contract.evm.bytecode.object;
-  const abi = contract.abi;
-
-  console.log(`✅ Compiled: ${bytecode.length / 2} bytes`);
-  console.log(`✅ ABI: ${abi.length} items\n`);
-
-  return { bytecode: `0x${bytecode}`, abi };
+interface PathIdentity {
+  readonly canonical: string;
+  readonly device?: bigint;
+  readonly inode?: bigint;
 }
 
-async function deployOnNetwork(
-  network: NetworkConfig,
-  bytecode: string,
-  abi: any[],
-  constructorArgs: string[],
-  constructorArgLabels: string[],
-): Promise<string | null> {
+const canonicalPath = async (path: string): Promise<string> => {
+  let current = resolve(path);
+  const suffix: string[] = [];
+  while (true) {
+    try {
+      return resolve(await realpath(current), ...suffix);
+    } catch (error) {
+      if (
+        !error ||
+        typeof error !== "object" ||
+        !("code" in error) ||
+        error.code !== "ENOENT"
+      ) {
+        throw new DeploymentError("Не удалось проверить output path");
+      }
+      const parent = dirname(current);
+      if (parent === current) {
+        throw new DeploymentError("Не удалось проверить output path");
+      }
+      suffix.unshift(basename(current));
+      current = parent;
+    }
+  }
+};
+
+const pathIdentity = async (path: string): Promise<PathIdentity> => {
+  const canonical = await canonicalPath(path);
   try {
-    console.log(
-      `\n🚀 Deploying on ${network.name} (Chain ${network.chainId})...`,
-    );
+    const metadata = await stat(path, { bigint: true });
+    return {
+      canonical,
+      device: metadata.dev,
+      inode: metadata.ino,
+    };
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return { canonical };
+    }
+    throw new DeploymentError("Не удалось проверить output path");
+  }
+};
 
-    const sponsorKey = process.env.SPONSOR_PRIVATE_KEY;
-    if (!sponsorKey) {
-      console.error("❌ SPONSOR_PRIVATE_KEY not set in .env");
-      return null;
+const verifyDistinctPaths = async (options: CLIOptions): Promise<void> => {
+  if (!options.broadcast || !options.manifestPath) {
+    return;
+  }
+  const paths = [canonicalArtifactPath, options.manifestPath];
+  if (options.configPath) {
+    paths.push(options.configPath);
+  }
+  const identities = await Promise.all(paths.map(pathIdentity));
+  for (let left = 0; left < identities.length; left++) {
+    for (let right = left + 1; right < identities.length; right++) {
+      const a = identities[left]!;
+      const b = identities[right]!;
+      if (
+        a.canonical === b.canonical ||
+        (a.device !== undefined &&
+          b.device !== undefined &&
+          a.device === b.device &&
+          a.inode === b.inode)
+      ) {
+        throw new DeploymentInputError(
+          "Artifact, manifest и operator config должны быть разными файлами",
+        );
+      }
+    }
+  }
+};
+
+const withDeadline = async <T>(
+  operation: Promise<T>,
+  timeoutMS: number,
+  message: string,
+): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new DeploymentError(message)),
+          timeoutMS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+};
+
+const atomicWrite = async (path: string, content: string): Promise<void> => {
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true });
+  const temporary = resolve(
+    directory,
+    `.${basename(path)}.tmp.${process.pid}.${randomUUID()}`,
+  );
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(temporary, "wx", 0o600);
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporary, path);
+    await chmod(path, 0o600);
+  } finally {
+    await handle?.close().catch(() => undefined);
+    await rm(temporary, { force: true }).catch(() => undefined);
+  }
+};
+
+const updateConfig = async (
+  path: string,
+  key: string,
+  address: string,
+): Promise<void> => {
+  let content: string;
+  try {
+    content = await readFile(path, "utf8");
+  } catch {
+    throw new DeploymentError("Operator config не удалось безопасно прочитать");
+  }
+  const lines = content.split(/\r?\n/);
+  const matching = lines
+    .map((line, index) => ({ index, line }))
+    .filter(({ line }) => line.startsWith(`${key}=`));
+  if (matching.length > 1) {
+    throw new DeploymentError("Operator config содержит повторяющийся ключ");
+  }
+  if (matching.length === 1) {
+    lines[matching[0]!.index] = `${key}=${address}`;
+  } else {
+    if (lines.at(-1) !== "") {
+      lines.push("");
+    }
+    lines.push(`${key}=${address}`, "");
+  }
+  await atomicWrite(path, lines.join("\n"));
+};
+
+const decodeGetter = (data: string, name: string): string => {
+  if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(data)) {
+    throw new DeploymentError(`Getter ${name} вернул неканонический адрес`);
+  }
+  return getAddress(`0x${data.slice(-40)}`);
+};
+
+export const runDeployment = async (
+  options: CLIOptions,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<void> => {
+  await verifyDistinctPaths(options);
+  await verifyCanonicalArtifact(canonicalArtifactPath);
+  const loaded = await loadCanonicalArtifact(canonicalArtifactPath);
+  const factory = new ContractFactory(
+    loaded.artifact.abi,
+    loaded.artifact.bytecode,
+  );
+  const planned = await factory.getDeployTransaction(
+    options.destination,
+    options.sponsor,
+  );
+  if (!planned.data) {
+    throw new DeploymentError("Artifact не сформировал deployment data");
+  }
+  const planDigest = createHash("sha256")
+    .update(getBytes(planned.data))
+    .digest("hex");
+  sourceProvenance(loaded.artifact);
+
+  if (!options.broadcast) {
+    console.log("Локальный план RescuerV2 проверен; отправка отключена.");
+    console.log(`SHA-256 deployment data: ${planDigest}`);
+    return;
+  }
+
+  const request = new FetchRequest(options.rpcURL!);
+  request.timeout = options.rpcTimeoutMS;
+  const provider = new JsonRpcProvider(request);
+  try {
+    const network = await provider.getNetwork();
+    if (network.chainId !== options.chainId) {
+      throw new DeploymentError("RPC вернул chain ID, отличный от ожидаемого");
     }
 
-    for (let i = 0; i < constructorArgs.length; i++) {
-      if (!constructorArgs[i]) {
-        console.error(`❌ ${constructorArgLabels[i]} not set in .env`);
-        return null;
+    const privateKey = environment["DEPLOYER_PRIVATE_KEY"];
+    if (!privateKey) {
+      throw new DeploymentError(
+        "Для явного --broadcast не задан DEPLOYER_PRIVATE_KEY",
+      );
+    }
+    let wallet: Wallet;
+    try {
+      wallet = new Wallet(privateKey, provider);
+    } catch {
+      throw new DeploymentError(
+        "DEPLOYER_PRIVATE_KEY имеет недопустимый формат",
+      );
+    }
+    if (wallet.address !== options.sponsor) {
+      throw new DeploymentError(
+        "Адрес deployment signer не совпадает со sponsor",
+      );
+    }
+
+    const sendingFactory = new ContractFactory(
+      loaded.artifact.abi,
+      loaded.artifact.bytecode,
+      wallet,
+    );
+    const contract = await sendingFactory.deploy(
+      options.destination,
+      options.sponsor,
+    );
+    const transaction = contract.deploymentTransaction();
+    if (!transaction || transaction.data !== planned.data) {
+      throw new DeploymentError(
+        "Отправленная транзакция не совпадает с проверенным планом",
+      );
+    }
+    const receipt = await withDeadline(
+      transaction.wait(options.confirmations),
+      options.receiptTimeoutMS,
+      "Истёк таймаут receipt deployment",
+    );
+    if (!receipt || receipt.status !== 1 || !receipt.contractAddress) {
+      throw new DeploymentError("Deployment не получил успешный receipt");
+    }
+
+    const address = getAddress(receipt.contractAddress);
+    const block = await provider.getBlock(receipt.blockHash);
+    if (!block || block.hash !== receipt.blockHash) {
+      throw new DeploymentError("RPC не подтвердил deployment block hash");
+    }
+    const values = normalizeRoles(
+      options.destination,
+      address,
+      options.sponsor,
+    );
+    const expectedRuntime = linkRuntime(loaded.artifact, values);
+    const actualRuntime = await provider.getCode(address, receipt.blockHash);
+    if (actualRuntime.toLowerCase() !== expectedRuntime.toLowerCase()) {
+      throw new DeploymentError(
+        "Deployed runtime не совпадает с canonical artifact",
+      );
+    }
+
+    const contractInterface = new Interface(loaded.artifact.abi);
+    for (const [name, expected] of [
+      ["destination", values.destination],
+      ["sponsor", values.sponsor],
+      ["self", values.self],
+    ] as const) {
+      const result = await provider.call({
+        blockTag: receipt.blockHash,
+        data: contractInterface.encodeFunctionData(name),
+        to: address,
+      });
+      if (decodeGetter(result, name) !== expected) {
+        throw new DeploymentError(`Getter ${name} не совпадает с планом`);
       }
     }
 
-    const provider = new ethers.JsonRpcProvider(network.rpc);
-    const signer = new ethers.Wallet(sponsorKey, provider);
-
-    console.log(`   Signer: ${signer.address}`);
-    for (let i = 0; i < constructorArgs.length; i++) {
-      console.log(`   ${constructorArgLabels[i]}: ${constructorArgs[i]}`);
+    const manifest = createDeploymentManifest({
+      address,
+      artifact: loaded,
+      blockHash: receipt.blockHash,
+      blockNumber: BigInt(receipt.blockNumber),
+      chainId: options.chainId,
+      destination: options.destination,
+      source: sourceProvenance(loaded.artifact),
+      sponsor: options.sponsor,
+      transactionHash: transaction.hash,
+    });
+    await atomicWrite(
+      options.manifestPath!,
+      `${JSON.stringify(manifest, null, 2)}\n`,
+    );
+    if (options.configPath && options.configKey) {
+      await updateConfig(options.configPath, options.configKey, address);
     }
-
-    const balance = await provider.getBalance(signer.address);
-    const balanceEth = ethers.formatEther(balance);
-    console.log(`   Balance: ${balanceEth} ETH`);
-
-    if (parseFloat(balanceEth) < 0.0001) {
-      console.warn(`   ⚠️  Low balance! Need at least 0.0001 ETH for gas`);
-      return null;
-    }
-
-    const factory = new ethers.ContractFactory(abi, bytecode, signer);
-    const contract = await factory.deploy(...constructorArgs);
-
-    const deployTx = contract.deploymentTransaction();
-    if (!deployTx) {
-      console.error(`   ❌ No deployment tx`);
-      return null;
-    }
-
-    console.log(`   📝 Tx: ${deployTx.hash}`);
-    console.log(`   ⏳ Waiting for confirmation...`);
-
-    const receipt = await deployTx.wait(2);
-    if (!receipt || !receipt.contractAddress) {
-      console.error(`   ❌ Deployment failed or no address`);
-      return null;
-    }
-
-    const address = receipt.contractAddress;
-    console.log(`   ✅ Deployed at: ${address}`);
-
-    const code = await provider.getCode(address);
-    if (code === "0x") {
-      console.error(
-        `   ❌ Code not found at address (deployment may have failed)`,
-      );
-      return null;
-    }
-
-    return address;
-  } catch (error: any) {
-    console.error(`   ❌ Error: ${error.message}`);
-    return null;
+    console.log("Deployment, runtime и immutable параметры проверены.");
+    console.log("Manifest опубликован атомарно; live defaults не изменялись.");
+  } finally {
+    await provider.destroy();
   }
-}
+};
 
-function saveAddressesToEnv(addresses: Map<string, string>) {
-  let envContent = readFileSync(".env", "utf-8");
-
-  for (const [key, address] of addresses) {
-    const pattern = new RegExp(`^${key}=.*$`, "m");
-    const line = `${key}=${address}`;
-
-    if (pattern.test(envContent)) {
-      envContent = envContent.replace(pattern, line);
+const main = async (): Promise<void> => {
+  try {
+    await runDeployment(parseCLIOptions(process.argv.slice(2)));
+  } catch (error) {
+    if (
+      error instanceof DeploymentInputError ||
+      error instanceof DeploymentError
+    ) {
+      console.error(error.message);
     } else {
-      envContent += `\n${line}`;
+      console.error("Критическая ошибка deployment; результат не опубликован");
     }
+    process.exitCode = 1;
   }
+};
 
-  writeFileSync(".env", envContent);
-  console.log("\n✅ Saved to .env");
+const scriptPath = process.argv[1];
+if (scriptPath && import.meta.url === pathToFileURL(resolve(scriptPath)).href) {
+  await main();
 }
-
-async function main() {
-  console.log("═══════════════════════════════════════════════════════");
-  console.log("  RescuerV2 + PermitSweeper Multi-Network Deployer");
-  console.log("═══════════════════════════════════════════════════════");
-
-  if (INFURA_KEY) {
-    console.log(`✅ Using Infura RPC (INFURA_API_KEY set)`);
-  } else if (ALCHEMY_KEY) {
-    console.log(`✅ Using Alchemy RPC (ALCHEMY_API_KEY set)`);
-  } else {
-    console.log(`⚠️  Using public RPC endpoints (Ankr fallback)`);
-  }
-  console.log();
-
-  const destination = process.env.DESTINATION_ADDRESS ?? "";
-  const sponsorAddress = process.env.SPONSOR_PRIVATE_KEY
-    ? new ethers.Wallet(process.env.SPONSOR_PRIVATE_KEY).address
-    : "";
-
-  const addresses = new Map<string, string>();
-
-  // ── RescuerV2 ──────────────────────────────────────────────────────────
-  console.log("─".repeat(60));
-  console.log("  RescuerV2 (EIP-7702 delegation-based rescue)");
-  console.log("─".repeat(60));
-
-  const rescuerCompiled = compileContract("RescuerV2", "RescuerV2.sol");
-  const rescuerResults: { network: string; address: string | null }[] = [];
-
-  for (const network of NETWORKS) {
-    const address = await deployOnNetwork(
-      network,
-      rescuerCompiled.bytecode,
-      rescuerCompiled.abi,
-      [destination, sponsorAddress],
-      ["Destination", "Sponsor"],
-    );
-    rescuerResults.push({ network: network.name, address });
-    if (address) addresses.set(network.envKey, address);
-  }
-
-  // ── PermitSweeper ─────────────────────────────────────────────────────
-  console.log("\n" + "─".repeat(60));
-  console.log("  PermitSweeper (EIP-2612 permit-based rescue)");
-  console.log("─".repeat(60));
-
-  const permitCompiled = compileContract("PermitSweeper", "PermitSweeper.sol");
-  const permitResults: { network: string; address: string | null }[] = [];
-
-  for (const network of PERMIT_NETWORKS) {
-    const address = await deployOnNetwork(
-      network,
-      permitCompiled.bytecode,
-      permitCompiled.abi,
-      [sponsorAddress],
-      ["Owner"],
-    );
-    permitResults.push({ network: network.name, address });
-    if (address) addresses.set(network.envKey, address);
-  }
-
-  // ── Summary ───────────────────────────────────────────────────────────
-  console.log("\n" + "═".repeat(60));
-  console.log("📊 DEPLOYMENT SUMMARY");
-  console.log("═".repeat(60));
-
-  console.log("\nRescuerV2:");
-  for (const result of rescuerResults) {
-    const status = result.address ? "✅" : "❌";
-    console.log(
-      `${status} ${result.network.padEnd(12)} ${result.address || "(failed)"}`,
-    );
-  }
-
-  console.log("\nPermitSweeper:");
-  for (const result of permitResults) {
-    const status = result.address ? "✅" : "❌";
-    console.log(
-      `${status} ${result.network.padEnd(12)} ${result.address || "(failed)"}`,
-    );
-  }
-
-  const rescuerFailed = rescuerResults.filter((r) => !r.address);
-  const rescuerSucceeded = rescuerResults.filter((r) => r.address);
-
-  if (addresses.size > 0) {
-    saveAddressesToEnv(addresses);
-  }
-
-  // RescuerV2 carries the critical onlySponsor access-control fix — its
-  // success/failure is reported and gated SEPARATELY from PermitSweeper
-  // (and from the generic "did anything at all deploy" check), so a lone
-  // successful PermitSweeper deployment can never mask a total RescuerV2
-  // failure behind a generic "Ready to use!" message.
-  if (rescuerFailed.length > 0) {
-    console.log("\n" + "⚠".repeat(20));
-    console.log(
-      "🚨 CRITICAL: RescuerV2 deployment FAILED on " +
-        rescuerFailed.length +
-        " network(s):",
-    );
-    for (const r of rescuerFailed) {
-      console.log(
-        `   ❌ ${r.network} — .env still points at the OLD contract there (if any),`,
-      );
-      console.log(
-        `      which does NOT have the onlySponsor access-control fix.`,
-      );
-    }
-    console.log(
-      "   DO NOT run the daemon against these networks with real keys",
-    );
-    console.log("   until RescuerV2 is redeployed successfully there.");
-    console.log("⚠".repeat(20));
-  }
-
-  if (rescuerSucceeded.length > 0) {
-    console.log(
-      `\n✅ RescuerV2 deployed successfully on ${rescuerSucceeded.length}/${rescuerResults.length} network(s) — onlySponsor fix is live there.`,
-    );
-  } else if (rescuerResults.length > 0) {
-    console.log(
-      "\n❌ RescuerV2 deployment did not succeed on ANY network. The critical",
-    );
-    console.log(
-      "   access-control fix is NOT live anywhere. Do not use with real keys.",
-    );
-  }
-
-  if (addresses.size === 0) {
-    console.log(
-      "\n❌ No successful deployments at all — nothing saved to .env.",
-    );
-  }
-
-  console.log("═".repeat(60) + "\n");
-}
-
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});

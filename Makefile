@@ -1,4 +1,4 @@
-.PHONY: audit build check contracts-build contracts-lint contracts-static contracts-test format format-check go-ci lint mod-verify node-ci race secret-scan test typecheck vet vuln workflow-lint
+.PHONY: artifacts-verify audit build check contracts-build contracts-lint contracts-static contracts-test deployment-check format format-check go-ci lint mod-verify node-ci race secret-scan test typecheck vet vuln workflow-lint
 
 format:
 	gofmt -w $$(git ls-files '*.go')
@@ -57,6 +57,12 @@ contracts-test:
 	npm run contracts:test
 	forge test
 
+artifacts-verify:
+	npm run artifacts:verify
+
+deployment-check: artifacts-verify
+	npm run deploy:test
+
 contracts-lint:
 	forge lint --deny warnings
 
@@ -72,6 +78,6 @@ secret-scan:
 
 go-ci: mod-verify build test vet race
 
-node-ci: typecheck lint contracts-build contracts-test contracts-lint
+node-ci: typecheck lint contracts-build contracts-test contracts-lint deployment-check
 
 check: format-check go-ci node-ci vuln audit secret-scan

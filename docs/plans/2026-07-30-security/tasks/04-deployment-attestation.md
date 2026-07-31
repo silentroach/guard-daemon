@@ -1,6 +1,11 @@
 # Task 04: Воспроизводимый деплой и аттестация runtime
 
-Статус: `PENDING`
+Статус: `DONE`
+
+Starting commit: `80eeff6d77abf12f0b47bb88a9dab0014c1c816f`.
+
+Реализация, проверки и независимое ревью завершены. Отчёт:
+[`reviews/04-deployment-attestation.md`](../reviews/04-deployment-attestation.md).
 
 Зависимости: Tasks 01, 02 и 03.
 

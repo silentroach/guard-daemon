@@ -57,9 +57,12 @@ source EOA, и новый служебный slot создал бы риск к�
 destination и заявленный amount. Для ETH поле token равно нулевому адресу.
 Событие не является доказательством экономической ценности токена.
 
-Permit-based production contract удалён. До завершения Task 04 старые
-deployment scripts не являются допустимым способом выпуска и не должны
-запускаться: они ещё не переведены на проверяемые artifacts и manifests.
+Permit-based production contract и его deployment path удалены. Единственный
+CLI `scripts/deployRescuerV2.ts` использует canonical artifact и без явного
+`--broadcast` только строит локальный план без RPC, ключа и отправки. Локальная
+проверка включает повторную pinned-компиляцию и побайтовое сравнение artifact.
+Она описана в `docs/deployment/local-verification.md`; production-активация
+остаётся отдельной задачей эксплуатации.
 
 ## Воспроизводимость и измерения
 

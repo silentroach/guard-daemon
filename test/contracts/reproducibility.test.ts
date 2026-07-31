@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import test from "node:test";
 
 import { compileContracts } from "../../scripts/compileContracts.js";
@@ -29,10 +36,23 @@ test("повторная компиляция создаёт идентичны�
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "guard-contracts-"));
   const firstDirectory = join(temporaryDirectory, "first");
   const secondDirectory = join(temporaryDirectory, "second");
+  const firstSource = join(temporaryDirectory, "first-source");
+  const secondSource = join(temporaryDirectory, "second-source");
 
   try {
-    compileContracts(firstDirectory);
-    compileContracts(secondDirectory);
+    await Promise.all([mkdir(firstSource), mkdir(secondSource)]);
+    await Promise.all([
+      copyFile(
+        resolve("contracts/RescuerV2.sol"),
+        join(firstSource, "RescuerV2.sol"),
+      ),
+      copyFile(
+        resolve("contracts/RescuerV2.sol"),
+        join(secondSource, "RescuerV2.sol"),
+      ),
+    ]);
+    compileContracts(firstDirectory, firstSource);
+    compileContracts(secondDirectory, secondSource);
 
     assert.deepStrictEqual(
       await artifactDigests(firstDirectory),

@@ -40,12 +40,17 @@ dist/
 npm-debug.log*
 
 # Результаты компиляции и деплоя
-artifacts/
+artifacts/*
+!artifacts/contracts/
+artifacts/contracts/*
+!artifacts/contracts/RescuerV2.json
 build/
 cache/
 out/
 broadcast/
 deployments/tmp/
+deployments/local/
+deployments/operator/
 deployment-manifest.local.*
 deployment-manifest.tmp.*
 

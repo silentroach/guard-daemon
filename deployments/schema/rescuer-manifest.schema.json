@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guard-daemon.invalid/schemas/rescuer-manifest-v1.json",
+  "title": "Проверяемый deployment manifest RescuerV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contractRole",
+    "chainId",
+    "address",
+    "deploymentTransactionHash",
+    "deploymentBlockNumber",
+    "deploymentBlockHash",
+    "compiler",
+    "source",
+    "artifact",
+    "runtime",
+    "constructorArguments",
+    "immutables"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "contractRole": { "const": "rescuer" },
+    "chainId": { "$ref": "#/$defs/positiveDecimal" },
+    "address": { "$ref": "#/$defs/address" },
+    "deploymentTransactionHash": { "$ref": "#/$defs/hash" },
+    "deploymentBlockNumber": { "$ref": "#/$defs/decimal" },
+    "deploymentBlockHash": { "$ref": "#/$defs/hash" },
+    "compiler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "settings"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "settings": { "type": "object" }
+      }
+    },
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "source-tree-sha256" },
+            "value": { "$ref": "#/$defs/sha256" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "git-commit" },
+            "value": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+          }
+        }
+      ]
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256"],
+      "properties": { "sha256": { "$ref": "#/$defs/sha256" } }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keccak256", "byteLength"],
+      "properties": {
+        "keccak256": { "$ref": "#/$defs/hash" },
+        "byteLength": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "constructorArguments": { "$ref": "#/$defs/roles" },
+    "immutables": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination", "self", "sponsor"],
+      "properties": {
+        "destination": { "$ref": "#/$defs/address" },
+        "self": { "$ref": "#/$defs/address" },
+        "sponsor": { "$ref": "#/$defs/address" }
+      }
+    }
+  },
+  "$defs": {
+    "address": {
+      "type": "string",
+      "pattern": "^0x[0-9a-fA-F]{40}$"
+    },
+    "decimal": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$"
+    },
+    "positiveDecimal": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{64}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "roles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination", "sponsor"],
+      "properties": {
+        "destination": { "$ref": "#/$defs/address" },
+        "sponsor": { "$ref": "#/$defs/address" }
+      }
+    }
+  }
+}

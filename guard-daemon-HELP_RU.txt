@@ -370,43 +370,28 @@ destination=... baked in, but .env DESTINATION_ADDRESS=..."
   ✓ Поделитесь опытом в сообществе (помогает другим в похожей ситуации)
 
 
-ДЕПЛОЙ RescuerV2 НА НОВУЮ СЕТЬ
+ЛОКАЛЬНАЯ ПРОВЕРКА DEPLOYMENT TOOLING
 ───────────────────────────────────────────────────────────────────
-Если нужен RescuerV2 на сети, где его ещё нет:
+Поддерживается только воспроизводимая локальная процедура:
 
-Способ 1: TypeScript скрипт (если есть Node.js)
-  npm install
-  npx tsx scripts/deployRescuerV2.ts
-  (Скрипт задеплоит и заполнит .env автоматически)
-  (Конструктор требует ДВА аргумента: destination и sponsor —
-   скрипт передаёт их сам, вручную вмешиваться не нужно)
+  docs/deployment/local-verification.md
 
-Способ 2: Remix IDE (вручную)
-  1. Откой remix.ethereum.org
-  2. Скопируй contracts/RescuerV2.sol
-  3. Компилируй Solidity 0.8.23
-  4. Деплой на нужной сети
-  5. Передай DESTINATION_ADDRESS как аргумент конструктора
-  6. Скопируй адрес в .env как RESCUER_<NETWORK>
+Она проверяет canonical artifact, default no-broadcast plan, локальный Anvil,
+runtime, immutable getters и manifest. Старые multi-network/Permit scripts,
+ручная компиляция Remix и прямое копирование адреса в .env удалены из
+поддерживаемого процесса.
 
-Способ 3: Hardhat/Foundry (если установлены)
-  forge create contracts/RescuerV2.sol:RescuerV2 \
-    --constructor-args "0x<DESTINATION>" \
-    --rpc-url <RPC_URL> \
-    --private-key <SPONSOR_KEY>
+Без явного --broadcast CLI не обращается к RPC, не читает приватный ключ,
+не подписывает и не отправляет транзакцию. Production/mainnet activation
+описывается только после отдельной эксплуатационной проверки Task 10.
 
 
-ТЕСТИРОВАНИЕ ДО ПРОДАКШЕНА
+ПРОВЕРКА ДО ПРОДАКШЕНА
 ───────────────────────────────────────────────────────────────────
-Сухой прогон (симуляция без отправки):
-
-  1. Отредактируй .env:
-     DRY_RUN=true
-
-  2. Запусти:
-     ./guard-daemon.exe
-
-  3. Логи покажут что БЫЛ БЫ выполнено без реальных транзакций.
+Документированный ранее DRY_RUN daemon ещё не доказан как no-sign/no-broadcast;
+его реализация принадлежит Task 05. Не запускайте daemon с production-ключами,
+полагаясь на это поле. Для Task 04 используйте только локальные команды из
+docs/deployment/local-verification.md.
 
 После проверки:
   DRY_RUN=false
