@@ -42,7 +42,7 @@ func TestServiceBuildsTransferQueryAndProducesSubscriptionCandidates(t *testing.
 	}()
 
 	query := receive(t, logSource.queries)
-	assertTransferQuery(t, query, codec.TransferTopic(), source)
+	assertTransferQuery(t, query, codec.TransferTopic(), source, []common.Address{token.Address})
 	registration := receive(t, testClock.tickers)
 	if registration.duration != periodicInterval {
 		t.Fatalf("ticker duration = %s, want %s", registration.duration, periodicInterval)
@@ -121,7 +121,7 @@ func TestPollingStartsAtCurrentBlockAndReadsNextRange(t *testing.T) {
 	if query.FromBlock == nil || query.FromBlock.Uint64() != 101 || query.ToBlock == nil || query.ToBlock.Uint64() != 102 {
 		t.Fatalf("poll range = %v..%v, want 101..102", query.FromBlock, query.ToBlock)
 	}
-	assertTransferQuery(t, query, codec.TransferTopic(), source)
+	assertTransferQuery(t, query, codec.TransferTopic(), source, []common.Address{token.Address})
 
 	headerCandidate := receive(t, queue.candidates)
 	if headerCandidate.Kind != domain.CandidateNative || headerCandidate.BlockNumber != 102 {
@@ -195,6 +195,47 @@ func TestUnknownMetadataIsSanitizedAndNotCached(t *testing.T) {
 	fallback := fallbackService.resolveToken(context.Background(), unknown)
 	if fallback.Symbol != addressFallback(unknown) || fallback.Decimals != 18 {
 		t.Fatalf("metadata fallback = %#v", fallback)
+	}
+}
+
+func TestServiceRejectsTokenOutsideConfiguredPolicy(t *testing.T) {
+	codec := newTestCodec(t)
+	reader := &fakeReader{}
+	queue := newFakeQueue()
+	source := testAddress(0x63)
+	allowed := domain.Token{Address: testAddress(0x64), Symbol: "LOCAL", Decimals: 18}
+	service := newTestService(
+		t,
+		reader,
+		newFakeLogSource(nil),
+		newFakeHeadSource(nil),
+		newFakeClock(),
+		queue,
+		codec,
+		source,
+		domain.Network{Name: "test-network", ChainID: 31337, Tokens: []domain.Token{allowed}},
+		1,
+	)
+
+	if err := service.putLogCandidate(context.Background(), matchingLog(codec, source, testAddress(0x65), 1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case candidate := <-queue.candidates:
+		t.Fatalf("запрещённый токен создал candidate: %#v", candidate)
+	default:
+	}
+	if reader.callCount.Load() != 0 {
+		t.Fatalf("metadata calls для запрещённого токена = %d, нужно 0", reader.callCount.Load())
+	}
+}
+
+func TestAllTokenModeLeavesAddressFilterOpenOnlyAfterOptIn(t *testing.T) {
+	network := domain.Network{Name: "test-network", ChainID: 31337, AllowUnknownTokens: true}
+	service := newTestService(t, &fakeReader{}, newFakeLogSource(nil), newFakeHeadSource(nil), newFakeClock(), newFakeQueue(), newTestCodec(t), testAddress(0x66), network, 1)
+	query := service.transferQuery()
+	if len(query.Addresses) != 0 {
+		t.Fatalf("all-token query содержит address filter: %#v", query.Addresses)
 	}
 }
 
@@ -497,11 +538,11 @@ func runTestService(service *Service, ctx context.Context) (<-chan struct{}, *er
 	return done, &runErr
 }
 
-func assertTransferQuery(t *testing.T, query ethereum.FilterQuery, transferTopic common.Hash, source common.Address) {
+func assertTransferQuery(t *testing.T, query ethereum.FilterQuery, transferTopic common.Hash, source common.Address, addresses []common.Address) {
 	t.Helper()
 	wantTopics := [][]common.Hash{{transferTopic}, nil, {common.BytesToHash(source.Bytes())}}
-	if len(query.Addresses) != 0 || !reflect.DeepEqual(query.Topics, wantTopics) {
-		t.Fatalf("transfer query = %#v, want no addresses and topics %#v", query, wantTopics)
+	if !reflect.DeepEqual(query.Addresses, addresses) || !reflect.DeepEqual(query.Topics, wantTopics) {
+		t.Fatalf("transfer query = %#v, нужны addresses %#v и topics %#v", query, addresses, wantTopics)
 	}
 }
 

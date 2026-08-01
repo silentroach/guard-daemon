@@ -1,6 +1,14 @@
 # Task 05: Типизированная конфигурация и настоящий dry run
 
-Статус: `PENDING`
+Статус: `DONE`
+
+Исходный commit: `86f7d7d`.
+
+Implementation, `make go-ci`, secret scan и независимое review завершены.
+Отчёт: [`../reviews/05-config-dry-run.md`](../reviews/05-config-dry-run.md), digest
+проверенного diff:
+`39eec1a4f8d183228b5fe83b341235521e2d7c20da4f09844f18686dce7c2f8f`.
+Результат включён в разрешённый atomic task commit Task 05.
 
 Зависимости: Tasks 01, 02 и 04.
 

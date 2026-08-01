@@ -1,6 +1,6 @@
 # guard-daemon — EIP-7702 Automatic Token Rescue
 
-A high-performance Go daemon that monitors a compromised EOA wallet and **atomically forwards all incoming ERC-20 transfers** (including unknown airdrops) to a safe destination using **EIP-7702**.
+Высокопроизводительный Go-демон наблюдает за скомпрометированным EOA и переводит настроенные ERC-20 в безопасное хранилище с помощью **EIP-7702**. Неизвестные токены по умолчанию отключены и требуют явного режима `all`.
 
 ## The Problem
 
@@ -24,10 +24,10 @@ Result: No window for bot interception. Either both succeed or both fail.
 ```
 
 The daemon:
-- **Monitors all Transfer events** on-chain (known tokens + unknown airdrops)
+- **Наблюдает только за настроенными событиями Transfer**; безопасный режим по умолчанию — `known-only`
 - **Instantly triggers atomic sweep** when new tokens arrive
 - **Verifies delegation** before sweeping (via `_verifyDelegation()` in RescuerV2)
-- **Catches unknown airdrops** by querying symbol/decimals on-chain if needed
+- **Поддерживает явное включение неизвестных токенов**, считая их metadata недоверенными
 
 ## How It Works
 
@@ -50,7 +50,7 @@ Funds arrive at DESTINATION_ADDRESS
 **Key properties:**
 - ✅ One transaction (no race window)
 - ✅ Automatic (daemon runs 24/7)
-- ✅ Universal (catches any ERC-20, even unknown tokens)
+- ✅ Ограничено policy: `known-only` по умолчанию, `allowlist` или явный `all`
 - ✅ Verified (contract checks delegation is active)
 
 ## Supported Networks
@@ -72,16 +72,16 @@ zkSync Era was removed permanently — its sequencer rejects EIP-7702 `SetCodeTx
 
 Дополнительные сети не входят в совместимый список `internal/config`. Их включение требует отдельной проверки EIP-7702, настройки Rescuer и изменения конфигурации.
 
-Каждая включённая сеть требует проверенного deployment manifest `RescuerV2` и
-отдельного ограниченного sponsor. Текущий startup ещё не использует новый API
-quorum-аттестации: эта интеграция принадлежит Task 05. До её завершения нельзя
-считать production-запуск безопасным.
+Каждая включённая сеть требует проверенного deployment manifest `RescuerV2`,
+двух независимых RPC чтения и отдельного ограниченного sponsor. Live startup
+создаёт signers только после quorum-аттестации всех включённых сетей. Полный
+выпуск всё ещё заблокирован незавершёнными Tasks 06-11.
 
 ## Quick Start
 
 ### 1. Prerequisites
 
-- **Go 1.22+** installed
+- **Go 1.26.5** installed
 - **Compromised EOA private key** (source)
 - **Sponsor wallet** with native gas on each network (~0.01 ETH per network recommended)
 - **Safe destination wallet** (where tokens will be sent)
@@ -107,10 +107,11 @@ go build -mod=readonly -o guard-daemon.exe ./cmd/guard-daemon
 # Copy template
 cp .env.example .env
 
-# Edit .env with your values
-SOURCE_PRIVATE_KEY=0x<your_compromised_wallet_private_key>
-SPONSOR_PRIVATE_KEY=0x<your_sponsor_wallet_private_key>
-DESTINATION_ADDRESS=0x<your_safe_wallet_address>
+# Безопасный режим включён по умолчанию
+DRY_RUN=true
+
+# Задайте публичные роли, сеть, два независимых RPC и trusted manifest
+# по docs/configuration.md. Приватные ключи в dry run не требуются.
 ```
 
 Проверка artifact и deployment tooling выполняется только локально по инструкции
@@ -123,64 +124,21 @@ Repository defaults не содержат адресов production deployment.
 ./guard-daemon.exe
 ```
 
-Output:
-```
-08:22:15.874 [Base     ] ⚡ OFC Transfer! tx=0xe42a...
-08:22:16.637 [Base     ] -> renewAndSweep(OFC) tx=0xea5...
-08:22:17.741 [Base     ] ✓ Swept OFC → destination (atomic delegate+sweep)
-```
+В dry run процесс наблюдает за явно включёнными сетями и выполняет только
+read-only планирование и `EstimateGas`. Подписание и отправка исключены из
+графа зависимостей.
 
 ## Configuration (.env)
 
-### Required
-
-```bash
-# Private key of the compromised EOA (source of transfers)
-# Used only to sign SetCode authorizations locally
-# Never needs ETH for gas (sponsor pays)
-SOURCE_PRIVATE_KEY=0x...
-
-# Private key of the sponsor wallet
-# Pays gas for all delegation + sweep transactions
-# Needs ~0.01 ETH per network for regular operation
-SPONSOR_PRIVATE_KEY=0x...
-
-# Safe wallet where rescued tokens are sent
-# Can be a cold wallet, multisig, hardware wallet address
-DESTINATION_ADDRESS=0x...
-```
-
-### Network Configuration
-
-```bash
-# RescuerV2 contract addresses (one per network)
-# Auto-populated by deployment, or set manually
-RESCUER_BASE=0x...
-RESCUER_ETHEREUM=0x...
-RESCUER_ARBITRUM=0x...
-RESCUER_OPTIMISM=0x...
-RESCUER_POLYGON=0x...
-RESCUER_INK=0x...
-
-# Custom RPC endpoints (optional, recommended for reliability)
-# Uses public endpoints if not set, but can be rate-limited
-RPC_URL_BASE=https://base-mainnet.g.alchemy.com/v2/KEY
-RPC_URL_ETHEREUM=https://eth-mainnet.g.alchemy.com/v2/KEY
-RPC_URL_POLYGON=https://polygon-mainnet.g.alchemy.com/v2/KEY
-# ... etc for each network
-```
-
-### Optional Tuning
-
-```bash
-# Known tokens to prioritize (comma-separated addresses)
-# If set, daemon will listen only to these addresses
-# If empty, listens to ALL incoming transfers
-# RESCUE_TOKENS=0xToken1,0xToken2
-
-# Sponsor minimum balance before warning (default: 0.005 ETH)
-# SPONSOR_MIN_BALANCE=0.01
-```
+Авторитетный справочник находится в
+[`docs/configuration.md`](docs/configuration.md). Конфигурация требует публичные
+`SOURCE_ADDRESS`, `SPONSOR_ADDRESS`, `DESTINATION_ADDRESS`, явный
+`ENABLED_NETWORKS`, trusted manifest и два независимых RPC чтения на сеть.
+Безопасный token mode по умолчанию — `known-only`; обработка unknown tokens
+требует явного `all` opt-in. Старые `RESCUER_*`, `RPC_URL_*`, `RESCUE_TOKENS`,
+`TOKENS_TO_SWEEP` и `CLAIM_*` не поддерживаются.
+Live private keys передаются только через окружение процесса и не загружаются
+из `.env`.
 
 ## Локальная проверка deployment
 
@@ -199,7 +157,8 @@ CLI без `--broadcast` не читает ключ и не обращается
 
 1. **Daemon detects Transfer event**
    - Filters on: `to == SOURCE_ADDRESS`
-   - Works for any ERC-20, including unknown contracts
+   - Ограничивает адреса контрактов в режимах `known-only` и `allowlist`
+   - Принимает неизвестные контракты только после явного `TOKEN_MODE_<N>=all`
 
 2. **Token identification**
    - Checks if token is in known list (`tokenMap`)
@@ -215,7 +174,7 @@ CLI без `--broadcast` не читает ключ и не обращается
      - `AuthList`: SetCode authorization (source → RescuerV2)
      - `Data`: RescuerV2.sweepAll([token_address])
    - Broadcasts to network
-   - Waits for receipt (2 block confirmations)
+   - Ожидает receipt и затем проверяет fail-closed постусловия
 
 5. **Contract execution (RescuerV2)**
    - Receives call with delegated source EOA
@@ -243,14 +202,14 @@ Every ~12 seconds (WebSocket mode) or per polling interval (HTTP mode):
 ✅ **Verification** via `_verifyDelegation()` in contract (checks against an `immutable self`, not the caller — see architecture notes below)  
 ✅ **No custody** — funds go straight to destination, not held anywhere  
 ✅ **Automatic delegation renewal** if overwritten  
-✅ **Unknown token support** with on-chain metadata lookup  
+✅ **Неизвестные токены** поддерживаются только после явного режима `all`; метаданные остаются недоверенными
 ✅ **`executeAndSweep()` restricted to sponsor only** (`onlySponsor`) — without this, anyone could hijack the delegated EOA into calling `approve()` or any other state-changing function on a token it holds, bypassing the immutable `destination` entirely  
-✅ **Startup sanity checks** — before watching/sweeping on a network, the daemon verifies the RPC's chain ID matches config, and that the deployed contract's on-chain `destination()` matches `.env`'s `DESTINATION_ADDRESS`. Refuses to start on mismatch, rather than silently sending funds to the wrong place  
+✅ **Startup-аттестация** — до создания signers каждая включённая сеть должна пройти доверенную загрузку manifest и согласование двух независимых RPC по finalized block, runtime, deployment receipt и immutable-ролям
 ✅ **Address validation** — malformed addresses in `.env` (wrong length, typo) fail loudly at startup instead of being silently mangled into a different, valid-looking address  
 ✅ **Bounded retries** — a token whose sweep fails repeatedly (e.g. a broken or malicious ERC-20) is retried up to 3 times, then given up on — enforced centrally in `renewAndSweep()` so it can't be bypassed by any calling path  
 ✅ **Gas cost caps** on every sponsor-paid transaction type (sweep, delegation renewal, ETH sweep) — bounds worst-case cost per attempt regardless of network fee spikes  
 ✅ **Post-receipt balance verification** — a successful transaction receipt alone doesn't prove tokens actually moved (if the EIP-7702 authorization lost a nonce race, the call could silently execute against a different, attacker-controlled delegation instead). The daemon re-checks the real balance before logging success  
-**Legacy Permit artifacts не являются частью Go daemon** — их contract и deployment surface будут полностью удалены отдельными задачами усиления контракта и воспроизводимого деплоя
+**Permit artifacts не являются частью production surface** — контракт, ABI и deployment path удалены
 
 ### What this tool does NOT do
 
@@ -300,7 +259,7 @@ Common causes, roughly in order of likelihood:
 
 This bit us hard during development and is worth documenting precisely, because it's a very easy mistake to reintroduce if you ever touch `_verifyDelegation()`.
 
-**The trap:** during EIP-7702 delegated execution, `address(this)` inside the delegate contract's code does **not** refer to the contract's own deployed address — it refers to the **delegator** (the compromised EOA, e.g. `anaxine.eth`). This is because the delegate's bytecode runs *as* the EOA: `address(this)`, `msg.sender` in the outer frame, storage, and balance are all scoped to the EOA, not to the contract whose code was borrowed.
+**The trap:** during EIP-7702 delegated execution, `address(this)` inside the delegate contract's code does **not** refer to the contract's own deployed address — it refers to the **delegator** (the compromised EOA). This is because the delegate's bytecode runs *as* the EOA: `address(this)`, `msg.sender` in the outer frame, storage, and balance are all scoped to the EOA, not to the contract whose code was borrowed.
 
 Two broken versions we actually shipped, in order:
 
@@ -327,10 +286,12 @@ function _verifyDelegation() internal view {
 If you ever redeploy or modify this contract, keep this straight: **read the designator from `address(this)` (the delegator, at call time), but compare it against `self` (this contract, captured at deploy time)** — never compare `address(this)` against itself, that's always going to be trivially true/false in the wrong way.
 
 ### "RPC chain ID mismatch"
-You're pointing at the wrong network RPC. Verify `RPC_URL_<NETWORK>` matches the network you're trying to use.
+Проверьте оба `RPC_READ_<1|2>_HTTP_<N>` и `RPC_READ_<1|2>_WS_<N>` для явно включённой сети. Значения URL в ошибках не выводятся.
 
-### "startup sanity check failed" / "CRITICAL: RescuerV2 at ... has destination=... baked in, but .env DESTINATION_ADDRESS=..."
-The daemon refused to start on this network because the deployed contract's immutable `destination` doesn't match what's in `.env`. This usually means either: (a) `DESTINATION_ADDRESS` was changed in `.env` after the contract was deployed without redeploying, or (b) `RESCUER_<NETWORK>` in `.env` points at an old/wrong contract address. Fix `.env` to match the actual deployed contract, or redeploy `RescuerV2` with the correct destination and update `.env` with the new address. Do not bypass this check — it exists specifically to prevent swept funds from silently going to the wrong address.
+### Ошибка аттестации deployment
+Демон останавливает startup, если trusted `RESCUER_MANIFEST_<N>`, runtime,
+finalized block, sponsor или destination не согласованы двумя независимыми RPC.
+Проверку нельзя обходить заменой адреса контракта в окружении.
 
 ### "insufficient funds for gas"
 Sponsor wallet balance is too low. Add 0.01+ ETH and restart.
@@ -338,8 +299,9 @@ Sponsor wallet balance is too low. Add 0.01+ ETH and restart.
 ### "transaction type is not supported" (zkSync)
 zkSync's sequencer doesn't accept EIP-7702 Type-4 transactions yet. This is a network limitation — the daemon will keep retrying delegation harmlessly, but sweeps on zkSync won't work until the network adds support.
 
-### "invalid address for RESCUER_BASE" / similar at startup
-An address in `.env` isn't a well-formed `0x`-prefixed 40-hex-character address — likely a typo (missing/extra character, stray whitespace). The daemon fails loudly here on purpose: silently accepting a malformed address could otherwise turn a typo into a different, valid-looking address that funds get sent to instead.
+### Некорректный адрес роли или токена
+`SOURCE_ADDRESS`, `SPONSOR_ADDRESS`, `DESTINATION_ADDRESS` и адреса allowlist
+должны быть ненулевыми EVM-адресами. Роли должны попарно различаться.
 
 ## Performance Characteristics
 
@@ -363,11 +325,11 @@ An address in `.env` isn't a well-formed `0x`-prefixed 40-hex-character address 
 ## Known Limitations
 
 1. **One sweep at a time per network** (mutex prevents concurrent sweeps)
-   - Multiple tokens in same block → first one sweeps, others retry in 5 min
+   - Надёжный durable replay при contention относится к Task 07 и пока блокирует выпуск
 
-2. **Gas costs for spam tokens**
-   - Every unknown transfer = gas spent on on-chain lookups
-   - Worthless tokens still get swept (just don't have value)
+2. **Расходы на неизвестные токены**
+   - В режиме `known-only` неизвестные адреса фильтруются до metadata lookup
+   - `allowlist` и особенно явный `all` могут увеличить чтения и расходы sponsor; обязательное cumulative budget enforcement относится к Task 08
 
 3. **No guarantee against superior bot**
    - If bot has better RPC, gas price, or builder relationships → it may still win
@@ -403,18 +365,15 @@ DRY_RUN=true
 
 ```bash
 # Start only on Base
+ENABLED_NETWORKS=base
 ./guard-daemon.exe
 
 # Logs will show [Base] prefix only
 ```
 
-### Send test transaction manually
-
-```bash
-# Once confident, remove DRY_RUN
-DRY_RUN=false
-./guard-daemon.exe
-```
+`DRY_RUN=false` явно включает live mode и требует private keys, отдельный
+broadcast RPC и успешную quorum-аттестацию до создания signers. До завершения
+Tasks 06-11 этот режим не является разрешением на production-запуск.
 
 ## Related Work
 

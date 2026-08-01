@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -12,11 +14,13 @@ import (
 	"guard-daemon/internal/domain"
 	"guard-daemon/internal/observability"
 	"guard-daemon/internal/rescue"
+	"guard-daemon/internal/rescue/dryrun"
 	"guard-daemon/internal/rpc"
 	"guard-daemon/internal/store"
 	"guard-daemon/internal/watcher"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 const (
@@ -35,6 +39,7 @@ const (
 	errorIncidentPutFailed   domain.ErrorCode = "daemon_incident_put_failed"
 	errorCandidateNackFailed domain.ErrorCode = "daemon_candidate_nack_failed"
 	errorCandidateAckFailed  domain.ErrorCode = "daemon_candidate_ack_failed"
+	errorTokenForbidden      domain.ErrorCode = "daemon_token_forbidden"
 )
 
 const (
@@ -47,7 +52,16 @@ type generationClient interface {
 	Reader() rpc.Reader
 	LogSubscriber() rpc.LogSubscriber
 	HeadSubscriber() rpc.HeadSubscriber
-	Broadcaster() rpc.Broadcaster
+	Close()
+}
+
+type submissionClient interface {
+	rpc.Broadcaster
+	Close()
+}
+
+type attestationClient interface {
+	contracts.AttestationReader
 	Close()
 }
 
@@ -60,12 +74,26 @@ type candidateHandler interface {
 	Handle(context.Context, domain.RescueCandidate) error
 }
 
+type candidateSession interface {
+	candidateHandler
+	Close()
+}
+
+type preparedNetwork struct {
+	configured config.Network
+	manifest   contracts.DeploymentManifest
+}
+
 type daemonDependencies struct {
-	serviceClock clock.Clock
-	observer     observability.Observer
-	dial         func(context.Context, string, uint64) (generationClient, error)
-	newSession   func(context.Context, *rescue.Coordinator, generationClient) (candidateHandler, error)
-	newWatcher   func(watcher.Dependencies) (generationRunner, error)
+	serviceClock   clock.Clock
+	observer       observability.Observer
+	dial           func(context.Context, string, uint64) (generationClient, error)
+	dialSubmission func(context.Context, string) (submissionClient, error)
+	loadManifest   func(config.Runtime, config.Network) (contracts.DeploymentManifest, error)
+	attestNetwork  func(context.Context, config.Network, contracts.DeploymentManifest, time.Duration) error
+	newSigners     func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error)
+	newSession     func(context.Context, *networkProcess, generationClient) (candidateSession, error)
+	newWatcher     func(watcher.Dependencies) (generationRunner, error)
 }
 
 type daemon struct {
@@ -74,40 +102,211 @@ type daemon struct {
 }
 
 type networkProcess struct {
-	network     domain.Network
-	source      common.Address
-	coordinator *rescue.Coordinator
-	handoff     *legacyMemoryHandoff
-	codec       *contracts.ERC20Codec
+	configured       config.Network
+	network          domain.Network
+	mode             config.Mode
+	source           common.Address
+	sponsor          common.Address
+	destination      common.Address
+	readTimeout      time.Duration
+	coordinator      *rescue.Coordinator
+	dryAuthorizer    rescue.AuthorizationSigner
+	dryTransactioner rescue.TransactionSigner
+	dryBroadcaster   rpc.Broadcaster
+	dryAttempts      *dryrun.Attempts
+	handoff          *legacyMemoryHandoff
+	codec            *contracts.ERC20Codec
+	allowedTokens    map[common.Address]struct{}
 }
 
-func newProductionDependencies(observer observability.Observer) daemonDependencies {
+type liveCandidateSession struct {
+	*rescue.Session
+	submission submissionClient
+}
+
+type tokenPolicySession struct {
+	candidateSession
+	allowed      map[common.Address]struct{}
+	allowUnknown bool
+}
+
+func (session *tokenPolicySession) Handle(ctx context.Context, candidate domain.RescueCandidate) error {
+	if candidate.Kind == domain.CandidateToken {
+		if candidate.Token.Address == (common.Address{}) {
+			return processError("daemon.token_policy", domain.ErrorConfiguration, errorTokenForbidden, false, nil)
+		}
+		if _, allowed := session.allowed[candidate.Token.Address]; !session.allowUnknown && !allowed {
+			return processError("daemon.token_policy", domain.ErrorConfiguration, errorTokenForbidden, false, nil)
+		}
+	}
+	return session.candidateSession.Handle(ctx, candidate)
+}
+
+func (session *liveCandidateSession) Close() {
+	session.submission.Close()
+}
+
+func newProductionDependencies(observer observability.Observer, mode config.Mode) daemonDependencies {
 	dialer := rpc.EthClientDialer{}
-	return daemonDependencies{
+	dependencies := daemonDependencies{
 		serviceClock: clock.Real{},
 		observer:     observer,
 		dial: func(ctx context.Context, endpoint string, generation uint64) (generationClient, error) {
 			return dialer.DialContext(ctx, endpoint, generation)
 		},
+		loadManifest: loadConfiguredManifest,
 	}
+	if mode.IsLive() {
+		dependencies.dialSubmission = dialSubmissionClient
+		dependencies.attestNetwork = attestConfiguredNetwork
+		dependencies.newSigners = newPrivateKeySigners
+	}
+	return dependencies
 }
 
-func newDaemon(runtimeConfig config.Runtime, dependencies daemonDependencies) (*daemon, error) {
-	dependencies, err := dependencies.withDefaults()
+func loadConfiguredManifest(runtimeConfig config.Runtime, network config.Network) (contracts.DeploymentManifest, error) {
+	manifestFile, err := os.Open(network.ManifestPath)
+	if err != nil {
+		return contracts.DeploymentManifest{}, errors.New("не удалось открыть deployment manifest")
+	}
+	defer manifestFile.Close()
+
+	artifactFile, err := os.Open(runtimeConfig.Artifact.Path)
+	if err != nil {
+		return contracts.DeploymentManifest{}, errors.New("не удалось открыть canonical artifact")
+	}
+	defer artifactFile.Close()
+
+	return contracts.LoadTrustedManifest(manifestFile, artifactFile, contracts.ManifestExpectations{
+		ChainID:        strconv.FormatInt(int64(network.ChainID), 10),
+		ContractRole:   "rescuer",
+		Destination:    runtimeConfig.Destination,
+		Sponsor:        runtimeConfig.SponsorAddress,
+		ArtifactSHA256: runtimeConfig.Artifact.SHA256,
+		SourceProvenance: contracts.SourceProvenance{
+			Kind:  runtimeConfig.Artifact.SourceKind,
+			Value: runtimeConfig.Artifact.SourceValue,
+		},
+		CompilerVersion: runtimeConfig.Artifact.CompilerVersion,
+	})
+}
+
+func attestConfiguredNetwork(ctx context.Context, network config.Network, manifest contracts.DeploymentManifest, readTimeout time.Duration) error {
+	return attestConfiguredNetworkWith(
+		ctx,
+		network,
+		manifest,
+		readTimeout,
+		func(dialContext context.Context, endpoint string) (attestationClient, error) {
+			return ethclient.DialContext(dialContext, endpoint)
+		},
+		contracts.AttestDeployment,
+	)
+}
+
+func attestConfiguredNetworkWith(
+	ctx context.Context,
+	network config.Network,
+	manifest contracts.DeploymentManifest,
+	readTimeout time.Duration,
+	dial func(context.Context, string) (attestationClient, error),
+	attest func(context.Context, contracts.DeploymentManifest, []contracts.ReadProvider, time.Duration) error,
+) error {
+	if dial == nil || attest == nil {
+		return errors.New("не заданы зависимости аттестации")
+	}
+	providers := make([]contracts.ReadProvider, 0, len(network.ReadProviders))
+	clients := make([]attestationClient, 0, len(network.ReadProviders))
+	defer func() {
+		for _, client := range clients {
+			client.Close()
+		}
+	}()
+
+	for _, configuredProvider := range network.ReadProviders {
+		dialContext, cancel := context.WithTimeout(ctx, readTimeout)
+		client, err := dial(dialContext, configuredProvider.HTTPURL)
+		cancel()
+		if err != nil || client == nil {
+			return domain.NewError("daemon.attestation_dial", domain.ErrorRPCTransient, errorDialFailed, true, false, err)
+		}
+		clients = append(clients, client)
+		providers = append(providers, contracts.ReadProvider{
+			ID:                  configuredProvider.ID,
+			EndpointFingerprint: configuredProvider.EndpointFingerprint,
+			TrustDomain:         configuredProvider.TrustDomain,
+			Reader:              client,
+		})
+	}
+	return attest(ctx, manifest, providers, readTimeout)
+}
+
+func newPrivateKeySigners(secrets config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
+	sourceKey, sponsorKey, ok := secrets.PrivateKeys()
+	if !ok {
+		return nil, nil, errors.New("live private keys не заданы")
+	}
+	authorizer, err := rescue.NewPrivateKeyAuthorizationSigner(sourceKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	transactioner, err := rescue.NewPrivateKeyTransactionSigner(sponsorKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return authorizer, transactioner, nil
+}
+
+func dialSubmissionClient(ctx context.Context, endpoint string) (submissionClient, error) {
+	client, err := ethclient.DialContext(ctx, endpoint)
+	if err != nil {
+		return nil, domain.NewError("daemon.broadcast_dial", domain.ErrorRPCTransient, errorDialFailed, true, false, err)
+	}
+	return client, nil
+}
+
+func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies daemonDependencies) (*daemon, error) {
+	if ctx == nil {
+		return nil, processError("daemon.context", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
+	}
+	if (!runtimeConfig.Mode.IsDryRun() && !runtimeConfig.Mode.IsLive()) || runtimeConfig.SourceAddress == (common.Address{}) || runtimeConfig.SponsorAddress == (common.Address{}) || runtimeConfig.Destination == (common.Address{}) || runtimeConfig.SourceAddress == runtimeConfig.SponsorAddress || runtimeConfig.SourceAddress == runtimeConfig.Destination || runtimeConfig.SponsorAddress == runtimeConfig.Destination || runtimeConfig.ReadTimeout <= 0 {
+		return nil, processError("daemon.config", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
+	}
+	dependencies, err := dependencies.withDefaults(runtimeConfig.Mode)
 	if err != nil {
 		return nil, processError("daemon.dependencies", domain.ErrorConfiguration, errorStartupInvalid, false, err)
 	}
 
-	authorizer, err := rescue.NewPrivateKeyAuthorizationSigner(runtimeConfig.SourcePrivateKey)
-	if err != nil {
-		return nil, processError("daemon.source_signer", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+	prepared := make([]preparedNetwork, 0, len(runtimeConfig.Networks))
+	for _, configuredNetwork := range runtimeConfig.Networks {
+		manifest, err := dependencies.loadManifest(runtimeConfig, configuredNetwork)
+		if err != nil || manifest.Address == (common.Address{}) {
+			return nil, processError("daemon.manifest", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+		}
+		prepared = append(prepared, preparedNetwork{configured: configuredNetwork, manifest: manifest})
 	}
-	transactioner, err := rescue.NewPrivateKeyTransactionSigner(runtimeConfig.SponsorPrivateKey)
-	if err != nil {
-		return nil, processError("daemon.sponsor_signer", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+	if len(prepared) == 0 {
+		return nil, processError("daemon.networks", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
 	}
-	if authorizer.Address() != runtimeConfig.SourceAddress || transactioner.Address() != runtimeConfig.SponsorAddress {
-		return nil, processError("daemon.signer_address", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
+
+	if runtimeConfig.Mode.IsLive() {
+		for _, network := range prepared {
+			if err := dependencies.attestNetwork(ctx, network.configured, network.manifest, runtimeConfig.ReadTimeout); err != nil {
+				return nil, processError("daemon.attestation", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+			}
+		}
+	}
+
+	var authorizer rescue.AuthorizationSigner
+	var transactioner rescue.TransactionSigner
+	if runtimeConfig.Mode.IsLive() {
+		authorizer, transactioner, err = dependencies.newSigners(runtimeConfig.LiveSecrets)
+		if err != nil || authorizer == nil || transactioner == nil {
+			return nil, processError("daemon.signers", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+		}
+		if authorizer.Address() != runtimeConfig.SourceAddress || transactioner.Address() != runtimeConfig.SponsorAddress {
+			return nil, processError("daemon.signer_address", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
+		}
 	}
 
 	codec, err := contracts.NewERC20Codec()
@@ -115,39 +314,52 @@ func newDaemon(runtimeConfig config.Runtime, dependencies daemonDependencies) (*
 		return nil, processError("daemon.erc20_codec", domain.ErrorInternal, errorStartupInvalid, false, err)
 	}
 
-	process := &daemon{dependencies: dependencies, networks: make([]*networkProcess, 0, len(runtimeConfig.Networks))}
-	for _, configuredNetwork := range runtimeConfig.Networks {
-		network := configuredNetwork
-		network.Tokens = append([]domain.Token(nil), configuredNetwork.Tokens...)
-		coordinator, err := rescue.NewCoordinator(rescue.Config{
-			Network:     network,
-			Source:      runtimeConfig.SourceAddress,
-			Sponsor:     runtimeConfig.SponsorAddress,
-			Destination: runtimeConfig.Destination,
-		}, authorizer, transactioner, dependencies.serviceClock, dependencies.observer)
-		if err != nil {
-			return nil, processError("daemon.coordinator", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+	process := &daemon{dependencies: dependencies, networks: make([]*networkProcess, 0, len(prepared))}
+	for _, preparedNetwork := range prepared {
+		network := preparedNetwork.configured.Domain(preparedNetwork.manifest.Address)
+		var coordinator *rescue.Coordinator
+		if runtimeConfig.Mode.IsLive() {
+			coordinator, err = rescue.NewCoordinator(rescue.Config{
+				Network:     network,
+				Source:      runtimeConfig.SourceAddress,
+				Sponsor:     runtimeConfig.SponsorAddress,
+				Destination: runtimeConfig.Destination,
+			}, authorizer, transactioner, dependencies.serviceClock, dependencies.observer)
+			if err != nil {
+				return nil, processError("daemon.coordinator", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+			}
 		}
 
-		process.networks = append(process.networks, &networkProcess{
-			network:     network,
-			source:      runtimeConfig.SourceAddress,
-			coordinator: coordinator,
-			handoff:     newLegacyMemoryHandoff(network.ChainID, dependencies.serviceClock),
-			codec:       codec,
-		})
+		networkState := &networkProcess{
+			configured:    preparedNetwork.configured,
+			network:       network,
+			mode:          runtimeConfig.Mode,
+			source:        runtimeConfig.SourceAddress,
+			sponsor:       runtimeConfig.SponsorAddress,
+			destination:   runtimeConfig.Destination,
+			readTimeout:   runtimeConfig.ReadTimeout,
+			coordinator:   coordinator,
+			handoff:       newLegacyMemoryHandoff(network.ChainID, dependencies.serviceClock),
+			codec:         codec,
+			allowedTokens: make(map[common.Address]struct{}, len(network.Tokens)),
+		}
+		for _, token := range network.Tokens {
+			networkState.allowedTokens[token.Address] = struct{}{}
+		}
+		if runtimeConfig.Mode.IsDryRun() {
+			networkState.dryAuthorizer, networkState.dryTransactioner, networkState.dryBroadcaster, networkState.dryAttempts = dryrun.NewGuards(runtimeConfig.SourceAddress, runtimeConfig.SponsorAddress)
+		}
+		process.networks = append(process.networks, networkState)
 	}
 	return process, nil
 }
 
-func (dependencies daemonDependencies) withDefaults() (daemonDependencies, error) {
-	if dependencies.serviceClock == nil || dependencies.observer == nil || dependencies.dial == nil {
+func (dependencies daemonDependencies) withDefaults(mode config.Mode) (daemonDependencies, error) {
+	if dependencies.serviceClock == nil || dependencies.observer == nil || dependencies.dial == nil || dependencies.loadManifest == nil {
 		return daemonDependencies{}, errors.New("не заданы обязательные зависимости процесса")
 	}
-	if dependencies.newSession == nil {
-		dependencies.newSession = func(ctx context.Context, coordinator *rescue.Coordinator, client generationClient) (candidateHandler, error) {
-			return coordinator.NewSession(ctx, client.Generation(), client.Reader(), client.Broadcaster())
-		}
+	if mode.IsLive() && (dependencies.dialSubmission == nil || dependencies.attestNetwork == nil || dependencies.newSigners == nil) {
+		return daemonDependencies{}, errors.New("не заданы обязательные live-зависимости процесса")
 	}
 	if dependencies.newWatcher == nil {
 		dependencies.newWatcher = func(dependencies watcher.Dependencies) (generationRunner, error) {
@@ -209,10 +421,11 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 		return processError("daemon.client_generation", domain.ErrorInternal, errorClientInvalid, false, nil)
 	}
 
-	session, err := dependencies.newSession(generationContext, network.coordinator, client)
+	session, err := network.openSession(generationContext, client, dependencies)
 	if err != nil {
 		return processError("daemon.session", domain.ErrorRPCTransient, errorSessionFailed, true, err)
 	}
+	defer session.Close()
 	watcherService, err := dependencies.newWatcher(watcher.Dependencies{
 		Contracts:      client.Reader(),
 		Logs:           client.Reader(),
@@ -245,32 +458,89 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 	return generationError(first, second)
 }
 
-func (network *networkProcess) dialClient(ctx context.Context, generation uint64, dependencies daemonDependencies) (generationClient, error) {
-	client, err := dependencies.dial(ctx, network.network.WSURL, generation)
-	if err == nil && client != nil {
-		return client, nil
+func (network *networkProcess) openSession(ctx context.Context, client generationClient, dependencies daemonDependencies) (candidateSession, error) {
+	if network.mode.IsDryRun() {
+		session, err := dryrun.NewSession(ctx, client.Generation(), client.Reader(), dryrun.Config{
+			Network:     network.network.ChainID,
+			Source:      network.source,
+			Sponsor:     network.sponsor,
+			Destination: network.destination,
+			Rescuer:     network.network.Rescuer,
+			ReadTimeout: network.readTimeout,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return network.bindTokenPolicy(session), nil
 	}
-	if client != nil {
-		client.Close()
-	}
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
+	if dependencies.newSession != nil {
+		session, err := dependencies.newSession(ctx, network, client)
+		if err != nil {
+			return nil, err
+		}
+		if session == nil {
+			return nil, errors.New("session factory вернула пустой результат")
+		}
+		return network.bindTokenPolicy(session), nil
 	}
 
-	dependencies.observer.Record(observability.Event{
-		Level:       observability.LevelWarning,
-		Code:        eventHTTPFallback,
-		NetworkName: network.network.Name,
-		ErrorCode:   publicErrorCode(err),
-	})
-	client, err = dependencies.dial(ctx, network.network.HTTPURL, generation)
-	if err != nil || client == nil {
+	dialContext, cancel := context.WithTimeout(ctx, network.readTimeout)
+	submission, err := dependencies.dialSubmission(dialContext, network.configured.BroadcastHTTP)
+	cancel()
+	if err != nil || submission == nil {
+		if submission != nil {
+			submission.Close()
+		}
+		return nil, err
+	}
+	session, err := network.coordinator.NewSession(ctx, client.Generation(), client.Reader(), submission)
+	if err != nil {
+		submission.Close()
+		return nil, err
+	}
+	return network.bindTokenPolicy(&liveCandidateSession{Session: session, submission: submission}), nil
+}
+
+func (network *networkProcess) bindTokenPolicy(session candidateSession) candidateSession {
+	return &tokenPolicySession{
+		candidateSession: session,
+		allowed:          network.allowedTokens,
+		allowUnknown:     network.network.AllowUnknownTokens,
+	}
+}
+
+func (network *networkProcess) dialClient(ctx context.Context, generation uint64, dependencies daemonDependencies) (generationClient, error) {
+	endpoints := make([]string, 0, len(network.configured.ReadProviders)*2)
+	for _, provider := range network.configured.ReadProviders {
+		endpoints = append(endpoints, provider.WSURL)
+	}
+	webSocketCount := len(endpoints)
+	for _, provider := range network.configured.ReadProviders {
+		endpoints = append(endpoints, provider.HTTPURL)
+	}
+	var lastError error
+	for index, endpoint := range endpoints {
+		if index == webSocketCount {
+			dependencies.observer.Record(observability.Event{
+				Level:       observability.LevelWarning,
+				Code:        eventHTTPFallback,
+				NetworkName: network.network.Name,
+				ErrorCode:   publicErrorCode(lastError),
+			})
+		}
+		client, err := dependencies.dial(ctx, endpoint, generation)
+		if err == nil && client != nil {
+			return client, nil
+		}
 		if client != nil {
 			client.Close()
 		}
-		return nil, processError("daemon.rpc_dial", domain.ErrorRPCTransient, errorDialFailed, true, err)
+		lastError = err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 	}
-	return client, nil
+	return nil, processError("daemon.rpc_dial", domain.ErrorRPCTransient, errorDialFailed, true, lastError)
 }
 
 func consumeCandidates(ctx context.Context, network domain.NetworkID, queue store.CandidateQueue, incidents store.IncidentStore, session candidateHandler, serviceClock clock.Clock) error {

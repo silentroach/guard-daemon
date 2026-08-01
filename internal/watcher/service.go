@@ -1,9 +1,11 @@
 package watcher
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math/big"
+	"sort"
 	"strings"
 	"time"
 
@@ -93,6 +95,8 @@ type Service struct {
 	networkName    string
 	generation     uint64
 	knownTokens    map[common.Address]domain.Token
+	allowedTokens  map[common.Address]struct{}
+	allowUnknown   bool
 }
 
 func NewService(dependencies Dependencies) (*Service, error) {
@@ -103,8 +107,12 @@ func NewService(dependencies Dependencies) (*Service, error) {
 	}
 
 	knownTokens := make(map[common.Address]domain.Token, len(dependencies.Network.Tokens))
+	allowedTokens := make(map[common.Address]struct{}, len(dependencies.Network.Tokens))
 	for _, token := range dependencies.Network.Tokens {
-		knownTokens[token.Address] = token
+		allowedTokens[token.Address] = struct{}{}
+		if token.Symbol != "" {
+			knownTokens[token.Address] = token
+		}
 	}
 
 	return &Service{
@@ -122,6 +130,8 @@ func NewService(dependencies Dependencies) (*Service, error) {
 		networkName:    dependencies.Network.Name,
 		generation:     dependencies.Generation,
 		knownTokens:    knownTokens,
+		allowedTokens:  allowedTokens,
+		allowUnknown:   dependencies.Network.AllowUnknownTokens,
 	}, nil
 }
 
@@ -141,7 +151,21 @@ func (service *Service) Run(ctx context.Context) error {
 }
 
 func (service *Service) transferQuery() ethereum.FilterQuery {
+	addresses := make([]common.Address, 0, len(service.allowedTokens))
+	if !service.allowUnknown {
+		for address := range service.allowedTokens {
+			addresses = append(addresses, address)
+		}
+		sort.Slice(addresses, func(i, j int) bool {
+			return bytes.Compare(addresses[i][:], addresses[j][:]) < 0
+		})
+		if len(addresses) == 0 {
+			// An empty address list means "all contracts" to eth_getLogs.
+			addresses = append(addresses, common.Address{})
+		}
+	}
 	return ethereum.FilterQuery{
+		Addresses: addresses,
 		Topics: [][]common.Hash{
 			{service.codec.TransferTopic()},
 			nil,
@@ -370,6 +394,10 @@ func (service *Service) putHeadCandidate(ctx context.Context, header *types.Head
 func (service *Service) putLogCandidate(ctx context.Context, logEntry types.Log) error {
 	if len(logEntry.Topics) < 3 || logEntry.Topics[0] != service.codec.TransferTopic() ||
 		logEntry.Topics[2] != common.BytesToHash(service.source.Bytes()) {
+		service.recordFailure(eventLogRejected, errorInvalidLog)
+		return nil
+	}
+	if _, allowed := service.allowedTokens[logEntry.Address]; !service.allowUnknown && !allowed {
 		service.recordFailure(eventLogRejected, errorInvalidLog)
 		return nil
 	}

@@ -4,7 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"math/big"
+	"strconv"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -20,6 +23,13 @@ type Network struct {
 	Rescuer    common.Address
 	HasRescuer bool
 	Tokens     []Token
+	// AllowUnknownTokens is true only after an explicit config opt-in.
+	AllowUnknownTokens bool
+}
+
+// Format excludes private RPC endpoints from accidental logs.
+func (network Network) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, "Network{Name:"+network.Name+" ChainID:"+strconv.FormatInt(int64(network.ChainID), 10)+"}")
 }
 
 type Token struct {

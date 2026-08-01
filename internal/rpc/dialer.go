@@ -16,6 +16,10 @@ type Dialer interface {
 
 type EthClientDialer struct{}
 
+type readerFacade struct{ Reader }
+type logSubscriberFacade struct{ LogSubscriber }
+type headSubscriberFacade struct{ HeadSubscriber }
+
 func (EthClientDialer) DialContext(ctx context.Context, endpoint string, generation uint64) (*GenerationClient, error) {
 	backend, err := ethclient.DialContext(ctx, endpoint)
 	if err != nil {
@@ -23,11 +27,10 @@ func (EthClientDialer) DialContext(ctx context.Context, endpoint string, generat
 	}
 
 	client, err := NewGenerationClient(generation, ClientParts{
-		Reader:      backend,
-		Logs:        backend,
-		Heads:       backend,
-		Broadcaster: backend,
-		Closer:      backend,
+		Reader: &readerFacade{Reader: backend},
+		Logs:   &logSubscriberFacade{LogSubscriber: backend},
+		Heads:  &headSubscriberFacade{HeadSubscriber: backend},
+		Closer: backend,
 	})
 	if err != nil {
 		backend.Close()

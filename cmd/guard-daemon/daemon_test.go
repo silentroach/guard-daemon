@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"guard-daemon/internal/clock"
 	"guard-daemon/internal/config"
+	"guard-daemon/internal/contracts"
 	"guard-daemon/internal/domain"
 	"guard-daemon/internal/observability"
 	"guard-daemon/internal/rescue"
@@ -19,6 +21,7 @@ import (
 	"guard-daemon/internal/watcher"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
@@ -56,7 +59,8 @@ func TestDaemonStartsExactlyOneLoopPerConfiguredNetworkAndStopsWorkers(t *testin
 			}), nil
 		},
 	}
-	process, err := newDaemon(testRuntime(t, networks), dependencies)
+	dependencies = completeTestDependencies(t, dependencies)
+	process, err := newDaemon(context.Background(), testRuntime(t, networks), dependencies)
 	if err != nil {
 		t.Fatalf("newDaemon() error = %v", err)
 	}
@@ -124,7 +128,7 @@ func TestGenerationFallsBackFromWSToHTTP(t *testing.T) {
 			mu.Lock()
 			calls = append(calls, endpoint)
 			mu.Unlock()
-			if endpoint == network.WSURL {
+			if strings.Contains(endpoint, "-ws") {
 				return nil, errors.New("non-public backend detail")
 			}
 			if generation != 1 {
@@ -141,7 +145,8 @@ func TestGenerationFallsBackFromWSToHTTP(t *testing.T) {
 			}), nil
 		},
 	}
-	process, err := newDaemon(testRuntime(t, []domain.Network{network}), dependencies)
+	dependencies = completeTestDependencies(t, dependencies)
+	process, err := newDaemon(context.Background(), testRuntime(t, []domain.Network{network}), dependencies)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +158,7 @@ func TestGenerationFallsBackFromWSToHTTP(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if !reflect.DeepEqual(calls, []string{network.WSURL, network.HTTPURL}) {
+	if !reflect.DeepEqual(calls, []string{network.WSURL, network.WSURL + "-two", network.HTTPURL}) {
 		t.Fatalf("dial order = %v", calls)
 	}
 	if client.closed.Load() != 1 {
@@ -176,8 +181,8 @@ func TestReconnectReusesCoordinatorAndInjectedDelay(t *testing.T) {
 			}
 			return clients[generation-1], nil
 		},
-		newSession: func(_ context.Context, coordinator *rescue.Coordinator, client generationClient) (candidateHandler, error) {
-			coordinators <- coordinator
+		newSession: func(_ context.Context, network *networkProcess, client generationClient) (candidateSession, error) {
+			coordinators <- network.coordinator
 			return &idleHandler{generation: client.Generation()}, nil
 		},
 		newWatcher: func(dependencies watcher.Dependencies) (generationRunner, error) {
@@ -191,7 +196,8 @@ func TestReconnectReusesCoordinatorAndInjectedDelay(t *testing.T) {
 			}), nil
 		},
 	}
-	process, err := newDaemon(testRuntime(t, []domain.Network{network}), dependencies)
+	dependencies = completeTestDependencies(t, dependencies)
+	process, err := newDaemon(context.Background(), testRuntime(t, []domain.Network{network}), dependencies)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +232,6 @@ func (client *stubGenerationClient) Generation() uint64          { return client
 func (*stubGenerationClient) Reader() rpc.Reader                 { return nil }
 func (*stubGenerationClient) LogSubscriber() rpc.LogSubscriber   { return nil }
 func (*stubGenerationClient) HeadSubscriber() rpc.HeadSubscriber { return nil }
-func (*stubGenerationClient) Broadcaster() rpc.Broadcaster       { return nil }
 func (client *stubGenerationClient) Close()                      { client.closed.Add(1) }
 
 type idleHandler struct {
@@ -238,10 +243,12 @@ func (*idleHandler) Handle(context.Context, domain.RescueCandidate) error {
 	return nil
 }
 
-func stubSessionFactory(started chan<- *rescue.Coordinator) func(context.Context, *rescue.Coordinator, generationClient) (candidateHandler, error) {
-	return func(_ context.Context, coordinator *rescue.Coordinator, client generationClient) (candidateHandler, error) {
+func (*idleHandler) Close() {}
+
+func stubSessionFactory(started chan<- *rescue.Coordinator) func(context.Context, *networkProcess, generationClient) (candidateSession, error) {
+	return func(_ context.Context, network *networkProcess, client generationClient) (candidateSession, error) {
 		if started != nil {
-			started <- coordinator
+			started <- network.coordinator
 		}
 		return &idleHandler{generation: client.Generation()}, nil
 	}
@@ -285,15 +292,56 @@ func testRuntime(t *testing.T, networks []domain.Network) config.Runtime {
 	t.Helper()
 	sourceKey := deterministicKey(t, 1)
 	sponsorKey := deterministicKey(t, 2)
+	configured := make([]config.Network, 0, len(networks))
+	for _, network := range networks {
+		configured = append(configured, config.Network{
+			Name:    network.Name,
+			ChainID: network.ChainID,
+			ReadProviders: []config.ReadProvider{
+				{ID: network.Name + "-read-1", HTTPURL: network.HTTPURL, WSURL: network.WSURL, TrustDomain: network.Name + "-one", EndpointFingerprint: network.Name + "-one"},
+				{ID: network.Name + "-read-2", HTTPURL: network.HTTPURL + "-two", WSURL: network.WSURL + "-two", TrustDomain: network.Name + "-two", EndpointFingerprint: network.Name + "-two"},
+			},
+			BroadcastHTTP: network.HTTPURL + "-broadcast",
+			ManifestPath:  network.Name + "-manifest",
+			Tokens:        append([]domain.Token(nil), network.Tokens...),
+		})
+	}
 	return config.Runtime{
-		SourcePrivateKey:  sourceKey,
-		SponsorPrivateKey: sponsorKey,
-		SourceAddress:     crypto.PubkeyToAddress(sourceKey.PublicKey),
-		SponsorAddress:    crypto.PubkeyToAddress(sponsorKey.PublicKey),
-		Destination:       testProcessAddress(3),
-		Networks:          networks,
+		Mode:           config.ModeLive,
+		SourceAddress:  crypto.PubkeyToAddress(sourceKey.PublicKey),
+		SponsorAddress: crypto.PubkeyToAddress(sponsorKey.PublicKey),
+		Destination:    testProcessAddress(3),
+		Networks:       configured,
+		ReadTimeout:    time.Second,
 	}
 }
+
+func completeTestDependencies(t *testing.T, dependencies daemonDependencies) daemonDependencies {
+	t.Helper()
+	dependencies.loadManifest = func(config.Runtime, config.Network) (contracts.DeploymentManifest, error) {
+		return contracts.DeploymentManifest{Address: testProcessAddress(4)}, nil
+	}
+	dependencies.attestNetwork = func(context.Context, config.Network, contracts.DeploymentManifest, time.Duration) error {
+		return nil
+	}
+	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
+		authorizer, err := rescue.NewPrivateKeyAuthorizationSigner(deterministicKey(t, 1))
+		if err != nil {
+			return nil, nil, err
+		}
+		transactioner, err := rescue.NewPrivateKeyTransactionSigner(deterministicKey(t, 2))
+		return authorizer, transactioner, err
+	}
+	dependencies.dialSubmission = func(context.Context, string) (submissionClient, error) {
+		return &stubSubmissionClient{}, nil
+	}
+	return dependencies
+}
+
+type stubSubmissionClient struct{}
+
+func (*stubSubmissionClient) SendTransaction(context.Context, *types.Transaction) error { return nil }
+func (*stubSubmissionClient) Close()                                                    {}
 
 func deterministicKey(t *testing.T, value byte) *ecdsa.PrivateKey {
 	t.Helper()
