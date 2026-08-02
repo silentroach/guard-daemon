@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"container/heap"
 	"context"
 	"errors"
@@ -11,6 +12,8 @@ import (
 	"guard-daemon/internal/clock"
 	"guard-daemon/internal/domain"
 	"guard-daemon/internal/store"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 var (
@@ -73,6 +76,8 @@ type legacyMemoryHandoff struct {
 	delayOrder uint64
 	incidents  map[domain.CandidateID]store.Incident
 	tombstones []domain.CandidateID
+	scanCursor store.Checkpoint
+	checkpoint store.Checkpoint
 	wake       chan struct{}
 }
 
@@ -300,6 +305,103 @@ func (handoff *legacyMemoryHandoff) IncidentByCandidate(ctx context.Context, can
 	return incident, exists, nil
 }
 
+func (handoff *legacyMemoryHandoff) PutObserved(ctx context.Context, candidate domain.RescueCandidate) (store.PutResult, error) {
+	return handoff.Put(ctx, candidate)
+}
+
+func (handoff *legacyMemoryHandoff) MarkRemoved(ctx context.Context, candidateID domain.CandidateID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	entry, exists := handoff.entries[candidateID]
+	if !exists || entry.acknowledged {
+		return errAckOrder
+	}
+	delete(handoff.entries, candidateID)
+	handoff.compactPendingLocked()
+	handoff.signalLocked()
+	return nil
+}
+
+func (handoff *legacyMemoryHandoff) LoadScanCursor(ctx context.Context, network domain.NetworkID) (store.Checkpoint, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Checkpoint{}, false, err
+	}
+	if network != handoff.network {
+		return store.Checkpoint{}, false, errHandoffNetwork
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	return handoff.scanCursor, handoff.scanCursor != (store.Checkpoint{}), nil
+}
+
+func (handoff *legacyMemoryHandoff) LoadCheckpoint(ctx context.Context, network domain.NetworkID) (store.Checkpoint, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Checkpoint{}, false, err
+	}
+	if network != handoff.network {
+		return store.Checkpoint{}, false, errHandoffNetwork
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	return handoff.checkpoint, handoff.checkpoint != (store.Checkpoint{}), nil
+}
+
+func (handoff *legacyMemoryHandoff) CommitCanonicalBlock(ctx context.Context, block store.CanonicalBlock) error {
+	if block.Network != handoff.network {
+		return errHandoffNetwork
+	}
+	for _, candidate := range block.Candidates {
+		if _, err := handoff.Put(ctx, candidate); err != nil {
+			return err
+		}
+	}
+	handoff.mu.Lock()
+	handoff.scanCursor = block.Checkpoint
+	if len(block.Candidates) == 0 {
+		handoff.checkpoint = block.Checkpoint
+	}
+	handoff.mu.Unlock()
+	return nil
+}
+
+func (handoff *legacyMemoryHandoff) DiscoveredTokens(ctx context.Context, network domain.NetworkID) ([]common.Address, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if network != handoff.network {
+		return nil, errHandoffNetwork
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	seen := make(map[common.Address]struct{})
+	for _, entry := range handoff.entries {
+		if entry.candidate.Kind == domain.CandidateToken {
+			seen[entry.candidate.Token.Address] = struct{}{}
+		}
+	}
+	result := make([]common.Address, 0, len(seen))
+	for address := range seen {
+		result = append(result, address)
+	}
+	sort.Slice(result, func(i, j int) bool { return bytes.Compare(result[i][:], result[j][:]) < 0 })
+	return result, nil
+}
+
+func (handoff *legacyMemoryHandoff) DiscoveryOverflowed(ctx context.Context, network domain.NetworkID) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if network != handoff.network {
+		return false, errHandoffNetwork
+	}
+	return false, nil
+}
+
+func (*legacyMemoryHandoff) Close() error { return nil }
+
 func (handoff *legacyMemoryHandoff) signalLocked() {
 	close(handoff.wake)
 	handoff.wake = make(chan struct{})
@@ -343,4 +445,5 @@ func (handoff *legacyMemoryHandoff) trimTombstonesLocked() {
 var (
 	_ store.CandidateQueue = (*legacyMemoryHandoff)(nil)
 	_ store.IncidentStore  = (*legacyMemoryHandoff)(nil)
+	_ store.HandoffStore   = (*legacyMemoryHandoff)(nil)
 )

@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"guard-daemon/internal/domain"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // CandidateQueue сохраняет candidate до возврата из Put. Повторный Put с тем
@@ -27,10 +29,31 @@ type IncidentStore interface {
 	IncidentByCandidate(context.Context, domain.CandidateID) (Incident, bool, error)
 }
 
-// CheckpointStore продвигается только после Put candidate, PutIncident и Ack.
+// CheckpointStore разделяет scan cursor и подтверждённый checkpoint. Scanner
+// может продолжать durable backfill, пока checkpoint ждёт incident и Ack.
 type CheckpointStore interface {
 	LoadCheckpoint(context.Context, domain.NetworkID) (Checkpoint, bool, error)
-	AdvanceCheckpoint(context.Context, Checkpoint) error
+	LoadScanCursor(context.Context, domain.NetworkID) (Checkpoint, bool, error)
+	CommitCanonicalBlock(context.Context, CanonicalBlock) error
+}
+
+// ObservationStore хранит provisional WebSocket observations. Они не доступны
+// consumer до подтверждения canonical scanner и могут быть отозваны Removed log.
+type ObservationStore interface {
+	PutObserved(context.Context, domain.RescueCandidate) (PutResult, error)
+	MarkRemoved(context.Context, domain.CandidateID) error
+	DiscoveredTokens(context.Context, domain.NetworkID) ([]common.Address, error)
+	DiscoveryOverflowed(context.Context, domain.NetworkID) (bool, error)
+}
+
+// HandoffStore объединяет queue, incidents и watcher state в одной
+// транзакционной границе.
+type HandoffStore interface {
+	CandidateQueue
+	IncidentStore
+	CheckpointStore
+	ObservationStore
+	Close() error
 }
 
 type LeaseManager interface {

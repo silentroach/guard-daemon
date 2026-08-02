@@ -49,6 +49,24 @@ type Reader interface {
 	LogReader
 }
 
+// HistoricalReader is the read-only, hash-addressable subset used by quorum
+// providers. It deliberately excludes pending state, subscriptions and
+// transaction broadcasting.
+type HistoricalReader interface {
+	HeaderByNumber(context.Context, *big.Int) (*types.Header, error)
+	BalanceAtHash(context.Context, common.Address, common.Hash) (*big.Int, error)
+	CodeAtHash(context.Context, common.Address, common.Hash) ([]byte, error)
+	CallContractAtHash(context.Context, ethereum.CallMsg, common.Hash) ([]byte, error)
+	TransactionReceipt(context.Context, common.Hash) (*types.Receipt, error)
+	FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error)
+}
+
+type FinalizedReader interface {
+	Finalized(context.Context) (BlockRef, error)
+	Header(context.Context, uint64) (BlockRef, error)
+	FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error)
+}
+
 type LogSubscriber interface {
 	SubscribeFilterLogs(context.Context, ethereum.FilterQuery, chan<- types.Log) (ethereum.Subscription, error)
 }

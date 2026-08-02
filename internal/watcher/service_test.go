@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"guard-daemon/internal/contracts"
 	"guard-daemon/internal/domain"
 	"guard-daemon/internal/observability"
+	"guard-daemon/internal/rpc"
 	"guard-daemon/internal/store"
 
 	"github.com/ethereum/go-ethereum"
@@ -22,365 +24,431 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-func TestServiceBuildsTransferQueryAndProducesSubscriptionCandidates(t *testing.T) {
-	codec := newTestCodec(t)
-	reader := &fakeReader{}
-	logSource := newFakeLogSource(nil)
-	headSource := newFakeHeadSource(nil)
-	testClock := newFakeClock()
-	queue := newFakeQueue()
+func TestScanUsesBoundedLookbackAndRetriesFailedBlock(t *testing.T) {
 	source := testAddress(0x11)
-	token := domain.Token{Address: testAddress(0x22), Symbol: "LOCAL", Decimals: 6}
-	network := domain.Network{Name: "test-network", ChainID: 31337, Tokens: []domain.Token{token}}
-	service := newTestService(t, reader, logSource, headSource, testClock, queue, codec, source, network, 7)
+	token := domain.Token{Address: testAddress(0x12), Symbol: "LOCAL", Decimals: 6}
+	network := domain.Network{Name: "local", ChainID: 31337, Tokens: []domain.Token{token}}
+	finalized := newFakeFinalized()
+	finalized.addBlock(99, testHash(0x63), testHash(0x62))
+	finalized.addBlock(100, testHash(0x64), testHash(0x63))
+	finalized.addBlock(101, testHash(0x65), testHash(0x64))
+	logEntry := matchingLog(newTestCodec(t), source, token.Address, 100, testHash(0x64), 1)
+	finalized.setLogs(100, []types.Log{logEntry, logEntry})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done, runErr := runTestService(service, ctx)
-	defer func() {
-		cancel()
-		<-done
-	}()
-
-	query := receive(t, logSource.queries)
-	assertTransferQuery(t, query, codec.TransferTopic(), source, []common.Address{token.Address})
-	registration := receive(t, testClock.tickers)
-	if registration.duration != periodicInterval {
-		t.Fatalf("ticker duration = %s, want %s", registration.duration, periodicInterval)
-	}
-
-	logEntry := matchingLog(codec, source, token.Address, 41, 3)
-	logSource.send(logEntry)
-	got := receive(t, queue.candidates)
-	want := domain.NewLogCandidate(network.ChainID, source, token, logEntry.BlockHash, logEntry.TxHash, logEntry.BlockNumber, logEntry.Index)
-	if got != want {
-		t.Fatalf("log candidate = %#v, want %#v", got, want)
-	}
-
-	header := &types.Header{Number: big.NewInt(42), ParentHash: testHash(0x31), Time: 1}
-	headSource.send(header)
-	got = receive(t, queue.candidates)
-	want = domain.NewBlockCandidate(network.ChainID, domain.CandidateNative, source, header.Hash(), 42)
-	if got != want {
-		t.Fatalf("head candidate = %#v, want %#v", got, want)
-	}
-
-	registration.ticker.tick()
-	got = receive(t, queue.candidates)
-	want = domain.NewPeriodicCandidate(network.ChainID, source, 7, 0)
-	if got != want {
-		t.Fatalf("periodic candidate = %#v, want %#v", got, want)
-	}
-
-	cancel()
-	<-done
-	if !errors.Is(*runErr, context.Canceled) {
-		t.Fatalf("Run() error = %v, want context.Canceled", *runErr)
-	}
-	if !logSource.subscription.unsubscribed.Load() || !headSource.subscription.unsubscribed.Load() || !registration.ticker.stopped.Load() {
-		t.Fatal("Run() did not release subscriptions and ticker")
-	}
-}
-
-func TestPollingStartsAtCurrentBlockAndReadsNextRange(t *testing.T) {
-	codec := newTestCodec(t)
-	reader := newPollingReader()
-	logSource := newFakeLogSource(errors.New("subscription unavailable"))
-	headSource := newFakeHeadSource(nil)
-	testClock := newFakeClock()
-	queue := newFakeQueue()
-	source := testAddress(0x41)
-	token := domain.Token{Address: testAddress(0x42), Symbol: "TEST", Decimals: 18}
-	network := domain.Network{Name: "test-network", ChainID: 31337, Tokens: []domain.Token{token}}
-	service := newTestService(t, reader, logSource, headSource, testClock, queue, codec, source, network, 2)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done, runErr := runTestService(service, ctx)
-	defer func() {
-		cancel()
-		<-done
-	}()
-
-	<-logSource.queries
-	registration := receive(t, testClock.tickers)
-	if registration.duration != pollInterval {
-		t.Fatalf("ticker duration = %s, want %s", registration.duration, pollInterval)
-	}
-
-	reader.blockNumbers <- 100
-	registration.ticker.tick()
-	<-reader.blockCalls
-	select {
-	case query := <-reader.filterQueries:
-		t.Fatalf("initial block unexpectedly filtered with query %#v", query)
-	default:
-	}
-
-	reader.blockNumbers <- 102
-	registration.ticker.tick()
-	query := receive(t, reader.filterQueries)
-	if query.FromBlock == nil || query.FromBlock.Uint64() != 101 || query.ToBlock == nil || query.ToBlock.Uint64() != 102 {
-		t.Fatalf("poll range = %v..%v, want 101..102", query.FromBlock, query.ToBlock)
-	}
-	assertTransferQuery(t, query, codec.TransferTopic(), source, []common.Address{token.Address})
-
-	headerCandidate := receive(t, queue.candidates)
-	if headerCandidate.Kind != domain.CandidateNative || headerCandidate.BlockNumber != 102 {
-		t.Fatalf("poll head candidate = %#v", headerCandidate)
-	}
-	logEntry := matchingLog(codec, source, token.Address, 101, 1)
-	reader.filterResults <- []types.Log{logEntry}
-	logCandidate := receive(t, queue.candidates)
-	want := domain.NewLogCandidate(network.ChainID, source, token, logEntry.BlockHash, logEntry.TxHash, logEntry.BlockNumber, logEntry.Index)
-	if logCandidate != want {
-		t.Fatalf("poll log candidate = %#v, want %#v", logCandidate, want)
-	}
-
-	cancel()
-	<-done
-	if !errors.Is(*runErr, context.Canceled) {
-		t.Fatalf("Run() error = %v, want context.Canceled", *runErr)
-	}
-}
-
-func TestUnknownMetadataIsSanitizedAndNotCached(t *testing.T) {
-	codec := newTestCodec(t)
-	symbolData := encodeABIValue(t, "string", "  LONG\nTOKEN\x1bVALUE-EXTRA  ")
-	decimalsData := make([]byte, 32)
-	decimalsData[len(decimalsData)-1] = 6
-	reader := &fakeReader{call: func(_ context.Context, message ethereum.CallMsg, _ *big.Int) ([]byte, error) {
-		if reflect.DeepEqual(message.Data, mustPack(t, codec.PackSymbol)) {
-			return symbolData, nil
-		}
-		return decimalsData, nil
-	}}
-	service := newTestService(
-		t,
-		reader,
-		newFakeLogSource(nil),
-		newFakeHeadSource(nil),
-		newFakeClock(),
-		newFakeQueue(),
-		codec,
-		testAddress(0x51),
-		domain.Network{Name: "test-network", ChainID: 31337},
-		1,
-	)
-	unknown := testAddress(0x52)
-
-	first := service.resolveToken(context.Background(), unknown)
-	second := service.resolveToken(context.Background(), unknown)
-	want := domain.Token{Address: unknown, Symbol: "LONGTOKENVALUE-E...", Decimals: 6}
-	if first != want || second != want {
-		t.Fatalf("resolved tokens = %#v, %#v, want %#v", first, second, want)
-	}
-	if reader.callCount.Load() != 4 {
-		t.Fatalf("metadata call count = %d, want 4 (unknown metadata must not be cached)", reader.callCount.Load())
-	}
-
-	failingReader := &fakeReader{call: func(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error) {
-		return nil, errors.New("metadata unavailable")
-	}}
-	fallbackService := newTestService(
-		t,
-		failingReader,
-		newFakeLogSource(nil),
-		newFakeHeadSource(nil),
-		newFakeClock(),
-		newFakeQueue(),
-		codec,
-		testAddress(0x61),
-		domain.Network{Name: "test-network", ChainID: 31337},
-		1,
-	)
-	fallback := fallbackService.resolveToken(context.Background(), unknown)
-	if fallback.Symbol != addressFallback(unknown) || fallback.Decimals != 18 {
-		t.Fatalf("metadata fallback = %#v", fallback)
-	}
-}
-
-func TestServiceRejectsTokenOutsideConfiguredPolicy(t *testing.T) {
-	codec := newTestCodec(t)
-	reader := &fakeReader{}
-	queue := newFakeQueue()
-	source := testAddress(0x63)
-	allowed := domain.Token{Address: testAddress(0x64), Symbol: "LOCAL", Decimals: 18}
-	service := newTestService(
-		t,
-		reader,
-		newFakeLogSource(nil),
-		newFakeHeadSource(nil),
-		newFakeClock(),
-		queue,
-		codec,
-		source,
-		domain.Network{Name: "test-network", ChainID: 31337, Tokens: []domain.Token{allowed}},
-		1,
-	)
-
-	if err := service.putLogCandidate(context.Background(), matchingLog(codec, source, testAddress(0x65), 1, 0)); err != nil {
+	path := filepath.Join(t.TempDir(), "watcher.db")
+	handoff := openWatchStore(t, path, source, network, 2)
+	service := newTestService(t, finalized, handoff, source, network, 2, &fakeContractCaller{}, newFakeLogSubscriber(), newFakeHeadSubscriber())
+	if err := service.scan(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case candidate := <-queue.candidates:
-		t.Fatalf("запрещённый токен создал candidate: %#v", candidate)
-	default:
+	assertCursor(t, handoff, network.ChainID, 101, testHash(0x65))
+	if !finalized.usedHashPinnedQuery(100) || !finalized.usedHashPinnedQuery(101) {
+		t.Fatal("scanner запросил logs по номеру, а не по согласованному block hash")
 	}
-	if reader.callCount.Load() != 0 {
-		t.Fatalf("metadata calls для запрещённого токена = %d, нужно 0", reader.callCount.Load())
-	}
-}
-
-func TestAllTokenModeLeavesAddressFilterOpenOnlyAfterOptIn(t *testing.T) {
-	network := domain.Network{Name: "test-network", ChainID: 31337, AllowUnknownTokens: true}
-	service := newTestService(t, &fakeReader{}, newFakeLogSource(nil), newFakeHeadSource(nil), newFakeClock(), newFakeQueue(), newTestCodec(t), testAddress(0x66), network, 1)
-	query := service.transferQuery()
-	if len(query.Addresses) != 0 {
-		t.Fatalf("all-token query содержит address filter: %#v", query.Addresses)
-	}
-}
-
-func TestCancellationStopsPollingWithoutAnotherTick(t *testing.T) {
-	service := newTestService(
-		t,
-		&fakeReader{},
-		newFakeLogSource(errors.New("subscription unavailable")),
-		newFakeHeadSource(nil),
-		newFakeClock(),
-		newFakeQueue(),
-		newTestCodec(t),
-		testAddress(0x71),
-		domain.Network{Name: "test-network", ChainID: 31337},
-		1,
+	assertCandidateIDs(t, handoff, network.ChainID,
+		domain.NewBlockCandidate(network.ChainID, domain.CandidateNative, source, testHash(0x64), 100).ID,
+		domain.NewLogCandidate(network.ChainID, source, token, testHash(0x64), logEntry.TxHash, 100, 1).ID,
+		domain.NewBlockCandidate(network.ChainID, domain.CandidateNative, source, testHash(0x65), 101).ID,
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done, runErr := runTestService(service, ctx)
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run() did not stop after cancellation")
+	if err := handoff.Close(); err != nil {
+		t.Fatal(err)
 	}
-	if !errors.Is(*runErr, context.Canceled) {
-		t.Fatalf("Run() error = %v, want context.Canceled", *runErr)
+	handoff = openWatchStore(t, path, source, network, 2)
+	defer handoff.Close()
+	service = newTestService(t, finalized, handoff, source, network, 2, &fakeContractCaller{}, newFakeLogSubscriber(), newFakeHeadSubscriber())
+	finalized.addBlock(102, testHash(0x66), testHash(0x65))
+	finalized.setFilterError(102, errors.New("private backend detail"))
+	if err := service.scan(context.Background()); err == nil {
+		t.Fatal("ошибка FilterLogs не остановила scan")
+	}
+	assertCursor(t, handoff, network.ChainID, 101, testHash(0x65))
+
+	finalized.setFilterError(102, nil)
+	if err := service.scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertCursor(t, handoff, network.ChainID, 102, testHash(0x66))
+	if finalized.filterCalls(102) != 2 {
+		t.Fatalf("FilterLogs calls для незафиксированного блока = %d, нужно 2", finalized.filterCalls(102))
 	}
 }
 
-func TestActiveLogSubscriptionFailureEndsGeneration(t *testing.T) {
+func TestSubscriptionDisconnectBackfillsGapWithoutDuplicates(t *testing.T) {
+	source := testAddress(0x21)
+	token := domain.Token{Address: testAddress(0x22), Symbol: "LOCAL", Decimals: 18}
+	network := domain.Network{Name: "local", ChainID: 31337, Tokens: []domain.Token{token}}
 	codec := newTestCodec(t)
-	logSource := newFakeLogSource(nil)
-	testClock := newFakeClock()
-	service := newTestService(
-		t,
-		&fakeReader{},
-		logSource,
-		newFakeHeadSource(nil),
-		testClock,
-		newFakeQueue(),
-		codec,
-		testAddress(0x72),
-		domain.Network{Name: "test-network", ChainID: 31337},
-		1,
-	)
+	finalized := newFakeFinalized()
+	finalized.addBlock(10, testHash(0x0a), testHash(0x09))
+	firstLog := matchingLog(codec, source, token.Address, 10, testHash(0x0a), 1)
+	finalized.setLogs(10, []types.Log{firstLog})
+	handoff := openWatchStore(t, filepath.Join(t.TempDir(), "watcher.db"), source, network, 1)
+	defer handoff.Close()
+	logs := newFakeLogSubscriber()
+	heads := newFakeHeadSubscriber()
+	service := newTestService(t, finalized, handoff, source, network, 1, &fakeContractCaller{}, logs, heads)
 
+	runResult := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done, runErr := runTestService(service, ctx)
-	receive(t, logSource.queries)
-	receive(t, testClock.tickers)
-	logSource.subscription.errors <- errors.New("test disconnect")
-	receive(t, done)
+	go func() { runResult <- service.Run(ctx) }()
+	receive(t, logs.registered)
 
-	var classified *domain.ClassifiedError
-	if !errors.As(*runErr, &classified) || classified.Code != errorLogSubscription {
-		t.Fatalf("Run() error = %v, want classified subscription failure", *runErr)
+	// Повтор subscription уже canonical candidate безопасно coalesce-ится.
+	logs.send(firstLog)
+	finalized.addBlock(11, testHash(0x0b), testHash(0x0a))
+	gapLog := matchingLog(codec, source, token.Address, 11, testHash(0x0b), 2)
+	finalized.setLogs(11, []types.Log{gapLog})
+	logs.subscription.fail(errors.New("disconnect"))
+	if err := receive(t, runResult); err == nil {
+		t.Fatal("disconnect не завершил поколение")
+	}
+
+	service = newTestService(t, finalized, handoff, source, network, 1, &fakeContractCaller{}, newFakeLogSubscriber(), newFakeHeadSubscriber())
+	if err := service.scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertCursor(t, handoff, network.ChainID, 11, testHash(0x0b))
+	assertCandidateIDs(t, handoff, network.ChainID,
+		domain.NewBlockCandidate(network.ChainID, domain.CandidateNative, source, testHash(0x0a), 10).ID,
+		domain.NewLogCandidate(network.ChainID, source, token, testHash(0x0a), firstLog.TxHash, 10, 1).ID,
+		domain.NewBlockCandidate(network.ChainID, domain.CandidateNative, source, testHash(0x0b), 11).ID,
+		domain.NewLogCandidate(network.ChainID, source, token, testHash(0x0b), gapLog.TxHash, 11, 2).ID,
+	)
+	if !logs.subscription.unsubscribed.Load() || !heads.subscription.unsubscribed.Load() {
+		t.Fatal("смена поколения не освободила subscriptions")
 	}
 }
 
-type fakeReader struct {
-	call      func(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error)
-	callCount atomic.Int32
-}
+func TestProvisionalRemovedAndOrphanedLogsNeverBecomeReady(t *testing.T) {
+	source := testAddress(0x31)
+	network := domain.Network{Name: "local", ChainID: 31337, AllowUnknownTokens: true}
+	codec := newTestCodec(t)
+	finalized := newFakeFinalized()
+	canonicalHash := testHash(0x32)
+	finalized.addBlock(20, canonicalHash, testHash(0x1f))
+	handoff := openWatchStore(t, filepath.Join(t.TempDir(), "watcher.db"), source, network, 1)
+	defer handoff.Close()
+	service := newTestService(t, finalized, handoff, source, network, 1, &fakeContractCaller{}, newFakeLogSubscriber(), newFakeHeadSubscriber())
 
-func (reader *fakeReader) CallContract(ctx context.Context, message ethereum.CallMsg, block *big.Int) ([]byte, error) {
-	reader.callCount.Add(1)
-	if reader.call == nil {
-		return nil, errors.New("unexpected contract call")
+	orphan := matchingLog(codec, source, testAddress(0x33), 20, testHash(0xee), 1)
+	if err := service.observeLog(context.Background(), orphan); err != nil {
+		t.Fatal(err)
 	}
-	return reader.call(ctx, message, block)
+	removed := matchingLog(codec, source, testAddress(0x34), 20, testHash(0xef), 2)
+	removed.Removed = true
+	if err := service.observeLog(context.Background(), removed); err != nil {
+		t.Fatal(err)
+	}
+	assertCandidateIDs(t, handoff, network.ChainID)
+
+	if err := service.scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertCandidateIDs(t, handoff, network.ChainID,
+		domain.NewBlockCandidate(network.ChainID, domain.CandidateNative, source, canonicalHash, 20).ID,
+	)
 }
 
-func (*fakeReader) FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error) {
-	return nil, errors.New("unexpected log read")
+func TestCanonicalScanPromotesProvisionalCandidate(t *testing.T) {
+	source := testAddress(0x41)
+	token := domain.Token{Address: testAddress(0x42), Symbol: "TOK", Decimals: 18}
+	network := domain.Network{Name: "local", ChainID: 31337, Tokens: []domain.Token{token}}
+	codec := newTestCodec(t)
+	finalized := newFakeFinalized()
+	finalized.addBlock(30, testHash(0x30), testHash(0x2f))
+	logEntry := matchingLog(codec, source, token.Address, 30, testHash(0x30), 3)
+	finalized.setLogs(30, []types.Log{logEntry})
+	handoff := openWatchStore(t, filepath.Join(t.TempDir(), "watcher.db"), source, network, 1)
+	defer handoff.Close()
+	service := newTestService(t, finalized, handoff, source, network, 1, &fakeContractCaller{}, newFakeLogSubscriber(), newFakeHeadSubscriber())
+	if err := service.observeLog(context.Background(), logEntry); err != nil {
+		t.Fatal(err)
+	}
+	assertCandidateIDs(t, handoff, network.ChainID)
+	if err := service.scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertCandidateIDs(t, handoff, network.ChainID,
+		domain.NewBlockCandidate(network.ChainID, domain.CandidateNative, source, testHash(0x30), 30).ID,
+		domain.NewLogCandidate(network.ChainID, source, token, testHash(0x30), logEntry.TxHash, 30, 3).ID,
+	)
 }
 
-func (*fakeReader) BlockNumber(context.Context) (uint64, error) {
-	return 0, errors.New("unexpected block read")
-}
-
-func (*fakeReader) HeaderByNumber(context.Context, *big.Int) (*types.Header, error) {
-	return nil, errors.New("unexpected header read")
-}
-
-type pollingReader struct {
-	blockNumbers  chan uint64
-	blockCalls    chan struct{}
-	filterQueries chan ethereum.FilterQuery
-	filterResults chan []types.Log
-}
-
-func newPollingReader() *pollingReader {
-	return &pollingReader{
-		blockNumbers:  make(chan uint64, 2),
-		blockCalls:    make(chan struct{}, 2),
-		filterQueries: make(chan ethereum.FilterQuery, 1),
-		filterResults: make(chan []types.Log, 1),
+func TestLogCandidateRequiresStrictTransferShape(t *testing.T) {
+	source := testAddress(0x43)
+	codec := newTestCodec(t)
+	service := &Service{
+		networkID:    31337,
+		source:       source,
+		codec:        codec,
+		allowUnknown: true,
+		knownTokens:  make(map[common.Address]domain.Token),
+	}
+	valid := matchingLog(codec, source, testAddress(0x44), 1, testHash(1), 1)
+	tests := map[string]types.Log{
+		"лишний topic": func() types.Log {
+			entry := valid
+			entry.Topics = append(append([]common.Hash(nil), valid.Topics...), testHash(4))
+			return entry
+		}(),
+		"короткие data": func() types.Log {
+			entry := valid
+			entry.Data = make([]byte, common.HashLength-1)
+			return entry
+		}(),
+	}
+	for name, logEntry := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, accepted := service.logCandidate(context.Background(), logEntry, false); accepted {
+				t.Fatal("нестрогий Transfer log принят")
+			}
+		})
 	}
 }
 
-func (*pollingReader) CallContract(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error) {
-	return nil, errors.New("unexpected contract call")
-}
+func TestUnknownMetadataHasDeadlineSizeAndCacheBounds(t *testing.T) {
+	source := testAddress(0x51)
+	network := domain.Network{Name: "local", ChainID: 31337, AllowUnknownTokens: true}
+	handoff := openWatchStore(t, filepath.Join(t.TempDir(), "watcher.db"), source, network, 1)
+	defer handoff.Close()
+	caller := &fakeContractCaller{call: func(ctx context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("metadata call не получил deadline")
+		}
+		return make([]byte, metadataReturnLimit+1), nil
+	}}
+	service := newTestService(t, newFakeFinalized(), handoff, source, network, 1, caller, newFakeLogSubscriber(), newFakeHeadSubscriber())
+	unknown := testAddress(0x52)
+	first := service.resolveToken(context.Background(), unknown)
+	second := service.resolveToken(context.Background(), unknown)
+	if first != second || first.Symbol != addressFallback(unknown) || caller.calls.Load() != 2 {
+		t.Fatalf("bounded metadata fallback/cache = (%#v, %#v, calls=%d)", first, second, caller.calls.Load())
+	}
 
-func (reader *pollingReader) BlockNumber(ctx context.Context) (uint64, error) {
-	select {
-	case block := <-reader.blockNumbers:
-		reader.blockCalls <- struct{}{}
-		return block, nil
-	case <-ctx.Done():
-		return 0, ctx.Err()
+	encodedSymbol := encodeABIValue(t, "string", "TOKEN")
+	encodedDecimals := make([]byte, 32)
+	encodedDecimals[31] = 6
+	caller.call = func(_ context.Context, message ethereum.CallMsg, _ *big.Int) ([]byte, error) {
+		if len(message.Data) != 0 && message.Data[len(message.Data)-1] == service.codecSymbolSelectorLastByte(t) {
+			return encodedSymbol, nil
+		}
+		return encodedDecimals, nil
+	}
+	for index := 0; index < metadataCacheLimit+20; index++ {
+		address := common.BigToAddress(big.NewInt(int64(1000 + index)))
+		service.resolveToken(context.Background(), address)
+	}
+	if len(service.metadata) != metadataCacheLimit || len(service.metadataOrder) != metadataCacheLimit {
+		t.Fatalf("metadata cache size = %d/%d, нужно %d", len(service.metadata), len(service.metadataOrder), metadataCacheLimit)
 	}
 }
 
-func (*pollingReader) HeaderByNumber(_ context.Context, number *big.Int) (*types.Header, error) {
-	return &types.Header{Number: new(big.Int).Set(number), ParentHash: testHash(0x81), Time: 1}, nil
-}
-
-func (reader *pollingReader) FilterLogs(ctx context.Context, query ethereum.FilterQuery) ([]types.Log, error) {
-	reader.filterQueries <- query
-	select {
-	case logs := <-reader.filterResults:
-		return logs, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+func TestReconciliationRestoresDiscoveredUnknownToken(t *testing.T) {
+	source := testAddress(0x61)
+	network := domain.Network{Name: "local", ChainID: 31337, AllowUnknownTokens: true}
+	handoff := openWatchStore(t, filepath.Join(t.TempDir(), "watcher.db"), source, network, 1)
+	defer handoff.Close()
+	finalized := newFakeFinalized()
+	finalized.addBlock(1, testHash(0x01), testHash(0x02))
+	service := newTestService(t, finalized, handoff, source, network, 1, &fakeContractCaller{}, newFakeLogSubscriber(), newFakeHeadSubscriber())
+	logEntry := matchingLog(newTestCodec(t), source, testAddress(0x62), 1, testHash(0x01), 1)
+	finalized.setLogs(1, []types.Log{logEntry})
+	if err := service.observeLog(context.Background(), logEntry); err != nil {
+		t.Fatal(err)
+	}
+	if discovered, err := handoff.DiscoveredTokens(context.Background(), network.ChainID); err != nil || len(discovered) != 0 {
+		t.Fatalf("provisional discovery = (%v, %v), нужен пустой confirmed registry", discovered, err)
+	}
+	if err := service.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := handoff.Replay(context.Background(), network.ChainID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].Kind != domain.CandidatePeriodic {
+		t.Fatalf("до canonical seal reconciliation candidates = %v", candidates)
+	}
+	if err := service.scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if discovered, err := handoff.DiscoveredTokens(context.Background(), network.ChainID); err != nil || !reflect.DeepEqual(discovered, []common.Address{logEntry.Address}) {
+		t.Fatalf("confirmed discovery = (%v, %v)", discovered, err)
 	}
 }
 
-type fakeQueue struct {
-	candidates chan domain.RescueCandidate
-}
-
-func newFakeQueue() *fakeQueue {
-	return &fakeQueue{candidates: make(chan domain.RescueCandidate, 16)}
-}
-
-func (queue *fakeQueue) Put(ctx context.Context, candidate domain.RescueCandidate) (store.PutResult, error) {
-	select {
-	case queue.candidates <- candidate:
-		return store.PutInserted, nil
-	case <-ctx.Done():
-		return 0, ctx.Err()
+func TestObservationSaturationDoesNotBlockCanonicalScanner(t *testing.T) {
+	source := testAddress(0x63)
+	network := domain.Network{Name: "local", ChainID: 31337, AllowUnknownTokens: true}
+	handoff, err := store.Open(filepath.Join(t.TempDir(), "watcher.db"), store.OpenOptions{
+		Network: network.ChainID, Source: source, PolicyFingerprint: PolicyFingerprint(network, 1),
+		MaxPending: 1, MaxDiscoveredTokens: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer handoff.Close()
+	finalized := newFakeFinalized()
+	finalized.addBlock(5, testHash(0x65), testHash(0x64))
+	service := newTestService(t, finalized, handoff, source, network, 1, &fakeContractCaller{}, newFakeLogSubscriber(), newFakeHeadSubscriber())
+	codec := newTestCodec(t)
+	first := matchingLog(codec, source, testAddress(0x66), 5, testHash(0xee), 1)
+	second := matchingLog(codec, source, testAddress(0x67), 5, testHash(0xef), 2)
+	if err := service.observeLog(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.observeLog(context.Background(), second); err != nil {
+		t.Fatalf("saturated untrusted hint blocked watcher: %v", err)
+	}
+	if err := service.scan(context.Background()); err != nil {
+		t.Fatalf("canonical scanner did not recover after hint saturation: %v", err)
+	}
+	assertCursor(t, handoff, network.ChainID, 5, testHash(0x65))
+}
+
+func TestPolicyFingerprintIsDeterministicAndPolicyBound(t *testing.T) {
+	first := domain.Token{Address: testAddress(1)}
+	second := domain.Token{Address: testAddress(2)}
+	network := domain.Network{ChainID: 31337, Tokens: []domain.Token{first, second}}
+	fingerprint := PolicyFingerprint(network, 64)
+	network.Tokens = []domain.Token{second, first}
+	if fingerprint != PolicyFingerprint(network, 64) {
+		t.Fatal("порядок token config изменил fingerprint")
+	}
+	if fingerprint == PolicyFingerprint(network, 65) {
+		t.Fatal("lookback не связан с fingerprint")
+	}
+	network.AllowUnknownTokens = true
+	if fingerprint == PolicyFingerprint(network, 64) {
+		t.Fatal("token mode не связан с fingerprint")
+	}
+}
+
+func (service *Service) codecSymbolSelectorLastByte(t *testing.T) byte {
+	t.Helper()
+	data, err := service.codec.PackSymbol()
+	if err != nil || len(data) == 0 {
+		t.Fatal(err)
+	}
+	return data[len(data)-1]
+}
+
+type fakeFinalized struct {
+	mu          sync.Mutex
+	latest      uint64
+	blocks      map[uint64]rpc.BlockRef
+	logs        map[uint64][]types.Log
+	filterError map[uint64]error
+	filterCount map[uint64]int
+	hashPinned  map[uint64]bool
+}
+
+func newFakeFinalized() *fakeFinalized {
+	return &fakeFinalized{
+		blocks:      make(map[uint64]rpc.BlockRef),
+		logs:        make(map[uint64][]types.Log),
+		filterError: make(map[uint64]error),
+		filterCount: make(map[uint64]int),
+		hashPinned:  make(map[uint64]bool),
+	}
+}
+
+func (reader *fakeFinalized) addBlock(number uint64, hash, parent common.Hash) {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	reader.blocks[number] = rpc.BlockRef{Number: number, Hash: hash, ParentHash: parent}
+	if number > reader.latest || len(reader.blocks) == 1 {
+		reader.latest = number
+	}
+}
+
+func (reader *fakeFinalized) setFilterError(number uint64, err error) {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	reader.filterError[number] = err
+}
+
+func (reader *fakeFinalized) setLogs(number uint64, logs []types.Log) {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	reader.logs[number] = append([]types.Log(nil), logs...)
+}
+
+func (reader *fakeFinalized) filterCalls(number uint64) int {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	return reader.filterCount[number]
+}
+
+func (reader *fakeFinalized) usedHashPinnedQuery(number uint64) bool {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	return reader.hashPinned[number]
+}
+
+func (reader *fakeFinalized) Finalized(context.Context) (rpc.BlockRef, error) {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	block, ok := reader.blocks[reader.latest]
+	if !ok {
+		return rpc.BlockRef{}, errors.New("finalized unavailable")
+	}
+	return block, nil
+}
+
+func (reader *fakeFinalized) Header(_ context.Context, number uint64) (rpc.BlockRef, error) {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	block, ok := reader.blocks[number]
+	if !ok {
+		return rpc.BlockRef{}, errors.New("header unavailable")
+	}
+	return block, nil
+}
+
+func (reader *fakeFinalized) FilterLogs(_ context.Context, query ethereum.FilterQuery) ([]types.Log, error) {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	var number uint64
+	if query.BlockHash != nil && query.FromBlock == nil && query.ToBlock == nil {
+		found := false
+		for candidateNumber, block := range reader.blocks {
+			if block.Hash == *query.BlockHash {
+				number = candidateNumber
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, errors.New("unknown block hash")
+		}
+		reader.hashPinned[number] = true
+	} else {
+		if query.FromBlock == nil || query.ToBlock == nil || query.FromBlock.Cmp(query.ToBlock) != 0 || !query.FromBlock.IsUint64() {
+			return nil, errors.New("invalid range")
+		}
+		number = query.FromBlock.Uint64()
+	}
+	reader.filterCount[number]++
+	if err := reader.filterError[number]; err != nil {
+		return nil, err
+	}
+	return append([]types.Log{}, reader.logs[number]...), nil
+}
+
+type fakeContractCaller struct {
+	call  func(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error)
+	calls atomic.Int32
+}
+
+func (caller *fakeContractCaller) CallContract(ctx context.Context, message ethereum.CallMsg, number *big.Int) ([]byte, error) {
+	caller.calls.Add(1)
+	if caller.call == nil {
+		return nil, errors.New("metadata unavailable")
+	}
+	return caller.call(ctx, message, number)
 }
 
 type fakeSubscription struct {
@@ -390,132 +458,62 @@ type fakeSubscription struct {
 }
 
 func newFakeSubscription() *fakeSubscription {
-	return &fakeSubscription{errors: make(chan error)}
+	return &fakeSubscription{errors: make(chan error, 1)}
 }
 
 func (subscription *fakeSubscription) Err() <-chan error { return subscription.errors }
-
 func (subscription *fakeSubscription) Unsubscribe() {
 	subscription.once.Do(func() {
 		subscription.unsubscribed.Store(true)
 		close(subscription.errors)
 	})
 }
+func (subscription *fakeSubscription) fail(err error) { subscription.errors <- err }
 
-type fakeLogSource struct {
-	queries      chan ethereum.FilterQuery
-	subscribeErr error
+type fakeLogSubscriber struct {
+	registered   chan ethereum.FilterQuery
 	subscription *fakeSubscription
 	logs         chan<- types.Log
 }
 
-func newFakeLogSource(subscribeErr error) *fakeLogSource {
-	return &fakeLogSource{
-		queries:      make(chan ethereum.FilterQuery, 1),
-		subscribeErr: subscribeErr,
-		subscription: newFakeSubscription(),
-	}
+func newFakeLogSubscriber() *fakeLogSubscriber {
+	return &fakeLogSubscriber{registered: make(chan ethereum.FilterQuery, 1), subscription: newFakeSubscription()}
 }
 
-func (source *fakeLogSource) SubscribeFilterLogs(_ context.Context, query ethereum.FilterQuery, logs chan<- types.Log) (ethereum.Subscription, error) {
+func (source *fakeLogSubscriber) SubscribeFilterLogs(_ context.Context, query ethereum.FilterQuery, logs chan<- types.Log) (ethereum.Subscription, error) {
 	source.logs = logs
-	source.queries <- query
-	if source.subscribeErr != nil {
-		return nil, source.subscribeErr
-	}
+	source.registered <- query
 	return source.subscription, nil
 }
+func (source *fakeLogSubscriber) send(logEntry types.Log) { source.logs <- logEntry }
 
-func (source *fakeLogSource) send(logEntry types.Log) { source.logs <- logEntry }
-
-type fakeHeadSource struct {
-	subscribeErr error
+type fakeHeadSubscriber struct {
 	subscription *fakeSubscription
-	heads        chan<- *types.Header
 }
 
-func newFakeHeadSource(subscribeErr error) *fakeHeadSource {
-	return &fakeHeadSource{subscribeErr: subscribeErr, subscription: newFakeSubscription()}
+func newFakeHeadSubscriber() *fakeHeadSubscriber {
+	return &fakeHeadSubscriber{subscription: newFakeSubscription()}
 }
-
-func (source *fakeHeadSource) SubscribeNewHead(_ context.Context, heads chan<- *types.Header) (ethereum.Subscription, error) {
-	source.heads = heads
-	if source.subscribeErr != nil {
-		return nil, source.subscribeErr
-	}
+func (source *fakeHeadSubscriber) SubscribeNewHead(context.Context, chan<- *types.Header) (ethereum.Subscription, error) {
 	return source.subscription, nil
 }
-
-func (source *fakeHeadSource) send(header *types.Header) { source.heads <- header }
-
-type tickerRegistration struct {
-	duration time.Duration
-	ticker   *fakeTicker
-}
-
-type fakeClock struct {
-	tickers chan tickerRegistration
-}
-
-func newFakeClock() *fakeClock {
-	return &fakeClock{tickers: make(chan tickerRegistration, 4)}
-}
-
-func (*fakeClock) Now() time.Time { return time.Unix(0, 0) }
-
-func (*fakeClock) Sleep(ctx context.Context, _ time.Duration) error {
-	<-ctx.Done()
-	return ctx.Err()
-}
-
-func (testClock *fakeClock) NewTicker(duration time.Duration) clock.Ticker {
-	ticker := &fakeTicker{ticks: make(chan time.Time, 8)}
-	testClock.tickers <- tickerRegistration{duration: duration, ticker: ticker}
-	return ticker
-}
-
-func (*fakeClock) NewTimer(time.Duration) clock.Timer {
-	return &fakeTicker{ticks: make(chan time.Time, 1)}
-}
-
-type fakeTicker struct {
-	ticks   chan time.Time
-	stopped atomic.Bool
-}
-
-func (ticker *fakeTicker) C() <-chan time.Time { return ticker.ticks }
-func (ticker *fakeTicker) Stop()               { ticker.stopped.Store(true) }
-func (ticker *fakeTicker) tick()               { ticker.ticks <- time.Unix(0, 0) }
 
 func newTestService(
 	t *testing.T,
-	reader interface {
-		rpcReader
-		BlockReader
-	},
-	logSource *fakeLogSource,
-	headSource *fakeHeadSource,
-	testClock *fakeClock,
-	queue *fakeQueue,
-	codec *contracts.ERC20Codec,
+	finalized rpc.FinalizedReader,
+	handoff WatchStore,
 	source common.Address,
 	network domain.Network,
-	generation uint64,
+	lookback uint64,
+	caller rpc.ContractCaller,
+	logs rpc.LogSubscriber,
+	heads rpc.HeadSubscriber,
 ) *Service {
 	t.Helper()
 	service, err := NewService(Dependencies{
-		Contracts:      reader,
-		Logs:           reader,
-		Blocks:         reader,
-		LogSubscriber:  logSource,
-		HeadSubscriber: headSource,
-		Codec:          codec,
-		Clock:          testClock,
-		Observer:       observability.Discard{},
-		Queue:          queue,
-		Source:         source,
-		Network:        network,
-		Generation:     generation,
+		Contracts: caller, Finalized: finalized, LogSubscriber: logs, HeadSubscriber: heads,
+		Codec: newTestCodec(t), Clock: clock.Real{}, Observer: observability.Discard{}, Store: handoff,
+		Source: source, Network: network, Generation: 1, LookbackBlocks: lookback, ReadTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -523,37 +521,51 @@ func newTestService(
 	return service
 }
 
-type rpcReader interface {
-	CallContract(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error)
-	FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error)
-}
-
-func runTestService(service *Service, ctx context.Context) (<-chan struct{}, *error) {
-	done := make(chan struct{})
-	var runErr error
-	go func() {
-		runErr = service.Run(ctx)
-		close(done)
-	}()
-	return done, &runErr
-}
-
-func assertTransferQuery(t *testing.T, query ethereum.FilterQuery, transferTopic common.Hash, source common.Address, addresses []common.Address) {
+func openWatchStore(t *testing.T, path string, source common.Address, network domain.Network, lookback uint64) *store.BoltStore {
 	t.Helper()
-	wantTopics := [][]common.Hash{{transferTopic}, nil, {common.BytesToHash(source.Bytes())}}
-	if !reflect.DeepEqual(query.Addresses, addresses) || !reflect.DeepEqual(query.Topics, wantTopics) {
-		t.Fatalf("transfer query = %#v, нужны addresses %#v и topics %#v", query, addresses, wantTopics)
+	handoff, err := store.Open(path, store.OpenOptions{
+		Network: network.ChainID, Source: source, PolicyFingerprint: PolicyFingerprint(network, lookback),
+		MaxPending: 64, MaxDiscoveredTokens: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handoff
+}
+
+func assertCursor(t *testing.T, handoff *store.BoltStore, network domain.NetworkID, number uint64, hash common.Hash) {
+	t.Helper()
+	cursor, found, err := handoff.LoadScanCursor(context.Background(), network)
+	if err != nil || !found || cursor.BlockNumber != number || cursor.BlockHash != hash {
+		t.Fatalf("scan cursor = (%v, %v, %v), нужен block %d %s", cursor, found, err, number, hash)
 	}
 }
 
-func matchingLog(codec *contracts.ERC20Codec, source, token common.Address, blockNumber uint64, index uint) types.Log {
+func assertCandidateIDs(t *testing.T, handoff *store.BoltStore, network domain.NetworkID, want ...domain.CandidateID) {
+	t.Helper()
+	candidates, err := handoff.Replay(context.Background(), network)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[domain.CandidateID]int, len(candidates))
+	for _, candidate := range candidates {
+		got[candidate.ID]++
+	}
+	wanted := make(map[domain.CandidateID]int, len(want))
+	for _, id := range want {
+		wanted[id]++
+	}
+	if !reflect.DeepEqual(got, wanted) {
+		t.Fatalf("candidate IDs = %v, нужны %v", got, wanted)
+	}
+}
+
+func matchingLog(codec *contracts.ERC20Codec, source, token common.Address, number uint64, blockHash common.Hash, index uint) types.Log {
 	return types.Log{
-		Address:     token,
-		Topics:      []common.Hash{codec.TransferTopic(), testHash(0x91), common.BytesToHash(source.Bytes())},
-		BlockNumber: blockNumber,
-		BlockHash:   testHash(byte(blockNumber)),
-		TxHash:      testHash(byte(blockNumber + 1)),
-		Index:       index,
+		Address: token,
+		Topics:  []common.Hash{codec.TransferTopic(), testHash(0x91), common.BytesToHash(source.Bytes())},
+		Data:    make([]byte, 32), BlockNumber: number, BlockHash: blockHash,
+		TxHash: testHash(byte(number + 1)), Index: index,
 	}
 }
 
@@ -564,15 +576,6 @@ func newTestCodec(t *testing.T) *contracts.ERC20Codec {
 		t.Fatal(err)
 	}
 	return codec
-}
-
-func mustPack(t *testing.T, pack func() ([]byte, error)) []byte {
-	t.Helper()
-	data, err := pack()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return data
 }
 
 func encodeABIValue(t *testing.T, kind string, value any) []byte {
@@ -594,20 +597,20 @@ func receive[T any](t *testing.T, channel <-chan T) T {
 	case value := <-channel:
 		return value
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for test event")
+		t.Fatal("истекло время ожидания test event")
 		var zero T
 		return zero
 	}
 }
 
-func testAddress(lastByte byte) common.Address {
+func testAddress(value byte) common.Address {
 	var address common.Address
-	address[len(address)-1] = lastByte
+	address[len(address)-1] = value
 	return address
 }
 
-func testHash(lastByte byte) common.Hash {
+func testHash(value byte) common.Hash {
 	var hash common.Hash
-	hash[len(hash)-1] = lastByte
+	hash[len(hash)-1] = value
 	return hash
 }

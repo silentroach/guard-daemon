@@ -29,3 +29,20 @@ func TestCandidateIDIsStableAndVersionedByObservation(t *testing.T) {
 		t.Fatal("последовательные periodic observations были ошибочно дедуплицированы")
 	}
 }
+
+func TestCandidateValidationAndTokenReconciliationIdentity(t *testing.T) {
+	source := common.Address{19: 1}
+	token := Token{Address: common.Address{19: 2}, Symbol: "UNTRUSTED", Decimals: 18}
+	first := NewTokenReconciliationCandidate(31337, source, token, 1, 7)
+	second := NewTokenReconciliationCandidate(31337, source, token, 99, 7)
+	if first.ID != second.ID {
+		t.Fatal("RPC generation изменила stable reconciliation ID")
+	}
+	if err := ValidateCandidate(first); err != nil {
+		t.Fatalf("валидный candidate отклонён: %v", err)
+	}
+	first.ID[0] ^= 1
+	if err := ValidateCandidate(first); err == nil {
+		t.Fatal("candidate с повреждённым ID принят")
+	}
+}

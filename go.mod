@@ -8,6 +8,7 @@ require (
 	github.com/ethereum/go-ethereum v1.17.5
 	github.com/holiman/uint256 v1.3.2
 	github.com/joho/godotenv v1.5.1
+	go.etcd.io/bbolt v1.5.0
 )
 
 require (
@@ -34,6 +35,6 @@ require (
 	go.opentelemetry.io/otel v1.42.0 // indirect
 	go.opentelemetry.io/otel/metric v1.42.0 // indirect
 	go.opentelemetry.io/otel/trace v1.42.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 )

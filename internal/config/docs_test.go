@@ -42,6 +42,12 @@ func TestPublicConfigurationDocumentsOnlySupportedFields(t *testing.T) {
 	if assignments["DRY_RUN"] != "true" {
 		t.Fatal(".env.example не сохраняет безопасный dry-run default")
 	}
+	if assignments["STATE_DIRECTORY"] != defaultStateDirectory {
+		t.Fatal(".env.example не совпадает с default STATE_DIRECTORY")
+	}
+	if assignments["WATCH_LOOKBACK_BLOCKS"] != defaultLookbackBlocks {
+		t.Fatal(".env.example не совпадает с default WATCH_LOOKBACK_BLOCKS")
+	}
 	if _, exists := assignments["SOURCE_PRIVATE_KEY"]; exists {
 		t.Fatal(".env.example не должен предлагать хранить source key в файле")
 	}
@@ -71,5 +77,33 @@ func TestPublicConfigurationDocumentsOnlySupportedFields(t *testing.T) {
 		if !strings.Contains(text, "`"+template+"`") {
 			t.Errorf("docs/configuration.md не документирует шаблон %s", template)
 		}
+	}
+}
+
+func TestWatchPolicyDocumentationParity(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	paths := []string{
+		filepath.Join(root, ".env.example"),
+		filepath.Join(root, "docs", "configuration.md"),
+	}
+	want := []string{
+		"ограниченное окно ретроспективного просмотра до согласованного финализированного блока",
+		"Локальное состояние обязательно для восстановления после сбоя",
+		"Повреждение state, несовпадение сохранённой идентичности сети или конфигурации и невозможность получить эксклюзивную блокировку являются fail-closed ошибками запуска",
+		"Checkpoint продвигается только после durable `Ack` соответствующих candidates",
+	}
+
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			contents, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, statement := range want {
+				if !strings.Contains(string(contents), statement) {
+					t.Errorf("%s не фиксирует policy: %q", path, statement)
+				}
+			}
+		})
 	}
 }

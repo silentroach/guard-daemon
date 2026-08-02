@@ -23,6 +23,7 @@ type Runtime struct {
 	Networks       []Network
 	Artifact       ArtifactTrust
 	Policy         RuntimePolicy
+	Watch          WatchPolicy
 	ReadTimeout    time.Duration
 	LiveSecrets    LiveSecrets
 }
@@ -111,6 +112,10 @@ func loadFrom(lookup func(string) (string, bool), names []string) (Runtime, erro
 	if err != nil {
 		return Runtime{}, err
 	}
+	watch, err := loadWatchPolicy(lookup)
+	if err != nil {
+		return Runtime{}, err
+	}
 	readTimeout, err := loadReadTimeout(lookup)
 	if err != nil {
 		return Runtime{}, err
@@ -129,6 +134,7 @@ func loadFrom(lookup func(string) (string, bool), names []string) (Runtime, erro
 		Networks:       networks,
 		Artifact:       artifact,
 		Policy:         policy,
+		Watch:          watch,
 		ReadTimeout:    readTimeout,
 		LiveSecrets:    secrets,
 	}, nil
@@ -218,11 +224,13 @@ var staticEnvironmentFields = []string{
 	"RATE_LIMIT_PER_MINUTE",
 	"RESCUER_ARTIFACT",
 	"RPC_READ_TIMEOUT",
+	"STATE_DIRECTORY",
 	"SOURCE_ADDRESS",
 	"SOURCE_PRIVATE_KEY",
 	"SPONSOR_ADDRESS",
 	"SPONSOR_MIN_BALANCE_WEI",
 	"SPONSOR_PRIVATE_KEY",
+	"WATCH_LOOKBACK_BLOCKS",
 }
 
 var environmentFieldTemplates = []string{

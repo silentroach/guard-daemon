@@ -33,6 +33,14 @@ func TestReadOnlyFacadesDoNotExposeBroadcastCapability(t *testing.T) {
 	}
 }
 
+func TestHistoricalFacadeDoesNotExposeBroadcastCapability(t *testing.T) {
+	backend := (*ethclient.Client)(nil)
+	facade := &historicalReaderFacade{HistoricalReader: backend}
+	if _, ok := any(facade).(Broadcaster); ok {
+		t.Fatal("historical reader facade раскрывает broadcast capability")
+	}
+}
+
 type closeFunc func()
 
 func (close closeFunc) Close() { close() }

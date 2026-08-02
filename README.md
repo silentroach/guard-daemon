@@ -25,7 +25,8 @@ Result: No window for bot interception. Either both succeed or both fail.
 
 The daemon:
 - **Наблюдает только за настроенными событиями Transfer**; безопасный режим по умолчанию — `known-only`
-- **Instantly triggers atomic sweep** when new tokens arrive
+- **Сохраняет событие как provisional hint**, но разрешает sweep только после
+  подтверждения блока finalized quorum
 - **Verifies delegation** before sweeping (via `_verifyDelegation()` in RescuerV2)
 - **Поддерживает явное включение неизвестных токенов**, считая их metadata недоверенными
 
@@ -34,9 +35,11 @@ The daemon:
 ```
 Incoming Transfer (airdrop/vesting)
         ↓
-[WebSocket listener catches event]
+[WebSocket listener сохраняет provisional hint]
         ↓
-resolve Token (known or on-chain lookup)
+[finalized quorum scanner подтверждает canonical log]
+        ↓
+resolve Token (known or bounded on-chain lookup)
         ↓
 renewAndSweep() — atomic EIP-7702 tx
   ├─ AuthList: [SetCode → RescuerV2]
@@ -155,40 +158,45 @@ CLI без `--broadcast` не читает ключ и не обращается
 
 ### What happens when a transfer arrives
 
-1. **Daemon detects Transfer event**
+1. **Daemon предварительно обнаруживает Transfer event**
    - Filters on: `to == SOURCE_ADDRESS`
    - Ограничивает адреса контрактов в режимах `known-only` и `allowlist`
    - Принимает неизвестные контракты только после явного `TOKEN_MODE_<N>=all`
+   - WebSocket-событие не запускает финансовое действие до finality
 
-2. **Token identification**
+2. **Canonical confirmation**
+   - Два независимых provider согласуют finalized block hash и полный набор logs
+   - Scanner восстанавливает разрывы через backfill и persistent cursor
+
+3. **Token identification**
    - Checks if token is in known list (`tokenMap`)
    - If unknown: queries `symbol()` and `decimals()` on-chain
    - Falls back to address prefix if contract is non-standard
 
-3. **Balance check**
+4. **Balance check**
    - Verifies token balance > 0
    - Prevents pointless gas waste on zero-balance sweeps
 
-4. **Atomic sweep (renewAndSweep)**
+5. **Atomic sweep (renewAndSweep)**
    - Sponsor constructs SetCodeTx with:
      - `AuthList`: SetCode authorization (source → RescuerV2)
      - `Data`: RescuerV2.sweepAll([token_address])
    - Broadcasts to network
    - Ожидает receipt и затем проверяет fail-closed постусловия
 
-5. **Contract execution (RescuerV2)**
+6. **Contract execution (RescuerV2)**
    - Receives call with delegated source EOA
    - Calls `_verifyDelegation()`: confirms delegation is to this contract
    - If OK: transfers all token balance to destination
    - If failed: reverts (tokens remain safe on source)
 
-6. **Result**
+7. **Result**
    - If success: tokens at destination
    - If failed: logged, will retry on next event
 
 ### Periodic health checks
 
-Every ~12 seconds (WebSocket mode) or per polling interval (HTTP mode):
+Примерно раз в минуту независимо от режима доставки событий:
 - Verifies delegation is still active
 - If delegation was overwritten: calls `renewDelegation()` to restore it
 - Sweeps small native ETH if balance > threshold
@@ -309,6 +317,7 @@ zkSync's sequencer doesn't accept EIP-7702 Type-4 transactions yet. This is a ne
 |--------|-------|
 | Startup time | <100ms |
 | Event detection latency | <500ms (WebSocket) |
+| Action readiness | после согласованного finalized block; зависит от сети |
 | Transaction construction | ~100ms |
 | Confirmation wait | 12-60s (network dependent) |
 | Memory footprint | ~50MB |
@@ -316,16 +325,16 @@ zkSync's sequencer doesn't accept EIP-7702 Type-4 transactions yet. This is a ne
 
 ## Architecture
 
-- **Language:** Go 1.22+
-- **Dependencies:** go-ethereum, uint256, godotenv
-- **Concurrency:** One goroutine per network
-- **Event source:** WebSocket (fallback to polling)
+- **Language:** Go 1.26.5
+- **Dependencies:** go-ethereum, uint256, godotenv, bbolt
+- **Concurrency:** один supervisor на сеть и ограниченный набор worker goroutines
+- **Event source:** WebSocket как provisional hint; полноту обеспечивает finalized quorum scanner с backfill и polling
 - **Contract interaction:** Direct eth_call / eth_sendTransaction
 
 ## Known Limitations
 
 1. **One sweep at a time per network** (mutex prevents concurrent sweeps)
-   - Надёжный durable replay при contention относится к Task 07 и пока блокирует выпуск
+   - Durable handoff и replay реализованы; reconciliation неоднозначной отправки транзакции относится к Task 07 и пока блокирует выпуск
 
 2. **Расходы на неизвестные токены**
    - В режиме `known-only` неизвестные адреса фильтруются до metadata lookup

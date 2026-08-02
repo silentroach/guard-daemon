@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"math/big"
 	"reflect"
 	"strings"
 	"sync"
@@ -18,8 +19,10 @@ import (
 	"guard-daemon/internal/observability"
 	"guard-daemon/internal/rescue"
 	"guard-daemon/internal/rpc"
+	"guard-daemon/internal/store"
 	"guard-daemon/internal/watcher"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -171,14 +174,16 @@ func TestReconnectReusesCoordinatorAndInjectedDelay(t *testing.T) {
 	testClock := newSupervisorClock()
 	coordinators := make(chan *rescue.Coordinator, 2)
 	secondStarted := make(chan struct{}, 1)
+	dialed := make(chan string, 2)
 	clients := []*stubGenerationClient{{generation: 1}, {generation: 2}}
 	dependencies := daemonDependencies{
 		serviceClock: testClock,
 		observer:     observability.Discard{},
-		dial: func(_ context.Context, _ string, generation uint64) (generationClient, error) {
+		dial: func(_ context.Context, endpoint string, generation uint64) (generationClient, error) {
 			if generation == 2 && clients[0].closed.Load() != 1 {
 				t.Error("second generation dialed before first client closed")
 			}
+			dialed <- endpoint
 			return clients[generation-1], nil
 		},
 		newSession: func(_ context.Context, network *networkProcess, client generationClient) (candidateSession, error) {
@@ -210,6 +215,9 @@ func TestReconnectReusesCoordinatorAndInjectedDelay(t *testing.T) {
 	testClock.allowSleep <- struct{}{}
 	secondCoordinator := receiveWithin(t, coordinators)
 	receiveWithin(t, secondStarted)
+	if first, second := receiveWithin(t, dialed), receiveWithin(t, dialed); first != network.WSURL || second != network.WSURL+"-two" {
+		t.Fatalf("primary rotation = %q, %q", first, second)
+	}
 	if firstCoordinator != secondCoordinator {
 		t.Fatal("coordinator was recreated across reconnect generations")
 	}
@@ -223,16 +231,78 @@ func TestReconnectReusesCoordinatorAndInjectedDelay(t *testing.T) {
 	}
 }
 
+func TestGenerationUsesDeadlineQuorumAndClosesRuntimeState(t *testing.T) {
+	network := testNetwork("bounded-network", 351)
+	testClock := newSupervisorClock()
+	started := make(chan struct{}, 1)
+	client := &stubGenerationClient{generation: 1}
+	quorum := &countingRuntimeQuorum{}
+	handoff := &countingHandoff{legacyMemoryHandoff: newLegacyMemoryHandoff(network.ChainID, testClock)}
+	dependencies := daemonDependencies{
+		serviceClock: testClock,
+		observer:     observability.Discard{},
+		dial: func(ctx context.Context, _ string, _ uint64) (generationClient, error) {
+			if _, ok := ctx.Deadline(); !ok {
+				t.Error("generation dial не получил deadline")
+			}
+			return client, nil
+		},
+		openStore: func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error) {
+			return handoff, nil
+		},
+		openQuorum: func(_ context.Context, configured config.Network, timeout time.Duration) (runtimeQuorum, error) {
+			if timeout != time.Second || len(configured.ReadProviders) != 2 {
+				t.Fatalf("runtime quorum input: timeout=%s providers=%d", timeout, len(configured.ReadProviders))
+			}
+			return quorum, nil
+		},
+		newSession: stubSessionFactory(nil),
+		newWatcher: func(watcher.Dependencies) (generationRunner, error) {
+			return runnerFunc(func(ctx context.Context) error {
+				started <- struct{}{}
+				<-ctx.Done()
+				return ctx.Err()
+			}), nil
+		},
+	}
+	dependencies = completeTestDependencies(t, dependencies)
+	process, err := newDaemon(context.Background(), testRuntime(t, []domain.Network{network}), dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runDaemon(process, ctx)
+	receiveWithin(t, started)
+	cancel()
+	if err := receiveWithin(t, done); err != nil {
+		t.Fatal(err)
+	}
+	if quorum.closed.Load() != 1 || handoff.closed.Load() != 1 || client.closed.Load() != 1 {
+		t.Fatalf("close counts: quorum=%d state=%d client=%d", quorum.closed.Load(), handoff.closed.Load(), client.closed.Load())
+	}
+}
+
 type stubGenerationClient struct {
 	generation uint64
 	closed     atomic.Int32
 }
 
-func (client *stubGenerationClient) Generation() uint64          { return client.generation }
-func (*stubGenerationClient) Reader() rpc.Reader                 { return nil }
-func (*stubGenerationClient) LogSubscriber() rpc.LogSubscriber   { return nil }
-func (*stubGenerationClient) HeadSubscriber() rpc.HeadSubscriber { return nil }
+func (client *stubGenerationClient) Generation() uint64 { return client.generation }
+func (*stubGenerationClient) Reader() rpc.Reader {
+	return &startupGenerationReader{chainID: big.NewInt(1)}
+}
+func (*stubGenerationClient) LogSubscriber() rpc.LogSubscriber   { return inertSubscriber{} }
+func (*stubGenerationClient) HeadSubscriber() rpc.HeadSubscriber { return inertSubscriber{} }
 func (client *stubGenerationClient) Close()                      { client.closed.Add(1) }
+
+type inertSubscriber struct{}
+
+func (inertSubscriber) SubscribeFilterLogs(context.Context, ethereum.FilterQuery, chan<- types.Log) (ethereum.Subscription, error) {
+	return nil, errors.New("test subscription is not configured")
+}
+func (inertSubscriber) SubscribeNewHead(context.Context, chan<- *types.Header) (ethereum.Subscription, error) {
+	return nil, errors.New("test subscription is not configured")
+}
 
 type idleHandler struct {
 	generation uint64
@@ -313,6 +383,7 @@ func testRuntime(t *testing.T, networks []domain.Network) config.Runtime {
 		Destination:    testProcessAddress(3),
 		Networks:       configured,
 		ReadTimeout:    time.Second,
+		Watch:          config.WatchPolicy{StateDirectory: "test-state", LookbackBlocks: 64},
 	}
 }
 
@@ -335,7 +406,57 @@ func completeTestDependencies(t *testing.T, dependencies daemonDependencies) dae
 	dependencies.dialSubmission = func(context.Context, string) (submissionClient, error) {
 		return &stubSubmissionClient{}, nil
 	}
+	return completeTestRuntimeDependencies(dependencies)
+}
+
+func completeTestRuntimeDependencies(dependencies daemonDependencies) daemonDependencies {
+	if dependencies.openStore == nil {
+		dependencies.openStore = func(_ config.Runtime, _ config.Network, network domain.Network) (store.HandoffStore, error) {
+			return newLegacyMemoryHandoff(network.ChainID, dependencies.serviceClock), nil
+		}
+	}
+	if dependencies.openQuorum == nil {
+		dependencies.openQuorum = func(context.Context, config.Network, time.Duration) (runtimeQuorum, error) {
+			return inertRuntimeQuorum{}, nil
+		}
+	}
 	return dependencies
+}
+
+type inertRuntimeQuorum struct{}
+
+func (inertRuntimeQuorum) Finalized(context.Context) (rpc.BlockRef, error) {
+	return rpc.BlockRef{}, errors.New("test quorum read is not configured")
+}
+func (inertRuntimeQuorum) Header(context.Context, uint64) (rpc.BlockRef, error) {
+	return rpc.BlockRef{}, errors.New("test quorum read is not configured")
+}
+func (inertRuntimeQuorum) FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error) {
+	return nil, errors.New("test quorum read is not configured")
+}
+func (inertRuntimeQuorum) Close() {}
+
+type countingRuntimeQuorum struct{ closed atomic.Int32 }
+
+func (*countingRuntimeQuorum) Finalized(context.Context) (rpc.BlockRef, error) {
+	return rpc.BlockRef{}, errors.New("test quorum read is not configured")
+}
+func (*countingRuntimeQuorum) Header(context.Context, uint64) (rpc.BlockRef, error) {
+	return rpc.BlockRef{}, errors.New("test quorum read is not configured")
+}
+func (*countingRuntimeQuorum) FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error) {
+	return nil, errors.New("test quorum read is not configured")
+}
+func (quorum *countingRuntimeQuorum) Close() { quorum.closed.Add(1) }
+
+type countingHandoff struct {
+	*legacyMemoryHandoff
+	closed atomic.Int32
+}
+
+func (handoff *countingHandoff) Close() error {
+	handoff.closed.Add(1)
+	return nil
 }
 
 type stubSubmissionClient struct{}

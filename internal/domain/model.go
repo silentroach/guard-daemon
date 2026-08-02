@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 )
+
+var ErrInvalidCandidate = errors.New("candidate имеет некорректную идентичность")
 
 type NetworkID int64
 
@@ -103,6 +106,40 @@ func NewPeriodicCandidate(network NetworkID, source common.Address, generation, 
 	}
 	candidate.ID = candidateID(candidate)
 	return candidate
+}
+
+func NewTokenReconciliationCandidate(network NetworkID, source common.Address, token Token, generation, observation uint64) RescueCandidate {
+	candidate := RescueCandidate{
+		Network:     network,
+		Kind:        CandidateToken,
+		Source:      source,
+		Token:       token,
+		Generation:  generation,
+		Observation: observation,
+	}
+	candidate.ID = candidateID(candidate)
+	return candidate
+}
+
+// ValidateCandidate подтверждает, что deserialized candidate сохранил stable ID
+// и обязательные identity-поля.
+func ValidateCandidate(candidate RescueCandidate) error {
+	if candidate.Network <= 0 || candidate.Source == (common.Address{}) || candidate.ID != candidateID(candidate) {
+		return ErrInvalidCandidate
+	}
+	switch candidate.Kind {
+	case CandidateToken:
+		if candidate.Token.Address == (common.Address{}) {
+			return ErrInvalidCandidate
+		}
+	case CandidateNative, CandidatePeriodic:
+		if candidate.Token.Address != (common.Address{}) {
+			return ErrInvalidCandidate
+		}
+	default:
+		return ErrInvalidCandidate
+	}
+	return nil
 }
 
 func candidateID(candidate RescueCandidate) CandidateID {

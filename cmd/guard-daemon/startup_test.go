@@ -17,6 +17,7 @@ import (
 	"guard-daemon/internal/rescue"
 	"guard-daemon/internal/rescue/dryrun"
 	"guard-daemon/internal/rpc"
+	"guard-daemon/internal/store"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -43,6 +44,7 @@ func TestDryRunStartupHasNoProductionSigningOrBroadcastGraph(t *testing.T) {
 			return contracts.DeploymentManifest{Address: testProcessAddress(4)}, nil
 		},
 	}
+	dependencies = completeTestRuntimeDependencies(dependencies)
 
 	process, err := newDaemon(context.Background(), runtimeConfig, dependencies)
 	if err != nil {
@@ -81,6 +83,10 @@ func TestLiveStartupAttestsEveryNetworkBeforeConstructingSigners(t *testing.T) {
 		events = append(events, "attest:"+network.Name)
 		return nil
 	}
+	dependencies.openStore = func(_ config.Runtime, configured config.Network, network domain.Network) (store.HandoffStore, error) {
+		events = append(events, "store:"+configured.Name)
+		return newLegacyMemoryHandoff(network.ChainID, dependencies.serviceClock), nil
+	}
 	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
 		events = append(events, "signers")
 		return testPrivateKeySigners(t)
@@ -94,10 +100,33 @@ func TestLiveStartupAttestsEveryNetworkBeforeConstructingSigners(t *testing.T) {
 		"manifest:second-network",
 		"attest:first-network",
 		"attest:second-network",
+		"store:first-network",
+		"store:second-network",
 		"signers",
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("startup order = %v, нужен %v", events, want)
+	}
+}
+
+func TestStateFailureBlocksSignerConstruction(t *testing.T) {
+	runtimeConfig := testRuntime(t, []domain.Network{testNetwork("state-network", 650)})
+	dependencies := startupDependencies(t)
+	var signerConstructions atomic.Int32
+	dependencies.openStore = func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error) {
+		return nil, errors.New("private state path detail")
+	}
+	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
+		signerConstructions.Add(1)
+		return testPrivateKeySigners(t)
+	}
+
+	err := func() error {
+		_, err := newDaemon(context.Background(), runtimeConfig, dependencies)
+		return err
+	}()
+	if publicErrorCode(err) != errorStoreFailed || signerConstructions.Load() != 0 {
+		t.Fatalf("state failure: error=%v signer constructions=%d", err, signerConstructions.Load())
 	}
 }
 
@@ -274,6 +303,7 @@ func TestDryRunSessionPlansWithoutCallingGuards(t *testing.T) {
 			return nil, nil
 		},
 	}
+	dependencies = completeTestRuntimeDependencies(dependencies)
 	process, err := newDaemon(context.Background(), runtimeConfig, dependencies)
 	if err != nil {
 		t.Fatal(err)
@@ -356,7 +386,7 @@ func startupDependencies(t *testing.T) daemonDependencies {
 	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
 		return testPrivateKeySigners(t)
 	}
-	return dependencies
+	return completeTestRuntimeDependencies(dependencies)
 }
 
 func testPrivateKeySigners(t *testing.T) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {

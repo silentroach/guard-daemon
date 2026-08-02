@@ -1,6 +1,8 @@
 # Task 06: Надёжное получение событий и жизненный цикл RPC
 
-Статус: `PENDING`
+Статус: `DONE`
+
+Исходный commit: `729af6a`.
 
 Зависимости: Tasks 02 и 05.
 
@@ -72,6 +74,27 @@
 Отдельный ревьюер моделирует disconnect в каждом переходе состояния, проверяет порядок checkpoint/queue acknowledgement, bounded memory/disk и отсутствие private RPC URL в logs.
 
 Все замечания исправляются; изменения state machine требуют повторного ревью.
+
+Финальный closure pass: `ПРОЙДЕНО`. Все `REV-06-001` — `REV-06-015`
+закрыты; новых findings нет. Отчёт: [review 06](../reviews/06-watcher-rpc.md).
+
+## Evidence
+
+- Реализованы hash-pinned finalized quorum scanner, bounded backfill,
+  subscription hints, polling fallback, reconnect/reorg validation и deadlines.
+- Production bbolt store атомарно сохраняет canonical journal, FIFO ready queue,
+  delayed retry, incidents, scan cursor и confirmed checkpoint; reopen fail
+  closed проверяет bindings, bounds, indexes, sequences и acknowledgement
+  coverage.
+- Queue/discovery/metadata/history ограничены; saturation и overflow не создают
+  silent drop и не блокируют authoritative scanner.
+- Официальный Go `1.26.5`: `make go-ci` успешно. Полный race suite, stress
+  `-count=20`, оба fuzz target, `go vet`, static build, tidy diff, formatting,
+  vulnerability и secret gates прошли.
+- Проверенный digest 37 implementation paths:
+  `b8674a01a05cfddccb81c884b6f5577c8557511f42a006f636d70dc5bb678718`;
+  независимо воспроизведён reviewer.
+- Статус `DONE`, evidence и отчёт фиксируются тем же atomic task commit.
 
 ## Завершение и коммит
 

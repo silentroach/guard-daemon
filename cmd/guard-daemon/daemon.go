@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,8 +26,11 @@ import (
 )
 
 const (
-	reconnectDelay      = 5 * time.Second
-	candidateRetryDelay = 5 * time.Second
+	reconnectDelay       = 5 * time.Second
+	candidateRetryDelay  = 5 * time.Second
+	maxPendingCandidates = uint32(1024)
+	maxDiscoveredTokens  = uint32(1024)
+	maxWatcherLookback   = uint64(10_000)
 )
 
 const (
@@ -40,6 +45,8 @@ const (
 	errorCandidateNackFailed domain.ErrorCode = "daemon_candidate_nack_failed"
 	errorCandidateAckFailed  domain.ErrorCode = "daemon_candidate_ack_failed"
 	errorTokenForbidden      domain.ErrorCode = "daemon_token_forbidden"
+	errorStoreFailed         domain.ErrorCode = "daemon_store_failed"
+	errorQuorumFailed        domain.ErrorCode = "daemon_runtime_quorum_failed"
 )
 
 const (
@@ -69,6 +76,11 @@ type generationRunner interface {
 	Run(context.Context) error
 }
 
+type runtimeQuorum interface {
+	rpc.FinalizedReader
+	Close()
+}
+
 type candidateHandler interface {
 	Generation() uint64
 	Handle(context.Context, domain.RescueCandidate) error
@@ -82,6 +94,7 @@ type candidateSession interface {
 type preparedNetwork struct {
 	configured config.Network
 	manifest   contracts.DeploymentManifest
+	handoff    store.HandoffStore
 }
 
 type daemonDependencies struct {
@@ -94,6 +107,8 @@ type daemonDependencies struct {
 	newSigners     func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error)
 	newSession     func(context.Context, *networkProcess, generationClient) (candidateSession, error)
 	newWatcher     func(watcher.Dependencies) (generationRunner, error)
+	openStore      func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error)
+	openQuorum     func(context.Context, config.Network, time.Duration) (runtimeQuorum, error)
 }
 
 type daemon struct {
@@ -109,15 +124,27 @@ type networkProcess struct {
 	sponsor          common.Address
 	destination      common.Address
 	readTimeout      time.Duration
+	watchLookback    uint64
 	coordinator      *rescue.Coordinator
 	dryAuthorizer    rescue.AuthorizationSigner
 	dryTransactioner rescue.TransactionSigner
 	dryBroadcaster   rpc.Broadcaster
 	dryAttempts      *dryrun.Attempts
-	handoff          *legacyMemoryHandoff
+	handoff          store.HandoffStore
 	codec            *contracts.ERC20Codec
 	allowedTokens    map[common.Address]struct{}
 }
+
+type generationClientView struct {
+	generationClient
+	reader rpc.Reader
+	logs   rpc.LogSubscriber
+	heads  rpc.HeadSubscriber
+}
+
+func (client *generationClientView) Reader() rpc.Reader                 { return client.reader }
+func (client *generationClientView) LogSubscriber() rpc.LogSubscriber   { return client.logs }
+func (client *generationClientView) HeadSubscriber() rpc.HeadSubscriber { return client.heads }
 
 type liveCandidateSession struct {
 	*rescue.Session
@@ -155,6 +182,18 @@ func newProductionDependencies(observer observability.Observer, mode config.Mode
 			return dialer.DialContext(ctx, endpoint, generation)
 		},
 		loadManifest: loadConfiguredManifest,
+		openStore: func(runtimeConfig config.Runtime, _ config.Network, network domain.Network) (store.HandoffStore, error) {
+			path := filepath.Join(runtimeConfig.Watch.StateDirectory, "watcher-"+strconv.FormatInt(int64(network.ChainID), 10)+".db")
+			return store.Open(path, store.OpenOptions{
+				Network:             network.ChainID,
+				Source:              runtimeConfig.SourceAddress,
+				PolicyFingerprint:   watcher.PolicyFingerprint(network, runtimeConfig.Watch.LookbackBlocks),
+				MaxPending:          maxPendingCandidates,
+				MaxDiscoveredTokens: maxDiscoveredTokens,
+				Clock:               clock.Real{},
+			})
+		},
+		openQuorum: openRuntimeQuorum,
 	}
 	if mode.IsLive() {
 		dependencies.dialSubmission = dialSubmissionClient
@@ -162,6 +201,19 @@ func newProductionDependencies(observer observability.Observer, mode config.Mode
 		dependencies.newSigners = newPrivateKeySigners
 	}
 	return dependencies
+}
+
+func openRuntimeQuorum(ctx context.Context, network config.Network, timeout time.Duration) (runtimeQuorum, error) {
+	endpoints := make([]rpc.ProviderEndpoint, 0, len(network.ReadProviders))
+	for _, provider := range network.ReadProviders {
+		endpoints = append(endpoints, rpc.ProviderEndpoint{
+			Identity: rpc.ProviderIdentity{
+				ID: provider.ID, Fingerprint: provider.EndpointFingerprint, TrustDomain: provider.TrustDomain,
+			},
+			Endpoint: provider.HTTPURL,
+		})
+	}
+	return rpc.DialQuorum(ctx, endpoints, timeout)
 }
 
 func loadConfiguredManifest(runtimeConfig config.Runtime, network config.Network) (contracts.DeploymentManifest, error) {
@@ -269,7 +321,7 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 	if ctx == nil {
 		return nil, processError("daemon.context", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
 	}
-	if (!runtimeConfig.Mode.IsDryRun() && !runtimeConfig.Mode.IsLive()) || runtimeConfig.SourceAddress == (common.Address{}) || runtimeConfig.SponsorAddress == (common.Address{}) || runtimeConfig.Destination == (common.Address{}) || runtimeConfig.SourceAddress == runtimeConfig.SponsorAddress || runtimeConfig.SourceAddress == runtimeConfig.Destination || runtimeConfig.SponsorAddress == runtimeConfig.Destination || runtimeConfig.ReadTimeout <= 0 {
+	if (!runtimeConfig.Mode.IsDryRun() && !runtimeConfig.Mode.IsLive()) || runtimeConfig.SourceAddress == (common.Address{}) || runtimeConfig.SponsorAddress == (common.Address{}) || runtimeConfig.Destination == (common.Address{}) || runtimeConfig.SourceAddress == runtimeConfig.SponsorAddress || runtimeConfig.SourceAddress == runtimeConfig.Destination || runtimeConfig.SponsorAddress == runtimeConfig.Destination || runtimeConfig.ReadTimeout <= 0 || runtimeConfig.Watch.StateDirectory == "" || strings.IndexByte(runtimeConfig.Watch.StateDirectory, 0) >= 0 || filepath.Clean(runtimeConfig.Watch.StateDirectory) != runtimeConfig.Watch.StateDirectory || runtimeConfig.Watch.LookbackBlocks == 0 || runtimeConfig.Watch.LookbackBlocks > maxWatcherLookback {
 		return nil, processError("daemon.config", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
 	}
 	dependencies, err := dependencies.withDefaults(runtimeConfig.Mode)
@@ -295,6 +347,26 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 				return nil, processError("daemon.attestation", domain.ErrorConfiguration, errorStartupInvalid, false, err)
 			}
 		}
+	}
+
+	storesOpen := true
+	defer func() {
+		if !storesOpen {
+			return
+		}
+		for _, network := range prepared {
+			if network.handoff != nil {
+				_ = network.handoff.Close()
+			}
+		}
+	}()
+	for index := range prepared {
+		network := prepared[index].configured.Domain(prepared[index].manifest.Address)
+		handoff, openErr := dependencies.openStore(runtimeConfig, prepared[index].configured, network)
+		if openErr != nil || handoff == nil {
+			return nil, processError("daemon.store", domain.ErrorInternal, errorStoreFailed, false, openErr)
+		}
+		prepared[index].handoff = handoff
 	}
 
 	var authorizer rescue.AuthorizationSigner
@@ -338,8 +410,9 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 			sponsor:       runtimeConfig.SponsorAddress,
 			destination:   runtimeConfig.Destination,
 			readTimeout:   runtimeConfig.ReadTimeout,
+			watchLookback: runtimeConfig.Watch.LookbackBlocks,
 			coordinator:   coordinator,
-			handoff:       newLegacyMemoryHandoff(network.ChainID, dependencies.serviceClock),
+			handoff:       preparedNetwork.handoff,
 			codec:         codec,
 			allowedTokens: make(map[common.Address]struct{}, len(network.Tokens)),
 		}
@@ -351,11 +424,12 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 		}
 		process.networks = append(process.networks, networkState)
 	}
+	storesOpen = false
 	return process, nil
 }
 
 func (dependencies daemonDependencies) withDefaults(mode config.Mode) (daemonDependencies, error) {
-	if dependencies.serviceClock == nil || dependencies.observer == nil || dependencies.dial == nil || dependencies.loadManifest == nil {
+	if dependencies.serviceClock == nil || dependencies.observer == nil || dependencies.dial == nil || dependencies.loadManifest == nil || dependencies.openStore == nil || dependencies.openQuorum == nil {
 		return daemonDependencies{}, errors.New("не заданы обязательные зависимости процесса")
 	}
 	if mode.IsLive() && (dependencies.dialSubmission == nil || dependencies.attestNetwork == nil || dependencies.newSigners == nil) {
@@ -371,6 +445,7 @@ func (dependencies daemonDependencies) withDefaults(mode config.Mode) (daemonDep
 
 func (process *daemon) Run(ctx context.Context) error {
 	if ctx == nil {
+		_ = process.closeStores()
 		return processError("daemon.run", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
 	}
 
@@ -383,7 +458,20 @@ func (process *daemon) Run(ctx context.Context) error {
 		}()
 	}
 	workers.Wait()
+	if err := process.closeStores(); err != nil {
+		return processError("daemon.store.close", domain.ErrorInternal, errorStoreFailed, false, err)
+	}
 	return nil
+}
+
+func (process *daemon) closeStores() error {
+	var firstError error
+	for _, network := range process.networks {
+		if err := network.handoff.Close(); err != nil && firstError == nil {
+			firstError = err
+		}
+	}
+	return firstError
 }
 
 func (network *networkProcess) supervise(ctx context.Context, dependencies daemonDependencies) {
@@ -420,25 +508,49 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 	if client.Generation() != generation {
 		return processError("daemon.client_generation", domain.ErrorInternal, errorClientInvalid, false, nil)
 	}
+	reader, err := rpc.NewDeadlineReader(client.Reader(), network.readTimeout)
+	if err != nil {
+		return processError("daemon.reader", domain.ErrorInternal, errorClientInvalid, false, err)
+	}
+	logSubscriber, err := rpc.NewDeadlineLogSubscriber(client.LogSubscriber(), network.readTimeout)
+	if err != nil {
+		return processError("daemon.logs", domain.ErrorInternal, errorClientInvalid, false, err)
+	}
+	headSubscriber, err := rpc.NewDeadlineHeadSubscriber(client.HeadSubscriber(), network.readTimeout)
+	if err != nil {
+		return processError("daemon.heads", domain.ErrorInternal, errorClientInvalid, false, err)
+	}
+	boundedClient := &generationClientView{
+		generationClient: client,
+		reader:           reader,
+		logs:             logSubscriber,
+		heads:            headSubscriber,
+	}
+	quorum, err := dependencies.openQuorum(generationContext, network.configured, network.readTimeout)
+	if err != nil || quorum == nil {
+		return processError("daemon.quorum", domain.ErrorRPCTransient, errorQuorumFailed, true, err)
+	}
+	defer quorum.Close()
 
-	session, err := network.openSession(generationContext, client, dependencies)
+	session, err := network.openSession(generationContext, boundedClient, dependencies)
 	if err != nil {
 		return processError("daemon.session", domain.ErrorRPCTransient, errorSessionFailed, true, err)
 	}
 	defer session.Close()
 	watcherService, err := dependencies.newWatcher(watcher.Dependencies{
-		Contracts:      client.Reader(),
-		Logs:           client.Reader(),
-		Blocks:         client.Reader(),
-		LogSubscriber:  client.LogSubscriber(),
-		HeadSubscriber: client.HeadSubscriber(),
+		Contracts:      reader,
+		Finalized:      quorum,
+		LogSubscriber:  logSubscriber,
+		HeadSubscriber: headSubscriber,
 		Codec:          network.codec,
 		Clock:          dependencies.serviceClock,
 		Observer:       dependencies.observer,
-		Queue:          network.handoff,
+		Store:          network.handoff,
 		Source:         network.source,
 		Network:        network.network,
 		Generation:     generation,
+		LookbackBlocks: network.watchLookback,
+		ReadTimeout:    network.readTimeout,
 	})
 	if err != nil {
 		return processError("daemon.watcher", domain.ErrorInternal, errorWatcherFailed, false, err)
@@ -518,17 +630,27 @@ func (network *networkProcess) dialClient(ctx context.Context, generation uint64
 	for _, provider := range network.configured.ReadProviders {
 		endpoints = append(endpoints, provider.HTTPURL)
 	}
+	if len(endpoints) == 0 {
+		return nil, processError("daemon.rpc_dial", domain.ErrorConfiguration, errorDialFailed, false, nil)
+	}
+	start := int((generation - 1) % uint64(len(endpoints)))
 	var lastError error
-	for index, endpoint := range endpoints {
-		if index == webSocketCount {
+	httpFallbackRecorded := false
+	for attempt := range endpoints {
+		index := (start + attempt) % len(endpoints)
+		endpoint := endpoints[index]
+		if index >= webSocketCount && !httpFallbackRecorded {
 			dependencies.observer.Record(observability.Event{
 				Level:       observability.LevelWarning,
 				Code:        eventHTTPFallback,
 				NetworkName: network.network.Name,
 				ErrorCode:   publicErrorCode(lastError),
 			})
+			httpFallbackRecorded = true
 		}
-		client, err := dependencies.dial(ctx, endpoint, generation)
+		dialContext, cancelDial := context.WithTimeout(ctx, network.readTimeout)
+		client, err := dependencies.dial(dialContext, endpoint, generation)
+		cancelDial()
 		if err == nil && client != nil {
 			return client, nil
 		}

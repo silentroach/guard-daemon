@@ -127,8 +127,10 @@ func reservedEnvironmentName(name string) bool {
 		"RPC_READ_",
 		"RPC_URL_",
 		"SPONSOR_",
+		"STATE_",
 		"TOKEN_",
 		"TOKENS_",
+		"WATCH_",
 	} {
 		if strings.HasPrefix(name, prefix) {
 			return true
