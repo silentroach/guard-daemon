@@ -35,7 +35,7 @@
 - [x] [`DONE` Task 06: Надёжное получение событий и жизненный цикл RPC](tasks/06-watcher-rpc.md)
 - [x] [`DONE` Task 07: Координатор транзакций, повторы и постусловия](tasks/07-rescue-coordinator.md)
 - [x] [`DONE` Task 08: Защита от злоупотребления gas и наблюдаемость](tasks/08-abuse-observability.md)
-- [ ] [`PENDING` Task 09: Атакующие интеграционные тесты и проверки безопасности](tasks/09-security-validation.md)
+- [x] [`DONE` Task 09: Атакующие интеграционные тесты и проверки безопасности](tasks/09-security-validation.md)
 - [ ] [`PENDING` Task 10: Эксплуатация, миграция и документация выпуска](tasks/10-operations-release.md)
 - [ ] [`PENDING` Task 11: Финальное независимое ревью и решение о выпуске](tasks/11-final-review.md)
 

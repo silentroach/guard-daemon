@@ -263,18 +263,59 @@ func (store *BoltStore) PruneRescueIncidents(ctx context.Context, retain int) er
 	return store.publicError(err)
 }
 
-func (store *BoltStore) validateRescueStateBucket(tx *bolt.Tx) error {
+func (store *BoltStore) validateRescueStateBucket(tx *bolt.Tx, schema uint32) error {
 	bucket := tx.Bucket(rescueStateBucket)
 	if bucket.Sequence() != 0 {
 		return errCorrupt
 	}
 	return bucket.ForEach(func(key, value []byte) error {
-		incident, err := decodeRescueIncident(value)
+		var (
+			incident RescueIncident
+			err      error
+		)
+		if schema == schemaVersionV2 {
+			incident, err = decodeRescueIncidentV2(value)
+		} else {
+			incident, err = decodeRescueIncident(value)
+		}
 		if err != nil || len(key) != len(incident.ID) || !bytes.Equal(key, incident.ID[:]) || incident.Network != store.network {
 			return errCorrupt
 		}
 		return nil
 	})
+}
+
+func migrateV2TokenOutcomes(tx *bolt.Tx) error {
+	type update struct {
+		key   []byte
+		value []byte
+	}
+	bucket := tx.Bucket(rescueStateBucket)
+	updates := make([]update, 0)
+	if err := bucket.ForEach(func(key, value []byte) error {
+		incident, err := decodeRescueIncidentV2(value)
+		if err != nil || len(key) != len(incident.ID) || !bytes.Equal(key, incident.ID[:]) {
+			return errCorrupt
+		}
+		if incident.Kind != domain.CandidateToken || incident.Status != RescueTrustedSuccess {
+			return nil
+		}
+		incident.Status = RescueTokenReported
+		encoded, err := encodeRescueIncident(incident)
+		if err != nil {
+			return errCorrupt
+		}
+		updates = append(updates, update{key: append([]byte(nil), key...), value: encoded})
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, item := range updates {
+		if err := bucket.Put(item.key, item.value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func encodeRescueIncident(incident RescueIncident) ([]byte, error) {
@@ -321,6 +362,14 @@ func encodeRescueIncident(incident RescueIncident) ([]byte, error) {
 }
 
 func decodeRescueIncident(data []byte) (RescueIncident, error) {
+	return decodeRescueIncidentForSchema(data, false)
+}
+
+func decodeRescueIncidentV2(data []byte) (RescueIncident, error) {
+	return decodeRescueIncidentForSchema(data, true)
+}
+
+func decodeRescueIncidentForSchema(data []byte, allowLegacyTokenSuccess bool) (RescueIncident, error) {
 	const fixedSize = 1 + 32 + 32 + 32 + 8 + 1 + 20 + 8 + 1 + 4 + 8 + 8 + 1 + 4 + 8 + 8 + 32 + 4 + 8 + 32 + 32 + 32 + 12 + 12 + 2 + 12 + 12
 	if len(data) < fixedSize || data[0] != rescueRecordVersion {
 		return RescueIncident{}, errInvalidRecord
@@ -403,7 +452,16 @@ func decodeRescueIncident(data []byte) (RescueIncident, error) {
 	if incident.UpdatedAt, ok = readTime(data, &offset); !ok || offset != len(data) {
 		return RescueIncident{}, errInvalidRecord
 	}
-	if err := validateRescueIncident(incident); err != nil {
+	validated := incident
+	if allowLegacyTokenSuccess {
+		if validated.Status == RescueTokenReported && validated.Trusted {
+			return RescueIncident{}, errInvalidRecord
+		}
+		if validated.Kind == domain.CandidateToken && validated.Trusted && validated.Status == RescueTrustedSuccess {
+			validated.Status = RescueTokenReported
+		}
+	}
+	if err := validateRescueIncident(validated); err != nil {
 		return RescueIncident{}, err
 	}
 	return incident, nil
@@ -483,10 +541,10 @@ func validateRescueIncident(incident RescueIncident) error {
 	default:
 		return errInvalidRecord
 	}
-	if incident.Status == RescueTrustedSuccess && !incident.Trusted {
+	if incident.Status == RescueTrustedSuccess && (!incident.Trusted || incident.Kind == domain.CandidateToken) {
 		return errInvalidRecord
 	}
-	if incident.Status == RescueTokenReported && (incident.Trusted || incident.Kind != domain.CandidateToken) {
+	if incident.Status == RescueTokenReported && incident.Kind != domain.CandidateToken {
 		return errInvalidRecord
 	}
 	return nil

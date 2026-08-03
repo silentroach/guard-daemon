@@ -1237,7 +1237,7 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 		return newError("rescue.post_balance", domain.ErrorPostcondition, codePostcondition, false, false, nil)
 	}
 	status := store.RescueTrustedSuccess
-	if incident.Kind == domain.CandidateToken && !incident.Trusted {
+	if incident.Kind == domain.CandidateToken {
 		status = store.RescueTokenReported
 	}
 	if err := session.setTerminal(ctx, incident, status, ""); err != nil {

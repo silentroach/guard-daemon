@@ -1,4 +1,4 @@
-name: CI
+name: Проверки
 
 on:
   pull_request:
@@ -68,7 +68,7 @@ jobs:
         run: make format-check
 
   go:
-    name: Go
+    name: Проверки Go
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -86,7 +86,7 @@ jobs:
         run: make go-ci
 
   typescript-contracts:
-    name: TypeScript и контракты
+    name: Проверки TypeScript и контрактов
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -108,4 +108,63 @@ jobs:
       - name: Установить Foundry
         run: bash scripts/install-foundry-ci.sh
       - name: Проверить TypeScript и контракты
-        run: make node-ci
+        run: make typecheck lint contracts-build contracts-test contracts-lint artifacts-verify
+
+  adversarial-go:
+    name: Атакующая интеграция Go
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Установить Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Проверить явный набор атакующих пакетов
+        run: bash test/ci/adversarial-go.sh
+
+  go-fuzz:
+    name: Ограниченный фаззинг Go
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Установить Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Выполнить ограниченные фаззинг-кампании
+        run: bash test/ci/go-fuzz.sh
+
+  local-chain:
+    name: Изолированные тесты локального развёртывания
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Получить исходный код
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Установить Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Установить npm
+        run: npm install --global "npm@${NPM_VERSION}"
+      - name: Установить Node.js-зависимости
+        run: npm ci
+      - name: Установить Foundry
+        run: bash scripts/install-foundry-ci.sh
+      - name: Проверить развёртывание только на локальной цепочке
+        run: bash test/ci/run-deployment-tests.sh

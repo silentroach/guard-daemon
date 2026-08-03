@@ -1,6 +1,15 @@
 # Task 09: Атакующие интеграционные тесты и проверки безопасности
 
-Статус: `PENDING`
+Статус: `DONE`
+
+Исходный commit: `2613a55`.
+
+Implementation, adversarial tests, repository security gates и независимое
+review завершены. Отчёт:
+[`../reviews/09-security-validation.md`](../reviews/09-security-validation.md),
+digest проверенного diff:
+`f0c0e09963b45001c23b95a54791776e8a460b7df411efacbd2b763f03a53c0e`.
+Результат включён в atomic task commit Task 09.
 
 Зависимости: Tasks 01-08.
 

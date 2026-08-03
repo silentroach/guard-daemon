@@ -75,10 +75,137 @@ func TestBoltStoreMigratesV1WithoutStateLoss(t *testing.T) {
 			!bytes.Equal(tx.Bucket(metaBucket).Get(destinationKey), options.Destination[:]) ||
 			!bytes.Equal(tx.Bucket(metaBucket).Get(rescuerKey), options.Rescuer[:]) ||
 			!bytes.Equal(tx.Bucket(metaBucket).Get(nonceFloorKey), encodeUint64(0)) {
-			t.Fatal("v1 database was not upgraded to the exact v2 schema")
+			t.Fatal("v1 database was not upgraded to the exact current schema")
 		}
 		return nil
 	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBoltStoreMigratesV2TokenSuccessToReportedOutcome(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "handoff.db")
+	options := testOpenOptions(nil)
+	store := openTestStore(t, path, options)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	incident, encoded := legacyV2TokenSuccess(t, options, 1)
+	mutateStore(t, path, func(tx *bolt.Tx) error {
+		if err := tx.Bucket(metaBucket).Put(schemaKey, encodeUint32(schemaVersionV2)); err != nil {
+			return err
+		}
+		return tx.Bucket(rescueStateBucket).Put(incident.ID[:], encoded)
+	})
+
+	store = openTestStore(t, path, options)
+	migrated, found, err := store.RescueIncident(ctx, incident.ID)
+	if err != nil || !found || migrated.Status != RescueTokenReported || !migrated.Trusted || migrated.UpdatedAt != incident.UpdatedAt {
+		t.Fatalf("migrated v2 token outcome = found %t status %v trusted %t updated %s error %v", found, migrated.Status, migrated.Trusted, migrated.UpdatedAt, err)
+	}
+	if err := store.db.View(func(tx *bolt.Tx) error {
+		if !bytes.Equal(tx.Bucket(metaBucket).Get(schemaKey), encodeUint32(schemaVersion)) {
+			t.Fatal("v2 database schema was not upgraded")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store = openTestStore(t, path, options)
+	defer store.Close()
+	reopened, found, err := store.RescueIncident(ctx, incident.ID)
+	if err != nil || !found || reopened.Status != RescueTokenReported || !reopened.Trusted {
+		t.Fatalf("reopened migrated outcome = found %t status %v trusted %t error %v", found, reopened.Status, reopened.Trusted, err)
+	}
+}
+
+func TestBoltStoreV2TokenOutcomeMigrationRejectsCorruptionAtomically(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "handoff.db")
+	options := testOpenOptions(nil)
+	store := openTestStore(t, path, options)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	incident, encoded := legacyV2TokenSuccess(t, options, 2)
+	corruptKey := testHash(0xee)
+	mutateStore(t, path, func(tx *bolt.Tx) error {
+		if err := tx.Bucket(metaBucket).Put(schemaKey, encodeUint32(schemaVersionV2)); err != nil {
+			return err
+		}
+		if err := tx.Bucket(rescueStateBucket).Put(incident.ID[:], encoded); err != nil {
+			return err
+		}
+		return tx.Bucket(rescueStateBucket).Put(corruptKey[:], []byte{rescueRecordVersion})
+	})
+
+	if opened, err := Open(path, options); err == nil {
+		opened.Close()
+		t.Fatal("corrupt v2 database migrated")
+	}
+	raw, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.View(func(tx *bolt.Tx) error {
+		if !bytes.Equal(tx.Bucket(metaBucket).Get(schemaKey), encodeUint32(schemaVersionV2)) ||
+			!bytes.Equal(tx.Bucket(rescueStateBucket).Get(incident.ID[:]), encoded) {
+			t.Fatal("failed v2 migration partially modified the database")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBoltStoreV2MigrationRejectsTrustedReportedOutcome(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "handoff.db")
+	options := testOpenOptions(nil)
+	store := openTestStore(t, path, options)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	incident, encoded := legacyV2TokenSuccess(t, options, 3)
+	incident.Status = RescueTokenReported
+	encoded[rescueStatusOffsetForTest] = byte(RescueTokenReported)
+	mutateStore(t, path, func(tx *bolt.Tx) error {
+		if err := tx.Bucket(metaBucket).Put(schemaKey, encodeUint32(schemaVersionV2)); err != nil {
+			return err
+		}
+		return tx.Bucket(rescueStateBucket).Put(incident.ID[:], encoded)
+	})
+
+	if opened, err := Open(path, options); err == nil {
+		opened.Close()
+		t.Fatal("v2 database with trusted token-reported outcome migrated")
+	}
+	raw, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.View(func(tx *bolt.Tx) error {
+		if !bytes.Equal(tx.Bucket(metaBucket).Get(schemaKey), encodeUint32(schemaVersionV2)) ||
+			!bytes.Equal(tx.Bucket(rescueStateBucket).Get(incident.ID[:]), encoded) {
+			t.Fatal("rejected semantic v2 migration modified the database")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -247,8 +374,16 @@ func TestBoltStoreRescueIncidentRejectsBackwardAndTerminalTransitions(t *testing
 	if err := store.UpdateRescueIncident(ctx, broadcast); err != nil {
 		t.Fatal(err)
 	}
+	falseSuccess := broadcast
+	falseSuccess.Status = RescueTrustedSuccess
+	falseSuccess.SignedTransaction = nil
+	falseSuccess.ReconcileUntil = time.Time{}
+	falseSuccess.UpdatedAt = falseSuccess.UpdatedAt.Add(time.Second)
+	if err := store.UpdateRescueIncident(ctx, falseSuccess); !errors.Is(err, errInvalidInput) {
+		t.Fatalf("token TrustedSuccess error = %v, want errInvalidInput", err)
+	}
 	success := broadcast
-	success.Status = RescueTrustedSuccess
+	success.Status = RescueTokenReported
 	success.SignedTransaction = nil
 	success.ReconcileUntil = time.Time{}
 	success.UpdatedAt = success.UpdatedAt.Add(time.Second)
@@ -784,6 +919,29 @@ func downgradeStoreToV1(tx *bolt.Tx) error {
 		}
 	}
 	return meta.Put(schemaKey, encodeUint32(schemaVersionV1))
+}
+
+const rescueStatusOffsetForTest = 1 + 32 + 32 + 32 + 8 + 1 + 20 + 8 + 1 + 4 + 8 + 8
+
+func legacyV2TokenSuccess(t *testing.T, options OpenOptions, generation byte) (RescueIncident, []byte) {
+	t.Helper()
+	incident := testRescueIncident(options, generation, true)
+	incident = prepareRescueIncident(incident)
+	incident = signTestRescueIncident(t, incident)
+	incident.Status = RescueTokenReported
+	incident.SignedTransaction = nil
+	incident.ReconcileUntil = time.Time{}
+	incident.UpdatedAt = incident.UpdatedAt.Add(time.Second)
+	encoded, err := encodeRescueIncident(incident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoded[rescueStatusOffsetForTest] != byte(RescueTokenReported) {
+		t.Fatal("test fixture status offset is invalid")
+	}
+	encoded[rescueStatusOffsetForTest] = byte(RescueTrustedSuccess)
+	incident.Status = RescueTrustedSuccess
+	return incident, encoded
 }
 
 func prepareRescueIncident(incident RescueIncident) RescueIncident {

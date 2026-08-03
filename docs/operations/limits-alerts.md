@@ -37,8 +37,15 @@ sponsor ledger и не создаёт отдельные goroutines для то�
 
 `TOKEN_MODE_<N>=known-only` используется по умолчанию. Unknown token требует
 явного `allowlist` или `all`, остаётся недоверенным и ограничивается
-`UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_<N>`. Для trusted token обязательна
-явная запись `TOKEN_VALUE_RULES_<N>`; без неё live coordinator не создаётся.
+`UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_<N>`. Для известного токена обязательна
+явная операторская оценка `TOKEN_VALUE_RULES_<N>`; без неё live coordinator не
+создаётся. Эта оценка ограничивает расходы, но не доверяет отчётности контракта:
+результат любого ERC-20 остаётся только `token-reported`.
+
+При первом открытии state schema v2 демон атомарно обновляет её до v3 и
+переклассифицирует прежние terminal-результаты известных ERC-20 из
+`trusted-success` в `token-reported`. Повреждённая запись отменяет всю миграцию
+и блокирует запуск без частичного изменения базы.
 
 ## Emergency stop
 

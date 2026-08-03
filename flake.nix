@@ -54,6 +54,7 @@
           default = pkgs.mkShell {
             packages = with pkgs; [
               actionlint
+              foundry
               git
               gitleaks
               gnumake

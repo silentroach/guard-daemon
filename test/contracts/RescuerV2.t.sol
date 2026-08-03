@@ -9,6 +9,8 @@ import {
     ConfigurableReturnToken,
     DelegatingImplementation,
     FalseReturnToken,
+    GasBurnToken,
+    LyingBalanceToken,
     MalformedBalanceToken,
     MockNFT,
     NoReturnToken,
@@ -221,6 +223,26 @@ contract RescuerV2Test is RescuerV2TestBase {
 
         vm.expectRevert(abi.encodeWithSelector(RescuerV2.TokenBalanceQueryFailed.selector, address(token)));
         RescuerV2(payable(source)).sweepAll(_tokens(address(token)));
+    }
+
+    function testLyingBalanceTokenCanFabricateApparentTransfer() public {
+        LyingBalanceToken token = new LyingBalanceToken(source, destination, 17);
+
+        RescuerV2(payable(source)).sweepAll(_tokens(address(token)));
+
+        _assertTrue(token.transferCalled());
+        _assertEq(token.balanceOf(source), 0);
+        _assertEq(token.balanceOf(destination), 17);
+    }
+
+    function testGasBurnTokenFailsWithinOuterGasLimit() public {
+        GasBurnToken token = new GasBurnToken();
+
+        (bool success, bytes memory result) =
+            source.call{gas: 500_000}(abi.encodeCall(RescuerV2.sweepAll, (_tokens(address(token)))));
+
+        _assertFalse(success);
+        _assertRevertSelector(result, RescuerV2.TokenTransferFailed.selector);
     }
 
     function testMalformedReturnFailsClosed() public {

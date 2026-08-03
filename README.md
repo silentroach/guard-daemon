@@ -29,6 +29,7 @@ The daemon:
   подтверждения блока finalized quorum
 - **Verifies delegation** before sweeping (via `_verifyDelegation()` in RescuerV2)
 - **Поддерживает явное включение неизвестных токенов**, считая их metadata недоверенными
+- **Классифицирует результат любого ERC-20 только как `token-reported`**: отчётность token contract не доказывает экономическую ценность
 
 ## How It Works
 
@@ -216,7 +217,7 @@ CLI без `--broadcast` не читает ключ и не обращается
 ✅ **Address validation** — malformed addresses in `.env` (wrong length, typo) fail loudly at startup instead of being silently mangled into a different, valid-looking address  
 ✅ **Bounded retries** — a token whose sweep fails repeatedly (e.g. a broken or malicious ERC-20) is retried up to 3 times, then given up on — enforced centrally in `renewAndSweep()` so it can't be bypassed by any calling path  
 ✅ **Gas cost caps** on every sponsor-paid transaction type (sweep, delegation renewal, ETH sweep) — bounds worst-case cost per attempt regardless of network fee spikes  
-✅ **Post-receipt balance verification** — a successful transaction receipt alone doesn't prove tokens actually moved (if the EIP-7702 authorization lost a nonce race, the call could silently execute against a different, attacker-controlled delegation instead). The daemon re-checks the real balance before logging success  
+✅ **Post-receipt balance verification** — a successful transaction receipt alone doesn't prove tokens actually moved (if the EIP-7702 authorization lost a nonce race, the call could silently execute against a different, attacker-controlled delegation instead). The daemon re-checks balances, but every ERC-20 outcome remains only `token-reported`
 **Permit artifacts не являются частью production surface** — контракт, ABI и deployment path удалены
 
 ### What this tool does NOT do

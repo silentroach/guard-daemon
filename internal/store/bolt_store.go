@@ -19,7 +19,8 @@ import (
 
 const (
 	schemaVersionV1       = uint32(1)
-	schemaVersion         = uint32(2)
+	schemaVersionV2       = uint32(2)
+	schemaVersion         = uint32(3)
 	openTimeout           = 250 * time.Millisecond
 	maxConfiguredBound    = uint32(1_000_000)
 	minJournalCapacity    = uint64(100_000)
@@ -276,7 +277,7 @@ func (store *BoltStore) initializeOrMigrate(tx *bolt.Tx, options OpenOptions, al
 		return true, nil
 	}
 	schema := meta.Get(schemaKey)
-	if !bytes.Equal(schema, encodeUint32(schemaVersionV1)) && !bytes.Equal(schema, encodeUint32(schemaVersion)) {
+	if !bytes.Equal(schema, encodeUint32(schemaVersionV1)) && !bytes.Equal(schema, encodeUint32(schemaVersionV2)) && !bytes.Equal(schema, encodeUint32(schemaVersion)) {
 		return false, errBinding
 	}
 	bindings := []struct {
@@ -326,6 +327,17 @@ func (store *BoltStore) initializeOrMigrate(tx *bolt.Tx, options OpenOptions, al
 			return false, err
 		}
 		return false, nil
+	}
+	if bytes.Equal(schema, encodeUint32(schemaVersionV2)) {
+		if err := store.validateDatabaseVersion(tx, schemaVersionV2); err != nil {
+			return false, err
+		}
+		if err := migrateV2TokenOutcomes(tx); err != nil {
+			return false, err
+		}
+		if err := meta.Put(schemaKey, encodeUint32(schemaVersion)); err != nil {
+			return false, err
+		}
 	}
 	for _, bucket := range [][]byte{rescueStateBucket, leasesBucket} {
 		if tx.Bucket(bucket) == nil {
@@ -1796,7 +1808,7 @@ func (store *BoltStore) validateDatabase(tx *bolt.Tx) error {
 }
 
 func (store *BoltStore) validateDatabaseVersion(tx *bolt.Tx, version uint32) error {
-	if version != schemaVersionV1 && version != schemaVersion {
+	if version != schemaVersionV1 && version != schemaVersionV2 && version != schemaVersion {
 		return errCorrupt
 	}
 	meta := tx.Bucket(metaBucket)
@@ -1807,7 +1819,7 @@ func (store *BoltStore) validateDatabaseVersion(tx *bolt.Tx, version uint32) err
 		string(metaBucket): {}, string(candidatesBucket): {}, string(pendingBucket): {}, string(readyOrderBucket): {}, string(blockIndexBucket): {},
 		string(incidentsBucket): {}, string(blocksBucket): {}, string(discoveredBucket): {}, string(tombstonesBucket): {},
 	}
-	if version == schemaVersion {
+	if version >= schemaVersionV2 {
 		expectedBuckets[string(rescueStateBucket)] = struct{}{}
 		expectedBuckets[string(leasesBucket)] = struct{}{}
 	}
@@ -1837,7 +1849,7 @@ func (store *BoltStore) validateDatabaseVersion(tx *bolt.Tx, version uint32) err
 			return errCorrupt
 		}
 	}
-	if version == schemaVersion {
+	if version >= schemaVersionV2 {
 		for _, binding := range []struct {
 			key   []byte
 			value []byte
@@ -1856,7 +1868,7 @@ func (store *BoltStore) validateDatabaseVersion(tx *bolt.Tx, version uint32) err
 		string(maxPendingKey): {}, string(maxDiscoveredKey): {}, string(baselineKey): {},
 		string(scanCursorKey): {}, string(checkpointKey): {}, string(discoveryOverflowKey): {}, string(promotionTurnKey): {},
 	}
-	if version == schemaVersion {
+	if version >= schemaVersionV2 {
 		allowedMeta[string(sponsorKey)] = struct{}{}
 		allowedMeta[string(destinationKey)] = struct{}{}
 		allowedMeta[string(rescuerKey)] = struct{}{}
@@ -1919,8 +1931,8 @@ func (store *BoltStore) validateDatabaseVersion(tx *bolt.Tx, version uint32) err
 	if meta.Get(discoveryOverflowKey) != nil && discoveredCount != store.maxDiscoveredTokens {
 		return errCorrupt
 	}
-	if version == schemaVersion {
-		if err := store.validateRescueStateBucket(tx); err != nil {
+	if version >= schemaVersionV2 {
+		if err := store.validateRescueStateBucket(tx, version); err != nil {
 			return errCorrupt
 		}
 		if err := store.validateLeasesBucket(tx); err != nil {

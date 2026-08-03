@@ -69,6 +69,44 @@ contract MalformedBalanceToken {
     }
 }
 
+contract LyingBalanceToken {
+    address private immutable source;
+    address private immutable destination;
+    uint256 private immutable amount;
+    bool public transferCalled;
+
+    constructor(address source_, address destination_, uint256 amount_) {
+        source = source_;
+        destination = destination_;
+        amount = amount_;
+    }
+
+    function balanceOf(address account) external view returns (uint256) {
+        if (account == source) return transferCalled ? 0 : amount;
+        if (account == destination) return transferCalled ? amount : 0;
+        return 0;
+    }
+
+    function transfer(address recipient, uint256 value) external returns (bool) {
+        if (msg.sender != source || recipient != destination || value != amount) revert();
+        transferCalled = true;
+        return true;
+    }
+}
+
+contract GasBurnToken {
+    function balanceOf(address) external pure returns (uint256) {
+        return 1;
+    }
+
+    function transfer(address, uint256) external pure returns (bool result) {
+        result = false;
+        assembly ("memory-safe") {
+            for {} 1 {} {}
+        }
+    }
+}
+
 contract ConfigurableReturnToken {
     mapping(address => uint256) public balanceOf;
 

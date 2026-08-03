@@ -1,4 +1,4 @@
-.PHONY: artifacts-verify audit build check contracts-build contracts-lint contracts-static contracts-test deployment-check format format-check go-ci lint mod-verify node-ci race secret-scan test typecheck vet vuln workflow-lint
+.PHONY: adversarial-test artifacts-verify audit build check ci-policy contracts-build contracts-lint contracts-static contracts-test deployment-check format format-check fuzz-test go-ci lint mod-verify node-ci race reproducibility-check secret-scan security-validation test typecheck vet vuln workflow-lint
 
 format:
 	gofmt -w $$(git ls-files '*.go')
@@ -13,7 +13,20 @@ format-check:
 
 workflow-lint:
 	actionlint
-	shellcheck scripts/*.sh
+	shellcheck scripts/*.sh test/ci/*.sh
+
+ci-policy:
+	python3 -B -m unittest discover -s test/ci -p 'test_*.py'
+	bash test/ci/repository-policy.sh
+
+adversarial-test:
+	bash test/ci/adversarial-go.sh
+
+fuzz-test:
+	bash test/ci/go-fuzz.sh
+
+reproducibility-check:
+	bash test/ci/compare-artifacts.sh
 
 mod-verify:
 	go mod verify
@@ -55,7 +68,7 @@ contracts-build:
 
 contracts-test:
 	npm run contracts:test
-	forge test
+	bash test/ci/contracts-test.sh
 
 artifacts-verify:
 	npm run artifacts:verify
@@ -81,3 +94,5 @@ go-ci: mod-verify build test vet race
 node-ci: typecheck lint contracts-build contracts-test contracts-lint deployment-check
 
 check: format-check go-ci node-ci vuln audit secret-scan
+
+security-validation: check contracts-static adversarial-test fuzz-test ci-policy reproducibility-check

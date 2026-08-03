@@ -30,13 +30,12 @@ import (
 	"github.com/holiman/uint256"
 )
 
-func TestConcurrentCandidatesWaitAndUseDistinctSponsorNonces(t *testing.T) {
-	rig := newTestRig(t, rigOptions{tokens: []common.Address{testAddress(5), testAddress(6)}})
-	for _, token := range rig.tokens {
-		rig.chain.setToken(token, rig.source, 7)
-	}
+func TestConcurrentNativeAndTokenCandidatesUseDistinctSponsorNonces(t *testing.T) {
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{testAddress(5)}, nativeThreshold: big.NewInt(0)})
+	rig.chain.setToken(rig.tokens[0], rig.source, 7)
+	rig.chain.setNative(rig.source, 1_000_000_000_000_000)
 
-	candidates := []domain.RescueCandidate{rig.tokenCandidate(rig.tokens[0], 1), rig.tokenCandidate(rig.tokens[1], 2)}
+	candidates := []domain.RescueCandidate{rig.tokenCandidate(rig.tokens[0], 1), rig.nativeCandidate(2)}
 	start := make(chan struct{})
 	errorsByCandidate := make(chan error, len(candidates))
 	var workers sync.WaitGroup
@@ -178,6 +177,33 @@ func TestUnknownTokenNeverGetsTrustedSuccess(t *testing.T) {
 	}
 }
 
+func TestConfiguredTokenOutcomeRemainsTokenReported(t *testing.T) {
+	token := testAddress(5)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
+	rig.chain.setToken(token, rig.source, 4)
+	candidate := rig.tokenCandidate(token, 1)
+	if err := rig.session.Handle(context.Background(), candidate); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	incident := rig.incident(candidate, domain.CandidateToken, token)
+	if !incident.Trusted || incident.Status != store.RescueTokenReported {
+		t.Fatalf("configured token trust/status = %t/%v, want economic trust with token-reported outcome", incident.Trusted, incident.Status)
+	}
+}
+
+func TestFakeTransferHintWithoutBalanceStopsBeforeSigning(t *testing.T) {
+	token := testAddress(5)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
+	candidate := rig.tokenCandidate(token, 1)
+	if err := rig.session.Handle(context.Background(), candidate); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	incident := rig.incident(candidate, domain.CandidateToken, token)
+	if incident.Status != store.RescueFailed || incident.LastCode != codeNoPaidAction || rig.authorizer.count() != 0 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
+		t.Fatalf("fake hint status/code/paid actions = %v/%s/%d/%d/%d", incident.Status, incident.LastCode, rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
+	}
+}
+
 func TestExplicitlyAllowlistedUnknownTokenGetsOnlyTokenReportedOutcome(t *testing.T) {
 	token := testAddress(7)
 	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
@@ -307,7 +333,7 @@ func TestDelayedFinalitySucceedsOnReplayWithoutResigning(t *testing.T) {
 		t.Fatalf("delayed finality replay error = %v", err)
 	}
 	incident := rig.incident(candidate, domain.CandidateToken, token)
-	if incident.Status != store.RescueTrustedSuccess || rig.authorizer.count() != 1 || rig.transactioner.count() != 1 || len(rig.broadcaster.snapshot()) != 1 {
+	if incident.Status != store.RescueTokenReported || rig.authorizer.count() != 1 || rig.transactioner.count() != 1 || len(rig.broadcaster.snapshot()) != 1 {
 		t.Fatalf("delayed outcome/sign/broadcast = %v/%d/%d/%d", incident.Status, rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
 	}
 }
@@ -387,8 +413,8 @@ func TestRunReconciliationResolvesLateReceiptAndClearsNonceFence(t *testing.T) {
 
 	rig.chain.accept(rig.broadcaster.snapshot()[0])
 	ticker.ticks <- rig.clock.Now()
-	if status := receiveRescueUpdate(t, updates); status != store.RescueTrustedSuccess {
-		t.Fatalf("late receipt status = %v, want RescueTrustedSuccess", status)
+	if status := receiveRescueUpdate(t, updates); status != store.RescueTokenReported {
+		t.Fatalf("late receipt status = %v, want RescueTokenReported", status)
 	}
 	if got := len(rig.broadcaster.snapshot()); got != 1 {
 		t.Fatalf("late receipt reconciliation rebroadcast count = %d, want 1", got)
@@ -570,7 +596,7 @@ func TestTerminalPruneFailureNacksOnceWithoutResigning(t *testing.T) {
 	rig.chain.setToken(token, rig.source, 5)
 	candidate := rig.tokenCandidate(token, 1)
 	assertCode(t, rig.session.Handle(context.Background(), candidate), codeStateWrite)
-	if status := rig.incident(candidate, domain.CandidateToken, token).Status; status != store.RescueTrustedSuccess {
+	if status := rig.incident(candidate, domain.CandidateToken, token).Status; status != store.RescueTokenReported {
 		t.Fatalf("persisted terminal status = %v", status)
 	}
 	state.mu.Lock()
@@ -902,8 +928,8 @@ func TestRestartReceiptClearsExpiredNonceFence(t *testing.T) {
 	first.chain.mu.Unlock()
 
 	restarted := newTestRig(t, rigOptions{tokens: []common.Address{firstToken, secondToken}, state: state, clock: serviceClock, chain: first.chain, budget: first.coordinator.budget})
-	if status := restarted.incident(firstCandidate, domain.CandidateToken, firstToken).Status; status != store.RescueTrustedSuccess {
-		t.Fatalf("recovered old status = %v, want RescueTrustedSuccess", status)
+	if status := restarted.incident(firstCandidate, domain.CandidateToken, firstToken).Status; status != store.RescueTokenReported {
+		t.Fatalf("recovered old status = %v, want RescueTokenReported", status)
 	}
 	restarted.chain.setToken(secondToken, restarted.source, 4)
 	if err := restarted.session.Handle(context.Background(), restarted.tokenCandidate(secondToken, 2)); err != nil {
@@ -1272,7 +1298,7 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 		t.Fatalf("Handle() error = %v after status %v attempts %d code %s", err, incident.Status, incident.Attempts, incident.LastCode)
 	}
 	incident, found, err := state.RescueIncident(context.Background(), domain.NewAssetIncidentID(candidate.ID, domain.CandidateToken, token))
-	if err != nil || !found || incident.Status != store.RescueTrustedSuccess {
+	if err != nil || !found || incident.Status != store.RescueTokenReported {
 		t.Fatalf("durable incident = found %t status %v error %v", found, incident.Status, err)
 	}
 
@@ -1294,7 +1320,7 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 		t.Fatalf("retry Handle() error = %v", err)
 	}
 	retryIncident, found, err = state.RescueIncident(context.Background(), domain.NewAssetIncidentID(retryCandidate.ID, domain.CandidateToken, token))
-	if err != nil || !found || retryIncident.Status != store.RescueTrustedSuccess || retryIncident.Attempts != 2 ||
+	if err != nil || !found || retryIncident.Status != store.RescueTokenReported || retryIncident.Attempts != 2 ||
 		retryIncident.SponsorNonce != 7 || retryIncident.SourceNonce != 10 || retryIncident.SnapshotBlockHash != testHash(12) {
 		t.Fatalf("reprepared incident = found %t status %v attempts %d nonces %d/%d snapshot %s error %v", found, retryIncident.Status, retryIncident.Attempts, retryIncident.SponsorNonce, retryIncident.SourceNonce, retryIncident.SnapshotBlockHash, err)
 	}

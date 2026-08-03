@@ -21,14 +21,32 @@ Nix.
 npm ci
 ```
 
-Ни одна из следующих команд не выполняет deployment, не подписывает транзакции и не обращается к RPC.
+Ни одна из следующих команд не выполняет production-развёртывание, не использует
+операторские ключи и не обращается к внешнему RPC. Deployment tests запускают
+только тестовый Anvil на loopback-интерфейсе и отправляют в него детерминированные
+локальные транзакции.
 
 ## Команды
 
-Полная локальная проверка:
+Базовая локальная проверка:
 
 ```sh
 make check
+```
+
+Полная проверка безопасности Task 09, включая статический анализ, атакующие
+интеграционные тесты, ограниченный фаззинг, repository policy и две чистые
+сборки артефактов:
+
+```sh
+make security-validation
+```
+
+Для `ci-policy` заранее установите hash-locked зависимости:
+
+```sh
+python3 -m pip install --only-binary=:all: --require-hashes \
+  --requirement test/ci/requirements.txt
 ```
 
 Отдельные группы проверок:
@@ -42,6 +60,10 @@ make vuln
 make audit
 make secret-scan
 make contracts-static
+make adversarial-test
+make fuzz-test
+make ci-policy
+make reproducibility-check
 ```
 
 Исправление форматирования Go, TypeScript и Solidity:
@@ -61,11 +83,17 @@ make contracts-test
 
 Для защищённой основной ветки следует требовать следующие status checks:
 
-- `CI / Форматирование`;
-- `CI / Go`;
-- `CI / TypeScript и контракты`;
+- `Проверки / Форматирование`;
+- `Проверки / Проверки Go`;
+- `Проверки / Проверки TypeScript и контрактов`;
+- `Проверки / Атакующая интеграция Go`;
+- `Проверки / Ограниченный фаззинг Go`;
+- `Проверки / Изолированные тесты локального развёртывания`;
 - `Безопасность / Уязвимости`;
+- `Безопасность / Проверка новых зависимостей` для pull request;
 - `Безопасность / Секреты`;
+- `Безопасность / Политика репозитория`;
+- `Безопасность / Воспроизводимые артефакты`;
 - `Безопасность / Статический анализ Solidity`.
 
 Рекомендуемые правила branch protection/ruleset:
@@ -84,7 +112,8 @@ make contracts-test
 
 CI использует встроенные caches `actions/setup-go` и `actions/setup-node` только
 для Go modules/build и npm downloads. Cache Foundry отключён, тесты не
-обращаются к RPC. `.env`, key files, generated deployment manifests и иное
+обращаются к внешнему RPC. Локальный deployment suite использует только Anvil
+на `127.0.0.1`. `.env`, key files, generated deployment manifests и иное
 локальное состояние в cache paths не входят. Workflows имеют только
 `contents: read`, не используют GitHub environments и не получают production
 secrets.

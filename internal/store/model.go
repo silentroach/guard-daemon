@@ -60,13 +60,15 @@ type RescuePolicySnapshot struct {
 // Amount-поля хранят unsigned uint256 в big-endian форме без доверия к token
 // metadata.
 type RescueIncident struct {
-	ID           domain.IncidentID
-	Parent       domain.IncidentID
-	Candidate    domain.CandidateID
-	Network      domain.NetworkID
-	Kind         domain.CandidateKind
-	Asset        common.Address
-	Generation   uint64
+	ID         domain.IncidentID
+	Parent     domain.IncidentID
+	Candidate  domain.CandidateID
+	Network    domain.NetworkID
+	Kind       domain.CandidateKind
+	Asset      common.Address
+	Generation uint64
+	// Trusted означает наличие доверенной оценки для admission и budget policy,
+	// но не превращает отчёт token contract в доказанный экономический результат.
 	Trusted      bool
 	Policy       RescuePolicySnapshot
 	Status       RescueStatus

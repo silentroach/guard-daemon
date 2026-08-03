@@ -133,13 +133,14 @@ func TestEconomicAndTokenTrustDocumentationParity(t *testing.T) {
 	}
 	text := string(documentation)
 	for _, statement := range []string{
-		"Allowlisted unknown address остаётся разрешённым для watcher, но не становится",
-		"Неизвестный токен без",
-		"доверенной оценки стоимости никогда не получает доверенный результат",
+		"Allowlisted unknown address остаётся разрешённым для watcher, но не получает",
+		"известные metadata или доверенную оценку ценности",
 		"дополнительно ограничена",
 		"UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_<N>",
 		"при запуске демон выдаёт предупреждение оператору",
 		"TOKEN_VALUE_RULES_<N>",
+		"Для любого ERC-20 итог всегда имеет статус",
+		"token-reported",
 	} {
 		if !strings.Contains(text, statement) {
 			t.Errorf("docs/configuration.md не фиксирует token trust policy: %q", statement)
