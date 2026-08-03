@@ -1,6 +1,6 @@
 # Task 07: Координатор транзакций, повторы и проверка результата
 
-Статус: `PENDING`
+Статус: `DONE`
 
 Зависимости: Tasks 02, 03, 04 и 05.
 
@@ -80,6 +80,9 @@
 Ревьюер строит таблицу всех ошибок между nonce read, signing, send, inclusion, reorg и postcondition. Для каждого перехода должен существовать безопасный state и test.
 
 Все findings исправить. Изменение state machine или success definition требует второго review pass.
+
+Реализация и closure pass проверены в
+[`reviews/07-rescue-coordinator.md`](../reviews/07-rescue-coordinator.md).
 
 ## Завершение и коммит
 

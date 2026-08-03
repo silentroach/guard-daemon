@@ -819,12 +819,15 @@ func TestBoltStoreBindingSchemaLockAndPermissions(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	mismatches := []OpenOptions{options, options, options, options, options}
+	mismatches := []OpenOptions{options, options, options, options, options, options, options, options}
 	mismatches[0].Network++
 	mismatches[1].Source[0] = 1
-	mismatches[2].PolicyFingerprint[0]++
-	mismatches[3].MaxPending++
-	mismatches[4].MaxDiscoveredTokens++
+	mismatches[2].Sponsor[0] = 1
+	mismatches[3].Destination[0] = 1
+	mismatches[4].Rescuer[0] = 1
+	mismatches[5].PolicyFingerprint[0]++
+	mismatches[6].MaxPending++
+	mismatches[7].MaxDiscoveredTokens++
 	for index, mismatch := range mismatches {
 		opened, err := Open(path, mismatch)
 		if err == nil {
@@ -1249,11 +1252,20 @@ func reopenTestStore(t *testing.T, store *BoltStore, path string, options OpenOp
 func testOpenOptions(clock storeClock) OpenOptions {
 	var source common.Address
 	source[len(source)-1] = 0xa1
+	var sponsor common.Address
+	sponsor[len(sponsor)-1] = 0xa2
+	var destination common.Address
+	destination[len(destination)-1] = 0xa3
+	var rescuer common.Address
+	rescuer[len(rescuer)-1] = 0xa4
 	var policy [32]byte
 	policy[len(policy)-1] = 0xb2
 	return OpenOptions{
 		Network:             31337,
 		Source:              source,
+		Sponsor:             sponsor,
+		Destination:         destination,
+		Rescuer:             rescuer,
 		PolicyFingerprint:   policy,
 		MaxPending:          32,
 		MaxDiscoveredTokens: 16,

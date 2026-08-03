@@ -12,6 +12,7 @@ import (
 	"guard-daemon/internal/domain"
 	"guard-daemon/internal/observability"
 	"guard-daemon/internal/rpc"
+	"guard-daemon/internal/store"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -27,25 +28,39 @@ const (
 	codeDestinationRead      domain.ErrorCode = "rescue_destination_read_failed"
 	codeDestinationDecode    domain.ErrorCode = "rescue_destination_decode_failed"
 	codeDestinationMismatch  domain.ErrorCode = "rescue_destination_mismatch"
+	codeFinalityRead         domain.ErrorCode = "rescue_finality_read_failed"
 	codeCodeRead             domain.ErrorCode = "rescue_code_read_failed"
 	codeBalanceRead          domain.ErrorCode = "rescue_balance_read_failed"
 	codeBalanceDecode        domain.ErrorCode = "rescue_balance_decode_failed"
 	codeNonceRead            domain.ErrorCode = "rescue_nonce_read_failed"
+	codeFeeRead              domain.ErrorCode = "rescue_fee_read_failed"
+	codeFeeInvalid           domain.ErrorCode = "rescue_fee_invalid"
 	codeSigning              domain.ErrorCode = "rescue_signing_failed"
 	codeSignerMismatch       domain.ErrorCode = "rescue_signer_mismatch"
 	codeBroadcast            domain.ErrorCode = "rescue_broadcast_failed"
 	codeReceiptTimeout       domain.ErrorCode = "rescue_receipt_timeout"
 	codeReceiptInvalid       domain.ErrorCode = "rescue_receipt_invalid"
+	codeSignedPayloadInvalid domain.ErrorCode = "rescue_signed_payload_invalid"
 	codeReverted             domain.ErrorCode = "rescue_transaction_reverted"
 	codePostcondition        domain.ErrorCode = "rescue_postcondition_failed"
+	codeLostRace             domain.ErrorCode = "rescue_authorization_lost_race"
 	codeContextCanceled      domain.ErrorCode = "rescue_context_canceled"
 	codeEncoding             domain.ErrorCode = "rescue_encoding_failed"
+	codeStateRead            domain.ErrorCode = "rescue_state_read_failed"
+	codeStateWrite           domain.ErrorCode = "rescue_state_write_failed"
+	codeRetryPending         domain.ErrorCode = "rescue_retry_pending"
+	codeNoPaidAction         domain.ErrorCode = "rescue_no_paid_action"
+	codeUnknownToken         domain.ErrorCode = "rescue_unknown_token_forbidden"
+
+	// CodeLeaseLost is safe to expose through health and operator APIs.
+	CodeLeaseLost domain.ErrorCode = "rescue_lease_lost"
+	// CodeLeaseReleaseFailed is safe to expose through shutdown diagnostics.
+	CodeLeaseReleaseFailed domain.ErrorCode = "rescue_lease_release_failed"
 )
 
 const (
 	eventStartupVerified    observability.EventCode = "rescue_startup_verified"
-	eventDelegationActive   observability.EventCode = "rescue_delegation_active"
-	eventOperationSkipped   observability.EventCode = "rescue_operation_skipped"
+	eventOperationPrepared  observability.EventCode = "rescue_operation_prepared"
 	eventBroadcastAccepted  observability.EventCode = "rescue_broadcast_accepted"
 	eventOperationConfirmed observability.EventCode = "rescue_operation_confirmed"
 	eventOperationFailed    observability.EventCode = "rescue_operation_failed"
@@ -55,21 +70,53 @@ const (
 	defaultNativeThresholdWei = int64(100_000_000_000_000)
 	defaultStartupTimeout     = 10 * time.Second
 	defaultFeeReadTimeout     = 5 * time.Second
+	defaultLeaseTTL           = 30 * time.Second
+	defaultRetryDelay         = 5 * time.Second
+	defaultReceiptTimeout     = 60 * time.Second
+	defaultFinalityTimeout    = 30 * time.Minute
+	defaultMaxAttempts        = uint32(3)
 )
 
-// RPCReader is the read-only RPC surface needed by one rescue generation.
+const (
+	minReconciliationInterval = 30 * time.Second
+	maxReconciliationInterval = 5 * time.Minute
+)
+
+// ErrLeaseLost is a redacted sentinel for lost exclusive signing ownership,
+// whether detected by the persistent lease or the host-local process fence.
+var ErrLeaseLost = errors.New("rescue coordinator lease lost")
+
+// ErrLeaseReleaseFailed is a redacted sentinel suitable for shutdown logs.
+var ErrLeaseReleaseFailed = errors.New("rescue coordinator lease release failed")
+
+// IsLeaseLost reports whether signing was stopped because exclusive ownership
+// is no longer valid. Store implementation details are intentionally hidden.
+func IsLeaseLost(err error) bool {
+	return errors.Is(err, ErrLeaseLost)
+}
+
+// RPCReader is the primary, non-quorum RPC surface used for chain identity,
+// pending nonces, and fee inputs. It is never used to prove an outcome.
 type RPCReader interface {
 	ChainID(context.Context) (*big.Int, error)
-	BalanceAt(context.Context, common.Address, *big.Int) (*big.Int, error)
-	CodeAt(context.Context, common.Address, *big.Int) ([]byte, error)
 	PendingNonceAt(context.Context, common.Address) (uint64, error)
 	HeaderByNumber(context.Context, *big.Int) (*types.Header, error)
 	SuggestGasPrice(context.Context) (*big.Int, error)
-	CallContract(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error)
-	TransactionReceipt(context.Context, common.Hash) (*types.Receipt, error)
 }
 
-// Config contains immutable values used by a network coordinator.
+// FinalityReader exposes only hash-pinned quorum reads. Receipt must return a
+// finalized receipt whose block is still canonical.
+type FinalityReader interface {
+	Finalized(context.Context) (rpc.BlockRef, error)
+	Header(context.Context, uint64) (rpc.BlockRef, error)
+	BalanceAt(context.Context, rpc.BlockRef, common.Address) (*big.Int, error)
+	CodeAt(context.Context, rpc.BlockRef, common.Address) ([]byte, error)
+	CallContract(context.Context, rpc.BlockRef, ethereum.CallMsg) ([]byte, error)
+	Receipt(context.Context, common.Hash) (*types.Receipt, error)
+}
+
+// Config contains immutable values used by one network coordinator. Lease and
+// ProcessFence are acquired by the daemon before construction.
 type Config struct {
 	Network         domain.Network
 	Source          common.Address
@@ -78,50 +125,77 @@ type Config struct {
 	NativeThreshold *big.Int
 	StartupTimeout  time.Duration
 	FeeReadTimeout  time.Duration
+	State           store.RescueStateStore
+	LeaseManager    store.LeaseManager
+	Lease           store.Lease
+	ProcessFence    store.ProcessFence
+	LeaseTTL        time.Duration
+	MaxAttempts     uint32
+	RetryDelay      time.Duration
+	ReceiptTimeout  time.Duration
+	FinalityTimeout time.Duration
 }
 
-type retryEntry struct {
-	token    domain.Token
-	attempts int
-}
-
-// Coordinator owns mutable transaction exclusion and token retry state.
+// Coordinator serializes nonce allocation, signing, and submission for one
+// chain+sponsor pair.
 type Coordinator struct {
 	network         domain.Network
 	source          common.Address
 	sponsor         common.Address
 	destination     common.Address
 	rescuer         common.Address
-	hasRescuer      bool
 	nativeThreshold *big.Int
 	startupTimeout  time.Duration
 	feeReadTimeout  time.Duration
+	leaseTTL        time.Duration
+	maxAttempts     uint32
+	retryDelay      time.Duration
+	receiptTimeout  time.Duration
+	finalityTimeout time.Duration
+	state           store.RescueStateStore
+	leaseManager    store.LeaseManager
+	processFence    store.ProcessFence
 	authorizer      AuthorizationSigner
 	transactioner   TransactionSigner
 	clock           clock.Clock
 	observer        observability.Observer
 	erc20           *contracts.ERC20Codec
 	rescuerCodec    *contracts.RescuerCodec
+	trustedTokens   map[common.Address]struct{}
 
-	mu      sync.Mutex
-	busy    bool
-	retries map[common.Address]retryEntry
+	operationMu  sync.Mutex
+	nonceFloor   uint64
+	nonceBlocked bool
+
+	leaseMu       sync.RWMutex
+	leaseActionMu sync.Mutex
+	lease         store.Lease
+	leaseLost     chan struct{}
+	leaseLostOnce sync.Once
 }
 
-// Session binds a coordinator to one immutable RPC client generation.
+// Session binds a coordinator to one primary RPC generation and one quorum
+// finality reader.
 type Session struct {
-	coordinator *Coordinator
-	generation  uint64
-	reader      RPCReader
-	broadcaster rpc.Broadcaster
+	coordinator   *Coordinator
+	generation    uint64
+	reader        RPCReader
+	finality      FinalityReader
+	broadcaster   rpc.Broadcaster
+	lastFinalized rpc.BlockRef
 }
 
 func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner TransactionSigner, serviceClock clock.Clock, observer observability.Observer) (*Coordinator, error) {
-	if config.Network.ChainID <= 0 || config.Source == (common.Address{}) || config.Sponsor == (common.Address{}) || config.Destination == (common.Address{}) || authorizer == nil || transactioner == nil || serviceClock == nil || observer == nil {
+	zero := common.Address{}
+	if config.Network.ChainID <= 0 || !config.Network.HasRescuer || config.Network.Rescuer == zero ||
+		config.Source == zero || config.Sponsor == zero || config.Destination == zero ||
+		config.Source == config.Sponsor || config.Source == config.Destination || config.Sponsor == config.Destination ||
+		config.State == nil || config.LeaseManager == nil || config.ProcessFence == nil || authorizer == nil || transactioner == nil || serviceClock == nil || observer == nil ||
+		config.Lease.Key.Network != config.Network.ChainID || config.Lease.Key.Sponsor != config.Sponsor || config.Lease.Owner == "" {
 		return nil, newError("rescue.coordinator", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 	}
-	if config.Network.HasRescuer && config.Network.Rescuer == (common.Address{}) {
-		return nil, newError("rescue.coordinator", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+	if err := config.ProcessFence.Validate(); err != nil {
+		return nil, processFenceError("rescue.process_fence")
 	}
 
 	erc20, err := contracts.NewERC20Codec()
@@ -135,22 +209,32 @@ func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner
 
 	network := config.Network
 	network.Tokens = append([]domain.Token(nil), config.Network.Tokens...)
+	trustedTokens := make(map[common.Address]struct{}, len(network.Tokens))
+	for _, token := range network.Tokens {
+		if token.Address == zero {
+			return nil, newError("rescue.tokens", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+		}
+		trustedTokens[token.Address] = struct{}{}
+	}
+
 	threshold := big.NewInt(defaultNativeThresholdWei)
 	if config.NativeThreshold != nil {
-		if config.NativeThreshold.Sign() <= 0 {
+		if config.NativeThreshold.Sign() < 0 {
 			return nil, newError("rescue.native_threshold", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 		}
 		threshold.Set(config.NativeThreshold)
 	}
-	startupTimeout := config.StartupTimeout
-	if startupTimeout == 0 {
-		startupTimeout = defaultStartupTimeout
+	startupTimeout := durationDefault(config.StartupTimeout, defaultStartupTimeout)
+	feeReadTimeout := durationDefault(config.FeeReadTimeout, defaultFeeReadTimeout)
+	leaseTTL := durationDefault(config.LeaseTTL, defaultLeaseTTL)
+	retryDelay := durationDefault(config.RetryDelay, defaultRetryDelay)
+	receiptTimeout := durationDefault(config.ReceiptTimeout, defaultReceiptTimeout)
+	finalityTimeout := durationDefault(config.FinalityTimeout, defaultFinalityTimeout)
+	maxAttempts := config.MaxAttempts
+	if maxAttempts == 0 {
+		maxAttempts = defaultMaxAttempts
 	}
-	feeReadTimeout := config.FeeReadTimeout
-	if feeReadTimeout == 0 {
-		feeReadTimeout = defaultFeeReadTimeout
-	}
-	if startupTimeout < 0 || feeReadTimeout < 0 {
+	if startupTimeout <= 0 || feeReadTimeout <= 0 || leaseTTL < 3*time.Nanosecond || retryDelay <= 0 || receiptTimeout <= 0 || finalityTimeout < defaultFinalityTimeout {
 		return nil, newError("rescue.timeouts", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 	}
 
@@ -160,47 +244,149 @@ func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner
 		sponsor:         config.Sponsor,
 		destination:     config.Destination,
 		rescuer:         network.Rescuer,
-		hasRescuer:      network.HasRescuer,
 		nativeThreshold: threshold,
 		startupTimeout:  startupTimeout,
 		feeReadTimeout:  feeReadTimeout,
+		leaseTTL:        leaseTTL,
+		maxAttempts:     maxAttempts,
+		retryDelay:      retryDelay,
+		receiptTimeout:  receiptTimeout,
+		finalityTimeout: finalityTimeout,
+		state:           config.State,
+		leaseManager:    config.LeaseManager,
+		processFence:    config.ProcessFence,
+		lease:           config.Lease,
 		authorizer:      authorizer,
 		transactioner:   transactioner,
 		clock:           serviceClock,
 		observer:        observer,
 		erc20:           erc20,
 		rescuerCodec:    rescuerCodec,
-		retries:         make(map[common.Address]retryEntry),
+		trustedTokens:   trustedTokens,
+		leaseLost:       make(chan struct{}),
 	}, nil
 }
 
-// NewSession verifies chain and configured destination state before exposing a
-// generation for candidate handling. Delegation renewal remains non-fatal, as
-// in the legacy network loop, but any failure is emitted only as a safe code.
-func (coordinator *Coordinator) NewSession(ctx context.Context, generation uint64, reader RPCReader, broadcaster rpc.Broadcaster) (*Session, error) {
-	if reader == nil || broadcaster == nil {
-		return nil, newError("rescue.session", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+func durationDefault(value, fallback time.Duration) time.Duration {
+	if value == 0 {
+		return fallback
 	}
-	session := &Session{
-		coordinator: coordinator,
-		generation:  generation,
-		reader:      reader,
-		broadcaster: broadcaster,
-	}
-	if err := session.verifyStartup(ctx); err != nil {
-		coordinator.recordFailure(err)
-		return nil, err
-	}
-	coordinator.record(eventStartupVerified, observability.LevelInfo, common.Hash{}, "")
+	return value
+}
 
-	if coordinator.hasRescuer {
-		if err := session.reconcileDelegation(ctx); err != nil {
-			coordinator.recordFailure(err)
+// MaintainLease renews the process lease every TTL/3. Any renewal failure or
+// loss notification permanently closes this coordinator to further signing.
+func (coordinator *Coordinator) MaintainLease(ctx context.Context) error {
+	if ctx == nil {
+		return newError("rescue.lease", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+	}
+	if err := coordinator.validateLease(ctx); err != nil {
+		return err
+	}
+	if ctx.Err() != nil {
+		return contextOrError(ctx, "rescue.lease", domain.ErrorInternal, codeContextCanceled, false, false, ctx.Err())
+	}
+
+	ticker := coordinator.clock.NewTicker(coordinator.leaseTTL / 3)
+	if ticker == nil {
+		coordinator.markLeaseLost()
+		return leaseError("rescue.lease_ticker")
+	}
+	defer ticker.Stop()
+
+	for {
+		lease := coordinator.currentLease()
+		lost := coordinator.leaseManager.Lost(lease)
+		select {
+		case <-ctx.Done():
+			return contextOrError(ctx, "rescue.lease", domain.ErrorInternal, codeContextCanceled, false, false, ctx.Err())
+		case <-coordinator.leaseLost:
 			if ctx.Err() != nil {
-				return nil, err
+				return contextOrError(ctx, "rescue.lease", domain.ErrorInternal, codeContextCanceled, false, false, ctx.Err())
 			}
+			return leaseError("rescue.lease")
+		case <-lost:
+			if ctx.Err() != nil {
+				return contextOrError(ctx, "rescue.lease", domain.ErrorInternal, codeContextCanceled, false, false, ctx.Err())
+			}
+			coordinator.markLeaseLost()
+			return leaseError("rescue.lease")
+		case <-ticker.C():
+			coordinator.leaseActionMu.Lock()
+			select {
+			case <-coordinator.leaseLost:
+				coordinator.leaseActionMu.Unlock()
+				continue
+			default:
+			}
+			lease = coordinator.currentLease()
+			renewed, err := coordinator.leaseManager.Renew(ctx, lease, coordinator.leaseTTL)
+			if err != nil {
+				if ctx.Err() != nil {
+					coordinator.leaseActionMu.Unlock()
+					return contextOrError(ctx, "rescue.lease_renew", domain.ErrorInternal, codeContextCanceled, false, false, ctx.Err())
+				}
+				coordinator.markLeaseLost()
+				coordinator.leaseActionMu.Unlock()
+				return leaseError("rescue.lease_renew")
+			}
+			coordinator.leaseMu.Lock()
+			coordinator.lease = renewed
+			coordinator.leaseMu.Unlock()
+			coordinator.leaseActionMu.Unlock()
 		}
 	}
+}
+
+// ReleaseLease permanently stops signing and releases the latest renewed
+// lease. A release failure is redacted but remains safely classifiable.
+func (coordinator *Coordinator) ReleaseLease(ctx context.Context) error {
+	if ctx == nil {
+		return newError("rescue.lease_release", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+	}
+	coordinator.leaseActionMu.Lock()
+	defer coordinator.leaseActionMu.Unlock()
+
+	coordinator.markLeaseLost()
+	if err := coordinator.leaseManager.Release(ctx, coordinator.currentLease()); err != nil {
+		if ctx.Err() != nil {
+			return contextOrError(ctx, "rescue.lease_release", domain.ErrorInternal, codeContextCanceled, false, true, ctx.Err())
+		}
+		return newError("rescue.lease_release", domain.ErrorInternal, CodeLeaseReleaseFailed, true, true, ErrLeaseReleaseFailed)
+	}
+	return nil
+}
+
+// NewSession verifies chain identity and the configured destination through
+// finalized quorum state, then reconciles persisted signed transactions before
+// accepting new candidates.
+func (coordinator *Coordinator) NewSession(ctx context.Context, generation uint64, reader RPCReader, finality FinalityReader, broadcaster rpc.Broadcaster) (*Session, error) {
+	if ctx == nil || reader == nil || finality == nil || broadcaster == nil {
+		return nil, newError("rescue.session", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+	}
+	if err := coordinator.validateProcessFence(); err != nil {
+		coordinator.recordFailure(domain.CandidateID{}, common.Hash{}, err)
+		return nil, err
+	}
+	if err := coordinator.validateLease(ctx); err != nil {
+		coordinator.recordFailure(domain.CandidateID{}, common.Hash{}, err)
+		return nil, err
+	}
+
+	session := &Session{coordinator: coordinator, generation: generation, reader: reader, finality: finality, broadcaster: broadcaster}
+	if err := session.verifyStartup(ctx); err != nil {
+		coordinator.recordFailure(domain.CandidateID{}, common.Hash{}, err)
+		return nil, err
+	}
+
+	coordinator.operationMu.Lock()
+	err := session.recoverPersisted(ctx)
+	coordinator.operationMu.Unlock()
+	if err != nil {
+		coordinator.recordFailure(domain.CandidateID{}, common.Hash{}, err)
+		return nil, err
+	}
+	coordinator.record(eventStartupVerified, observability.LevelInfo, domain.CandidateID{}, common.Hash{}, "")
 	return session, nil
 }
 
@@ -208,31 +394,119 @@ func (session *Session) Generation() uint64 {
 	return session.generation
 }
 
-// Handle consumes one watcher candidate without taking ownership of watcher or
-// RPC connection lifecycle.
+// Handle waits for the coordinator mutex. No valid candidate is dropped merely
+// because another candidate currently owns sponsor nonce allocation.
 func (session *Session) Handle(ctx context.Context, candidate domain.RescueCandidate) error {
 	coordinator := session.coordinator
-	if candidate.Network != coordinator.network.ChainID || candidate.Source != coordinator.source || (candidate.Generation != 0 && candidate.Generation != session.generation) {
+	if ctx == nil || domain.ValidateCandidate(candidate) != nil || candidate.Network != coordinator.network.ChainID || candidate.Source != coordinator.source ||
+		(candidate.Generation != 0 && candidate.Generation != session.generation) {
 		err := newError("rescue.handle", domain.ErrorConfiguration, codeCandidateMismatch, false, false, nil)
-		coordinator.recordFailure(err)
+		coordinator.recordFailure(candidate.ID, common.Hash{}, err)
 		return err
 	}
+
+	coordinator.operationMu.Lock()
+	defer coordinator.operationMu.Unlock()
 
 	var err error
 	switch candidate.Kind {
 	case domain.CandidateToken:
-		err = session.handleToken(ctx, candidate.Token)
+		err = session.handleAsset(ctx, candidate, domain.CandidateToken, candidate.Token.Address, domain.IncidentID{})
 	case domain.CandidateNative:
-		err = session.reconcileNative(ctx)
+		err = session.handleAsset(ctx, candidate, domain.CandidateNative, common.Address{}, domain.IncidentID{})
 	case domain.CandidatePeriodic:
-		return session.reconcilePeriodic(ctx)
+		err = session.handlePeriodic(ctx, candidate)
 	default:
 		err = newError("rescue.handle", domain.ErrorConfiguration, codeUnsupportedCandidate, false, false, nil)
 	}
 	if err != nil {
-		coordinator.recordFailure(err)
+		coordinator.recordFailure(candidate.ID, common.Hash{}, err)
 	}
 	return err
+}
+
+// RunReconciliation sparsely checks expired ambiguous operations for late
+// finalized receipts. Expired operations are never signed or broadcast again.
+func (session *Session) RunReconciliation(ctx context.Context) error {
+	if ctx == nil {
+		return newError("rescue.reconciliation", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+	}
+	ticker := session.coordinator.clock.NewTicker(reconciliationInterval(session.coordinator.retryDelay))
+	if ticker == nil {
+		return newError("rescue.reconciliation", domain.ErrorInternal, codeInvalidConfig, false, false, nil)
+	}
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return contextOrError(ctx, "rescue.reconciliation", domain.ErrorInternal, codeContextCanceled, false, false, ctx.Err())
+		case <-ticker.C():
+			if err := session.reconcileExpired(ctx); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func reconciliationInterval(retryDelay time.Duration) time.Duration {
+	if retryDelay < minReconciliationInterval {
+		return minReconciliationInterval
+	}
+	if retryDelay > maxReconciliationInterval {
+		return maxReconciliationInterval
+	}
+	return retryDelay
+}
+
+func (session *Session) reconcileExpired(ctx context.Context) error {
+	coordinator := session.coordinator
+	coordinator.operationMu.Lock()
+	defer coordinator.operationMu.Unlock()
+
+	if err := coordinator.validateProcessFence(); err != nil {
+		coordinator.recordFailure(domain.CandidateID{}, common.Hash{}, err)
+		return err
+	}
+	if err := coordinator.validateLease(ctx); err != nil {
+		coordinator.recordFailure(domain.CandidateID{}, common.Hash{}, err)
+		return err
+	}
+	incidents, err := coordinator.state.RescueIncidents(ctx, coordinator.network.ChainID)
+	if err != nil {
+		err = newError("rescue.reconciliation_state", domain.ErrorInternal, codeStateRead, true, true, err)
+		coordinator.recordFailure(domain.CandidateID{}, common.Hash{}, err)
+		return err
+	}
+
+	now := coordinator.clock.Now()
+	for index := range incidents {
+		incident := &incidents[index]
+		if incident.Network != coordinator.network.ChainID {
+			err = newError("rescue.reconciliation_state", domain.ErrorInternal, codeStateRead, false, true, nil)
+			coordinator.recordFailure(incident.Candidate, common.Hash{}, err)
+			return err
+		}
+		if incident.Status != store.RescueAmbiguous || incident.ReconcileUntil.IsZero() || now.Before(incident.ReconcileUntil) {
+			continue
+		}
+		if err = session.reconcileExpiredIncident(ctx, incident); err == nil {
+			continue
+		}
+		coordinator.recordFailure(incident.Candidate, publicTransactionHash(*incident), err)
+		if fatalReconciliationError(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func fatalReconciliationError(err error) bool {
+	var classified *domain.ClassifiedError
+	if !errors.As(err, &classified) {
+		return true
+	}
+	return classified.Code == codeContextCanceled || classified.Class == domain.ErrorInternal || classified.Class == domain.ErrorSigning
 }
 
 func (session *Session) verifyStartup(ctx context.Context) error {
@@ -247,17 +521,18 @@ func (session *Session) verifyStartup(ctx context.Context) error {
 	if chainID == nil || chainID.Cmp(big.NewInt(int64(coordinator.network.ChainID))) != 0 {
 		return newError("rescue.chain_id", domain.ErrorConfiguration, codeChainIDMismatch, false, false, nil)
 	}
-	if !coordinator.hasRescuer {
-		return nil
-	}
 
+	block, err := session.finality.Finalized(readContext)
+	if err != nil || block.Hash == (common.Hash{}) {
+		return contextOrError(readContext, "rescue.finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err)
+	}
 	data, err := coordinator.rescuerCodec.PackDestination()
 	if err != nil {
 		return newError("rescue.destination", domain.ErrorInternal, codeEncoding, false, false, err)
 	}
-	result, err := session.reader.CallContract(readContext, ethereum.CallMsg{To: &coordinator.rescuer, Data: data}, nil)
+	result, err := session.finality.CallContract(readContext, block, ethereum.CallMsg{To: &coordinator.rescuer, Data: data})
 	if err != nil {
-		return contextOrError(readContext, "rescue.destination", domain.ErrorRPCTransient, codeDestinationRead, true, false, err)
+		return contextOrError(readContext, "rescue.destination", domain.ErrorRPCTransient, codeDestinationRead, true, true, err)
 	}
 	destination, err := coordinator.rescuerCodec.DecodeDestination(result)
 	if err != nil {
@@ -266,76 +541,161 @@ func (session *Session) verifyStartup(ctx context.Context) error {
 	if destination != coordinator.destination {
 		return newError("rescue.destination", domain.ErrorConfiguration, codeDestinationMismatch, false, false, nil)
 	}
+	session.lastFinalized = block
 	return nil
 }
 
-func (coordinator *Coordinator) beginOperation() bool {
-	coordinator.mu.Lock()
-	defer coordinator.mu.Unlock()
-	if coordinator.busy {
+func (session *Session) recoverPersisted(ctx context.Context) error {
+	durableFloor, err := session.coordinator.state.NonceFloor(ctx)
+	if err != nil {
+		return newError("rescue.nonce_floor", domain.ErrorInternal, codeStateRead, true, true, err)
+	}
+	session.coordinator.raiseNonceFloor(durableFloor)
+
+	incidents, err := session.coordinator.state.RescueIncidents(ctx, session.coordinator.network.ChainID)
+	if err != nil {
+		return newError("rescue.state", domain.ErrorInternal, codeStateRead, true, true, err)
+	}
+	for index := range incidents {
+		incident := &incidents[index]
+		if incident.Network != session.coordinator.network.ChainID {
+			return newError("rescue.state", domain.ErrorInternal, codeStateRead, false, true, nil)
+		}
+		if incidentHasSignedTransaction(*incident) {
+			if incident.SponsorNonce == ^uint64(0) {
+				return newError("rescue.nonce_floor", domain.ErrorInternal, codeStateRead, false, true, nil)
+			}
+			floor := incident.SponsorNonce + 1
+			if err := session.coordinator.state.RaiseNonceFloor(ctx, floor); err != nil {
+				return newError("rescue.nonce_floor", domain.ErrorInternal, codeStateWrite, true, true, err)
+			}
+			session.coordinator.raiseNonceFloor(floor)
+		}
+	}
+	for index := range incidents {
+		incident := &incidents[index]
+		if !statusNeedsReceipt(incident.Status) {
+			continue
+		}
+		if err := session.reconcileOnce(ctx, incident); err != nil {
+			if ctx.Err() != nil || errorCode(err) == codeStateRead || errorCode(err) == codeStateWrite {
+				return err
+			}
+			session.coordinator.recordFailure(incident.Candidate, publicTransactionHash(*incident), err)
+		}
+	}
+	return session.refreshNonceBlock(ctx)
+}
+
+func incidentHasSignedTransaction(incident store.RescueIncident) bool {
+	if incident.TxHash == (common.Hash{}) {
 		return false
 	}
-	coordinator.busy = true
-	return true
-}
-
-func (coordinator *Coordinator) endOperation() {
-	coordinator.mu.Lock()
-	coordinator.busy = false
-	coordinator.mu.Unlock()
-}
-
-func (coordinator *Coordinator) retryExhausted(address common.Address) bool {
-	coordinator.mu.Lock()
-	defer coordinator.mu.Unlock()
-	return coordinator.retries[address].attempts >= maxRetryAttempts
-}
-
-func (coordinator *Coordinator) registerFailure(token domain.Token) {
-	coordinator.mu.Lock()
-	defer coordinator.mu.Unlock()
-	entry := coordinator.retries[token.Address]
-	if entry.attempts >= maxRetryAttempts {
-		return
+	switch incident.Status {
+	case store.RescueSigned, store.RescueBroadcast, store.RescueAmbiguous, store.RescueRetryable,
+		store.RescueExhausted, store.RescueFailed, store.RescueTrustedSuccess, store.RescueTokenReported, store.RescueLostRace:
+		return true
+	default:
+		return false
 	}
-	entry.token = token
-	entry.attempts++
-	coordinator.retries[token.Address] = entry
 }
 
-func (coordinator *Coordinator) clearRetry(address common.Address) {
-	coordinator.mu.Lock()
-	delete(coordinator.retries, address)
-	coordinator.mu.Unlock()
+func statusNeedsReceipt(status store.RescueStatus) bool {
+	return status == store.RescueSigned || status == store.RescueBroadcast || status == store.RescueAmbiguous
 }
 
-func (coordinator *Coordinator) retrySnapshot() []domain.Token {
-	coordinator.mu.Lock()
-	defer coordinator.mu.Unlock()
-	tokens := make([]domain.Token, 0, len(coordinator.retries))
-	for _, entry := range coordinator.retries {
-		tokens = append(tokens, entry.token)
+func (coordinator *Coordinator) currentLease() store.Lease {
+	coordinator.leaseMu.RLock()
+	defer coordinator.leaseMu.RUnlock()
+	return coordinator.lease
+}
+
+func (coordinator *Coordinator) validateLease(ctx context.Context) error {
+	select {
+	case <-coordinator.leaseLost:
+		return leaseError("rescue.lease")
+	default:
 	}
-	return tokens
+	coordinator.leaseActionMu.Lock()
+	defer coordinator.leaseActionMu.Unlock()
+	select {
+	case <-coordinator.leaseLost:
+		return leaseError("rescue.lease")
+	default:
+	}
+	if err := coordinator.leaseManager.Validate(ctx, coordinator.currentLease()); err != nil {
+		if ctx.Err() != nil {
+			return contextOrError(ctx, "rescue.lease_validate", domain.ErrorInternal, codeContextCanceled, false, false, ctx.Err())
+		}
+		coordinator.markLeaseLost()
+		return leaseError("rescue.lease_validate")
+	}
+	return nil
 }
 
-func (coordinator *Coordinator) record(code observability.EventCode, level observability.Level, hash common.Hash, errorCode domain.ErrorCode) {
+func (coordinator *Coordinator) markLeaseLost() {
+	coordinator.leaseLostOnce.Do(func() { close(coordinator.leaseLost) })
+}
+
+func leaseError(operation string) *domain.ClassifiedError {
+	return newError(operation, domain.ErrorSigning, CodeLeaseLost, false, true, ErrLeaseLost)
+}
+
+func processFenceError(operation string) *domain.ClassifiedError {
+	return newError(operation, domain.ErrorSigning, CodeLeaseLost, false, true, errors.Join(ErrLeaseLost, store.ErrFenceLost))
+}
+
+func (coordinator *Coordinator) validateProcessFence() error {
+	if err := coordinator.processFence.Validate(); err != nil {
+		return processFenceError("rescue.process_fence")
+	}
+	return nil
+}
+
+func (coordinator *Coordinator) checkSignerAddresses() error {
+	if coordinator.authorizer.Address() != coordinator.source || coordinator.transactioner.Address() != coordinator.sponsor {
+		return newError("rescue.signer", domain.ErrorSigning, codeSignerMismatch, false, false, nil)
+	}
+	return nil
+}
+
+func (coordinator *Coordinator) guardSigning(ctx context.Context) error {
+	if err := coordinator.validateProcessFence(); err != nil {
+		return err
+	}
+	if err := coordinator.validateLease(ctx); err != nil {
+		return err
+	}
+	return coordinator.checkSignerAddresses()
+}
+
+func (coordinator *Coordinator) raiseNonceFloor(floor uint64) {
+	if floor > coordinator.nonceFloor {
+		coordinator.nonceFloor = floor
+	}
+}
+
+func (coordinator *Coordinator) record(code observability.EventCode, level observability.Level, candidate domain.CandidateID, hash common.Hash, errorCode domain.ErrorCode) {
 	coordinator.observer.Record(observability.Event{
 		Level:       level,
 		Code:        code,
 		NetworkName: coordinator.network.Name,
+		Candidate:   candidate,
 		TxHash:      hash,
 		ErrorCode:   errorCode,
 	})
 }
 
-func (coordinator *Coordinator) recordFailure(err error) {
+func (coordinator *Coordinator) recordFailure(candidate domain.CandidateID, hash common.Hash, err error) {
+	coordinator.record(eventOperationFailed, observability.LevelError, candidate, hash, errorCode(err))
+}
+
+func errorCode(err error) domain.ErrorCode {
 	var classified *domain.ClassifiedError
-	code := domain.ErrorCode("rescue_internal_failure")
 	if errors.As(err, &classified) {
-		code = classified.Code
+		return classified.Code
 	}
-	coordinator.record(eventOperationFailed, observability.LevelError, common.Hash{}, code)
+	return domain.ErrorCode("rescue_internal_failure")
 }
 
 func newError(operation string, class domain.ErrorClass, code domain.ErrorCode, retryable, ambiguous bool, cause error) *domain.ClassifiedError {

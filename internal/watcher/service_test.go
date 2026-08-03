@@ -283,7 +283,7 @@ func TestObservationSaturationDoesNotBlockCanonicalScanner(t *testing.T) {
 	source := testAddress(0x63)
 	network := domain.Network{Name: "local", ChainID: 31337, AllowUnknownTokens: true}
 	handoff, err := store.Open(filepath.Join(t.TempDir(), "watcher.db"), store.OpenOptions{
-		Network: network.ChainID, Source: source, PolicyFingerprint: PolicyFingerprint(network, 1),
+		Network: network.ChainID, Source: source, Sponsor: testAddress(0xfa), Destination: testAddress(0xfb), Rescuer: testAddress(0xfc), PolicyFingerprint: PolicyFingerprint(network, 1),
 		MaxPending: 1, MaxDiscoveredTokens: 4,
 	})
 	if err != nil {
@@ -524,7 +524,7 @@ func newTestService(
 func openWatchStore(t *testing.T, path string, source common.Address, network domain.Network, lookback uint64) *store.BoltStore {
 	t.Helper()
 	handoff, err := store.Open(path, store.OpenOptions{
-		Network: network.ChainID, Source: source, PolicyFingerprint: PolicyFingerprint(network, lookback),
+		Network: network.ChainID, Source: source, Sponsor: testAddress(0xfa), Destination: testAddress(0xfb), Rescuer: testAddress(0xfc), PolicyFingerprint: PolicyFingerprint(network, lookback),
 		MaxPending: 64, MaxDiscoveredTokens: 32,
 	})
 	if err != nil {

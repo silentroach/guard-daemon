@@ -20,6 +20,57 @@ type deadlineProbeReader struct {
 	contexts []context.Context
 }
 
+type deadlineProbeBroadcaster struct {
+	ctx   context.Context
+	block bool
+}
+
+func (broadcaster *deadlineProbeBroadcaster) SendTransaction(ctx context.Context, _ *types.Transaction) error {
+	broadcaster.ctx = ctx
+	if broadcaster.block {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
+
+func TestDeadlineBroadcasterCancelsCallContextAfterReturn(t *testing.T) {
+	backend := &deadlineProbeBroadcaster{}
+	broadcaster, err := NewDeadlineBroadcaster(backend, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := context.Background()
+	if err := broadcaster.SendTransaction(parent, types.NewTx(&types.LegacyTx{})); err != nil {
+		t.Fatal(err)
+	}
+	if backend.ctx == nil {
+		t.Fatal("SendTransaction() не передал context")
+	}
+	if _, ok := backend.ctx.Deadline(); !ok {
+		t.Fatal("SendTransaction() context не содержит deadline")
+	}
+	if !errors.Is(backend.ctx.Err(), context.Canceled) {
+		t.Fatalf("SendTransaction() context error = %v", backend.ctx.Err())
+	}
+	if parent.Err() != nil {
+		t.Fatalf("parent context отменён: %v", parent.Err())
+	}
+}
+
+func TestDeadlineBroadcasterCancelsHungSend(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		broadcaster, err := NewDeadlineBroadcaster(&deadlineProbeBroadcaster{block: true}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = broadcaster.SendTransaction(context.Background(), types.NewTx(&types.LegacyTx{}))
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("SendTransaction() error = %v", err)
+		}
+	})
+}
+
 func (probe *deadlineProbeReader) record(ctx context.Context) error {
 	if _, ok := ctx.Deadline(); !ok {
 		return errors.New("missing deadline")
@@ -265,6 +316,16 @@ func TestDeadlineSubscribersCancelHungSetup(t *testing.T) {
 }
 
 func TestDeadlineConstructorsRejectInvalidConfiguration(t *testing.T) {
+	if _, err := NewDeadlineBroadcaster(nil, time.Second); !errors.Is(err, ErrInvalidDeadlineWrapper) {
+		t.Fatalf("NewDeadlineBroadcaster(nil) error = %v", err)
+	}
+	var nilBroadcaster *deadlineProbeBroadcaster
+	if _, err := NewDeadlineBroadcaster(nilBroadcaster, time.Second); !errors.Is(err, ErrInvalidDeadlineWrapper) {
+		t.Fatalf("NewDeadlineBroadcaster(typed nil) error = %v", err)
+	}
+	if _, err := NewDeadlineBroadcaster(&deadlineProbeBroadcaster{}, 0); !errors.Is(err, ErrInvalidDeadlineWrapper) {
+		t.Fatalf("NewDeadlineBroadcaster(timeout=0) error = %v", err)
+	}
 	if _, err := NewDeadlineReader(nil, time.Second); !errors.Is(err, ErrInvalidDeadlineWrapper) {
 		t.Fatalf("NewDeadlineReader(nil) error = %v", err)
 	}

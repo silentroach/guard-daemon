@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	schemaVersion         = uint32(1)
+	schemaVersionV1       = uint32(1)
+	schemaVersion         = uint32(2)
 	openTimeout           = 250 * time.Millisecond
 	maxConfiguredBound    = uint32(1_000_000)
 	minJournalCapacity    = uint64(100_000)
@@ -31,19 +32,24 @@ const (
 )
 
 var (
-	metaBucket       = []byte("meta")
-	candidatesBucket = []byte("candidates")
-	pendingBucket    = []byte("pending")
-	readyOrderBucket = []byte("ready-order")
-	blockIndexBucket = []byte("candidate-blocks")
-	incidentsBucket  = []byte("incidents")
-	blocksBucket     = []byte("blocks")
-	discoveredBucket = []byte("discovered")
-	tombstonesBucket = []byte("tombstones")
+	metaBucket        = []byte("meta")
+	candidatesBucket  = []byte("candidates")
+	pendingBucket     = []byte("pending")
+	readyOrderBucket  = []byte("ready-order")
+	blockIndexBucket  = []byte("candidate-blocks")
+	incidentsBucket   = []byte("incidents")
+	blocksBucket      = []byte("blocks")
+	discoveredBucket  = []byte("discovered")
+	tombstonesBucket  = []byte("tombstones")
+	rescueStateBucket = []byte("rescue-incidents")
+	leasesBucket      = []byte("leases")
 
 	schemaKey            = []byte("schema")
 	networkKey           = []byte("network")
 	sourceKey            = []byte("source")
+	sponsorKey           = []byte("sponsor")
+	destinationKey       = []byte("destination")
+	rescuerKey           = []byte("rescuer")
 	policyKey            = []byte("policy")
 	maxPendingKey        = []byte("max-pending")
 	maxDiscoveredKey     = []byte("max-discovered")
@@ -52,6 +58,7 @@ var (
 	checkpointKey        = []byte("checkpoint")
 	discoveryOverflowKey = []byte("discovery-overflow")
 	promotionTurnKey     = []byte("promotion-turn")
+	nonceFloorKey        = []byte("nonce-floor")
 
 	errInvalidOptions = errors.New("хранилище: некорректные параметры")
 	errOpenFailed     = errors.New("хранилище: не удалось открыть state")
@@ -80,9 +87,13 @@ type BoltStore struct {
 	db                  *bolt.DB
 	network             domain.NetworkID
 	source              common.Address
+	sponsor             common.Address
+	destination         common.Address
+	rescuer             common.Address
 	maxPending          uint32
 	journalCapacity     uint32
 	maxDiscoveredTokens uint32
+	policyFingerprint   [32]byte
 	clock               storeClock
 
 	mu     sync.Mutex
@@ -92,13 +103,18 @@ type BoltStore struct {
 
 	wakeMu sync.Mutex
 	wake   chan struct{}
+
+	leaseMu   sync.Mutex
+	leaseLoss map[leaseIdentity]chan struct{}
 }
 
 var _ HandoffStore = (*BoltStore)(nil)
 
 // Open opens or initializes a fail-closed, configuration-bound handoff store.
 func Open(path string, options OpenOptions) (*BoltStore, error) {
-	if path == "" || options.Network <= 0 || options.Source == (common.Address{}) ||
+	if path == "" || options.Network <= 0 || options.Source == (common.Address{}) || options.Sponsor == (common.Address{}) ||
+		options.Destination == (common.Address{}) || options.Rescuer == (common.Address{}) ||
+		options.Source == options.Sponsor || options.Source == options.Destination || options.Sponsor == options.Destination ||
 		options.MaxPending == 0 || options.MaxPending > maxConfiguredBound ||
 		options.MaxDiscoveredTokens == 0 || options.MaxDiscoveredTokens > maxConfiguredBound {
 		return nil, errInvalidOptions
@@ -153,17 +169,22 @@ func Open(path string, options OpenOptions) (*BoltStore, error) {
 		db:                  db,
 		network:             options.Network,
 		source:              options.Source,
+		sponsor:             options.Sponsor,
+		destination:         options.Destination,
+		rescuer:             options.Rescuer,
 		maxPending:          options.MaxPending,
 		journalCapacity:     deriveJournalCapacity(options.MaxPending),
 		maxDiscoveredTokens: options.MaxDiscoveredTokens,
+		policyFingerprint:   options.PolicyFingerprint,
 		clock:               clock,
 		wake:                make(chan struct{}),
 		done:                make(chan struct{}),
+		leaseLoss:           make(map[leaseIdentity]chan struct{}),
 	}
 	initialized := false
 	err = db.Update(func(tx *bolt.Tx) error {
 		var initializeErr error
-		initialized, initializeErr = initializeOrValidateMeta(tx, options, created)
+		initialized, initializeErr = store.initializeOrMigrate(tx, options, created)
 		return initializeErr
 	})
 	if err != nil {
@@ -175,10 +196,8 @@ func Open(path string, options OpenOptions) (*BoltStore, error) {
 	if initialized != created {
 		return fail(errCorrupt)
 	}
-	if !initialized {
-		if err := db.View(func(tx *bolt.Tx) error { return store.validateDatabase(tx) }); err != nil {
-			return fail(errCorrupt)
-		}
+	if err := db.View(func(tx *bolt.Tx) error { return store.validateDatabase(tx) }); err != nil {
+		return fail(errCorrupt)
 	}
 	return store, nil
 }
@@ -215,7 +234,7 @@ func deriveJournalCapacity(maxPending uint32) uint32 {
 	return uint32(capacity)
 }
 
-func initializeOrValidateMeta(tx *bolt.Tx, options OpenOptions, allowInitialize bool) (bool, error) {
+func (store *BoltStore) initializeOrMigrate(tx *bolt.Tx, options OpenOptions, allowInitialize bool) (bool, error) {
 	meta := tx.Bucket(metaBucket)
 	if meta == nil {
 		if !allowInitialize {
@@ -229,7 +248,7 @@ func initializeOrValidateMeta(tx *bolt.Tx, options OpenOptions, allowInitialize 
 		if meta, err = tx.CreateBucket(metaBucket); err != nil {
 			return false, err
 		}
-		for _, bucket := range [][]byte{candidatesBucket, pendingBucket, readyOrderBucket, blockIndexBucket, incidentsBucket, blocksBucket, discoveredBucket, tombstonesBucket} {
+		for _, bucket := range [][]byte{candidatesBucket, pendingBucket, readyOrderBucket, blockIndexBucket, incidentsBucket, blocksBucket, discoveredBucket, tombstonesBucket, rescueStateBucket, leasesBucket} {
 			if _, err := tx.CreateBucket(bucket); err != nil {
 				return false, err
 			}
@@ -241,9 +260,13 @@ func initializeOrValidateMeta(tx *bolt.Tx, options OpenOptions, allowInitialize 
 			{schemaKey, encodeUint32(schemaVersion)},
 			{networkKey, encodeUint64(uint64(options.Network))},
 			{sourceKey, append([]byte(nil), options.Source[:]...)},
+			{sponsorKey, append([]byte(nil), options.Sponsor[:]...)},
+			{destinationKey, append([]byte(nil), options.Destination[:]...)},
+			{rescuerKey, append([]byte(nil), options.Rescuer[:]...)},
 			{policyKey, append([]byte(nil), options.PolicyFingerprint[:]...)},
 			{maxPendingKey, encodeUint32(options.MaxPending)},
 			{maxDiscoveredKey, encodeUint32(options.MaxDiscoveredTokens)},
+			{nonceFloorKey, encodeUint64(0)},
 		}
 		for _, binding := range bindings {
 			if err := meta.Put(binding.key, binding.value); err != nil {
@@ -252,12 +275,8 @@ func initializeOrValidateMeta(tx *bolt.Tx, options OpenOptions, allowInitialize 
 		}
 		return true, nil
 	}
-	for _, bucket := range [][]byte{candidatesBucket, pendingBucket, readyOrderBucket, blockIndexBucket, incidentsBucket, blocksBucket, discoveredBucket, tombstonesBucket} {
-		if tx.Bucket(bucket) == nil {
-			return false, errCorrupt
-		}
-	}
-	if !bytes.Equal(meta.Get(schemaKey), encodeUint32(schemaVersion)) {
+	schema := meta.Get(schemaKey)
+	if !bytes.Equal(schema, encodeUint32(schemaVersionV1)) && !bytes.Equal(schema, encodeUint32(schemaVersion)) {
 		return false, errBinding
 	}
 	bindings := []struct {
@@ -271,6 +290,56 @@ func initializeOrValidateMeta(tx *bolt.Tx, options OpenOptions, allowInitialize 
 		{maxDiscoveredKey, encodeUint32(options.MaxDiscoveredTokens)},
 	}
 	for _, binding := range bindings {
+		if !bytes.Equal(meta.Get(binding.key), binding.value) {
+			return false, errBinding
+		}
+	}
+	for _, bucket := range [][]byte{candidatesBucket, pendingBucket, readyOrderBucket, blockIndexBucket, incidentsBucket, blocksBucket, discoveredBucket, tombstonesBucket} {
+		if tx.Bucket(bucket) == nil {
+			return false, errCorrupt
+		}
+	}
+	if bytes.Equal(schema, encodeUint32(schemaVersionV1)) {
+		if err := store.validateDatabaseVersion(tx, schemaVersionV1); err != nil {
+			return false, err
+		}
+		if _, err := tx.CreateBucket(rescueStateBucket); err != nil {
+			return false, err
+		}
+		if _, err := tx.CreateBucket(leasesBucket); err != nil {
+			return false, err
+		}
+		for _, binding := range []struct {
+			key   []byte
+			value []byte
+		}{
+			{sponsorKey, options.Sponsor[:]},
+			{destinationKey, options.Destination[:]},
+			{rescuerKey, options.Rescuer[:]},
+			{nonceFloorKey, encodeUint64(0)},
+		} {
+			if err := meta.Put(binding.key, binding.value); err != nil {
+				return false, err
+			}
+		}
+		if err := meta.Put(schemaKey, encodeUint32(schemaVersion)); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	for _, bucket := range [][]byte{rescueStateBucket, leasesBucket} {
+		if tx.Bucket(bucket) == nil {
+			return false, errCorrupt
+		}
+	}
+	for _, binding := range []struct {
+		key   []byte
+		value []byte
+	}{
+		{sponsorKey, options.Sponsor[:]},
+		{destinationKey, options.Destination[:]},
+		{rescuerKey, options.Rescuer[:]},
+	} {
 		if !bytes.Equal(meta.Get(binding.key), binding.value) {
 			return false, errBinding
 		}
@@ -1065,6 +1134,7 @@ func (store *BoltStore) Close() error {
 	close(store.done)
 	store.mu.Unlock()
 	store.ops.Wait()
+	store.closeAllLeaseSignals()
 	if err := store.db.Close(); err != nil {
 		return errClosed
 	}
@@ -1129,7 +1199,7 @@ func (store *BoltStore) publicError(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	for _, public := range []error{errClosed, errInvalidInput, errConflict, ErrObservationSaturated, errCorrupt} {
+	for _, public := range []error{errClosed, errInvalidInput, errConflict, ErrObservationSaturated, ErrLeaseHeld, ErrLeaseLost, errCorrupt} {
 		if errors.Is(err, public) {
 			return public
 		}
@@ -1722,6 +1792,13 @@ func (store *BoltStore) blockComplete(tx *bolt.Tx, block blockRecord) (bool, err
 }
 
 func (store *BoltStore) validateDatabase(tx *bolt.Tx) error {
+	return store.validateDatabaseVersion(tx, schemaVersion)
+}
+
+func (store *BoltStore) validateDatabaseVersion(tx *bolt.Tx, version uint32) error {
+	if version != schemaVersionV1 && version != schemaVersion {
+		return errCorrupt
+	}
 	meta := tx.Bucket(metaBucket)
 	if meta == nil {
 		return errCorrupt
@@ -1729,6 +1806,10 @@ func (store *BoltStore) validateDatabase(tx *bolt.Tx) error {
 	expectedBuckets := map[string]struct{}{
 		string(metaBucket): {}, string(candidatesBucket): {}, string(pendingBucket): {}, string(readyOrderBucket): {}, string(blockIndexBucket): {},
 		string(incidentsBucket): {}, string(blocksBucket): {}, string(discoveredBucket): {}, string(tombstonesBucket): {},
+	}
+	if version == schemaVersion {
+		expectedBuckets[string(rescueStateBucket)] = struct{}{}
+		expectedBuckets[string(leasesBucket)] = struct{}{}
 	}
 	seenBuckets := 0
 	if err := tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
@@ -1740,15 +1821,49 @@ func (store *BoltStore) validateDatabase(tx *bolt.Tx) error {
 	}); err != nil || seenBuckets != len(expectedBuckets) {
 		return errCorrupt
 	}
-	for _, binding := range [][]byte{schemaKey, networkKey, sourceKey, policyKey, maxPendingKey, maxDiscoveredKey} {
-		if meta.Get(binding) == nil {
+	bindings := []struct {
+		key   []byte
+		value []byte
+	}{
+		{schemaKey, encodeUint32(version)},
+		{networkKey, encodeUint64(uint64(store.network))},
+		{sourceKey, store.source[:]},
+		{policyKey, store.policyFingerprint[:]},
+		{maxPendingKey, encodeUint32(store.maxPending)},
+		{maxDiscoveredKey, encodeUint32(store.maxDiscoveredTokens)},
+	}
+	for _, binding := range bindings {
+		if !bytes.Equal(meta.Get(binding.key), binding.value) {
 			return errCorrupt
+		}
+	}
+	if version == schemaVersion {
+		for _, binding := range []struct {
+			key   []byte
+			value []byte
+		}{
+			{sponsorKey, store.sponsor[:]},
+			{destinationKey, store.destination[:]},
+			{rescuerKey, store.rescuer[:]},
+		} {
+			if !bytes.Equal(meta.Get(binding.key), binding.value) {
+				return errCorrupt
+			}
 		}
 	}
 	allowedMeta := map[string]struct{}{
 		string(schemaKey): {}, string(networkKey): {}, string(sourceKey): {}, string(policyKey): {},
 		string(maxPendingKey): {}, string(maxDiscoveredKey): {}, string(baselineKey): {},
 		string(scanCursorKey): {}, string(checkpointKey): {}, string(discoveryOverflowKey): {}, string(promotionTurnKey): {},
+	}
+	if version == schemaVersion {
+		allowedMeta[string(sponsorKey)] = struct{}{}
+		allowedMeta[string(destinationKey)] = struct{}{}
+		allowedMeta[string(rescuerKey)] = struct{}{}
+		allowedMeta[string(nonceFloorKey)] = struct{}{}
+		if _, ok := decodeUint64(meta.Get(nonceFloorKey)); !ok {
+			return errCorrupt
+		}
 	}
 	if err := meta.ForEach(func(key, value []byte) error {
 		if value == nil {
@@ -1803,6 +1918,14 @@ func (store *BoltStore) validateDatabase(tx *bolt.Tx) error {
 	}
 	if meta.Get(discoveryOverflowKey) != nil && discoveredCount != store.maxDiscoveredTokens {
 		return errCorrupt
+	}
+	if version == schemaVersion {
+		if err := store.validateRescueStateBucket(tx); err != nil {
+			return errCorrupt
+		}
+		if err := store.validateLeasesBucket(tx); err != nil {
+			return errCorrupt
+		}
 	}
 
 	baselineData := meta.Get(baselineKey)

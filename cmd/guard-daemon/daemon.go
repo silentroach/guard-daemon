@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"guard-daemon/internal/clock"
@@ -31,6 +32,10 @@ const (
 	maxPendingCandidates = uint32(1024)
 	maxDiscoveredTokens  = uint32(1024)
 	maxWatcherLookback   = uint64(10_000)
+	processLeaseTTL      = 30 * time.Second
+	leaseReleaseTimeout  = 5 * time.Second
+	rescueReceiptTimeout = 60 * time.Second
+	rescueMaxAttempts    = uint32(3)
 )
 
 const (
@@ -47,6 +52,12 @@ const (
 	errorTokenForbidden      domain.ErrorCode = "daemon_token_forbidden"
 	errorStoreFailed         domain.ErrorCode = "daemon_store_failed"
 	errorQuorumFailed        domain.ErrorCode = "daemon_runtime_quorum_failed"
+	errorLeaseAcquireFailed  domain.ErrorCode = "daemon_lease_acquire_failed"
+	errorLeaseMaintainFailed domain.ErrorCode = "daemon_lease_maintain_failed"
+	errorLeaseReleaseFailed  domain.ErrorCode = "daemon_lease_release_failed"
+	errorFenceAcquireFailed  domain.ErrorCode = "daemon_fence_acquire_failed"
+	errorFenceValidateFailed domain.ErrorCode = "daemon_fence_validate_failed"
+	errorFenceReleaseFailed  domain.ErrorCode = "daemon_fence_release_failed"
 )
 
 const (
@@ -78,6 +89,7 @@ type generationRunner interface {
 
 type runtimeQuorum interface {
 	rpc.FinalizedReader
+	rescue.FinalityReader
 	Close()
 }
 
@@ -91,10 +103,16 @@ type candidateSession interface {
 	Close()
 }
 
+type reconciliationSession interface {
+	RunReconciliation(context.Context) error
+}
+
 type preparedNetwork struct {
 	configured config.Network
 	manifest   contracts.DeploymentManifest
 	handoff    store.HandoffStore
+	lease      store.Lease
+	fence      store.ProcessFence
 }
 
 type daemonDependencies struct {
@@ -105,10 +123,11 @@ type daemonDependencies struct {
 	loadManifest   func(config.Runtime, config.Network) (contracts.DeploymentManifest, error)
 	attestNetwork  func(context.Context, config.Network, contracts.DeploymentManifest, time.Duration) error
 	newSigners     func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error)
-	newSession     func(context.Context, *networkProcess, generationClient) (candidateSession, error)
+	newSession     func(context.Context, *networkProcess, generationClient, runtimeQuorum) (candidateSession, error)
 	newWatcher     func(watcher.Dependencies) (generationRunner, error)
 	openStore      func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error)
 	openQuorum     func(context.Context, config.Network, time.Duration) (runtimeQuorum, error)
+	acquireFence   func(store.LeaseKey) (store.ProcessFence, error)
 }
 
 type daemon struct {
@@ -131,6 +150,7 @@ type networkProcess struct {
 	dryBroadcaster   rpc.Broadcaster
 	dryAttempts      *dryrun.Attempts
 	handoff          store.HandoffStore
+	fence            store.ProcessFence
 	codec            *contracts.ERC20Codec
 	allowedTokens    map[common.Address]struct{}
 }
@@ -155,6 +175,11 @@ type tokenPolicySession struct {
 	candidateSession
 	allowed      map[common.Address]struct{}
 	allowUnknown bool
+}
+
+type reconcilingTokenPolicySession struct {
+	*tokenPolicySession
+	reconciliationSession
 }
 
 func (session *tokenPolicySession) Handle(ctx context.Context, candidate domain.RescueCandidate) error {
@@ -187,6 +212,9 @@ func newProductionDependencies(observer observability.Observer, mode config.Mode
 			return store.Open(path, store.OpenOptions{
 				Network:             network.ChainID,
 				Source:              runtimeConfig.SourceAddress,
+				Sponsor:             runtimeConfig.SponsorAddress,
+				Destination:         runtimeConfig.Destination,
+				Rescuer:             network.Rescuer,
 				PolicyFingerprint:   watcher.PolicyFingerprint(network, runtimeConfig.Watch.LookbackBlocks),
 				MaxPending:          maxPendingCandidates,
 				MaxDiscoveredTokens: maxDiscoveredTokens,
@@ -199,6 +227,7 @@ func newProductionDependencies(observer observability.Observer, mode config.Mode
 		dependencies.dialSubmission = dialSubmissionClient
 		dependencies.attestNetwork = attestConfiguredNetwork
 		dependencies.newSigners = newPrivateKeySigners
+		dependencies.acquireFence = store.AcquireProcessFence
 	}
 	return dependencies
 }
@@ -317,7 +346,15 @@ func dialSubmissionClient(ctx context.Context, endpoint string) (submissionClien
 	return client, nil
 }
 
-func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies daemonDependencies) (*daemon, error) {
+func newProcessLeaseOwner() (string, error) {
+	var opaque [32]byte
+	if _, err := rand.Read(opaque[:]); err != nil {
+		return "", errors.New("не удалось создать идентификатор владельца lease")
+	}
+	return hex.EncodeToString(opaque[:]), nil
+}
+
+func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies daemonDependencies) (_ *daemon, resultErr error) {
 	if ctx == nil {
 		return nil, processError("daemon.context", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
 	}
@@ -349,17 +386,50 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 		}
 	}
 
-	storesOpen := true
+	startupComplete := false
 	defer func() {
-		if !storesOpen {
+		if startupComplete {
 			return
+		}
+		var cleanupError error
+		for _, network := range prepared {
+			if network.handoff != nil && network.lease != (store.Lease{}) {
+				cleanupContext, cancel := context.WithTimeout(context.Background(), leaseReleaseTimeout)
+				if err := network.handoff.Release(cleanupContext, network.lease); err != nil {
+					cleanupError = errors.Join(cleanupError, processError("daemon.lease_release", domain.ErrorInternal, errorLeaseReleaseFailed, false, err))
+				}
+				cancel()
+			}
+		}
+		for _, network := range prepared {
+			if network.fence != nil {
+				if err := network.fence.Release(); err != nil {
+					cleanupError = errors.Join(cleanupError, processError("daemon.fence_release", domain.ErrorInternal, errorFenceReleaseFailed, false, err))
+				}
+			}
 		}
 		for _, network := range prepared {
 			if network.handoff != nil {
-				_ = network.handoff.Close()
+				if err := network.handoff.Close(); err != nil {
+					cleanupError = errors.Join(cleanupError, processError("daemon.store.close", domain.ErrorInternal, errorStoreFailed, false, err))
+				}
 			}
 		}
+		resultErr = errors.Join(resultErr, cleanupError)
 	}()
+	if runtimeConfig.Mode.IsLive() {
+		for index := range prepared {
+			network := prepared[index].configured.Domain(prepared[index].manifest.Address)
+			key := store.LeaseKey{Network: network.ChainID, Sponsor: runtimeConfig.SponsorAddress}
+			fence, acquireErr := dependencies.acquireFence(key)
+			if fence != nil {
+				prepared[index].fence = fence
+			}
+			if acquireErr != nil || fence == nil {
+				return nil, processError("daemon.fence_acquire", domain.ErrorInternal, errorFenceAcquireFailed, false, acquireErr)
+			}
+		}
+	}
 	for index := range prepared {
 		network := prepared[index].configured.Domain(prepared[index].manifest.Address)
 		handoff, openErr := dependencies.openStore(runtimeConfig, prepared[index].configured, network)
@@ -367,6 +437,26 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 			return nil, processError("daemon.store", domain.ErrorInternal, errorStoreFailed, false, openErr)
 		}
 		prepared[index].handoff = handoff
+	}
+	if runtimeConfig.Mode.IsLive() {
+		owner, ownerErr := newProcessLeaseOwner()
+		if ownerErr != nil {
+			return nil, processError("daemon.lease_owner", domain.ErrorInternal, errorLeaseAcquireFailed, false, ownerErr)
+		}
+		for index := range prepared {
+			network := prepared[index].configured.Domain(prepared[index].manifest.Address)
+			key := store.LeaseKey{
+				Network: network.ChainID,
+				Sponsor: runtimeConfig.SponsorAddress,
+			}
+			lease, acquireErr := prepared[index].handoff.Acquire(ctx, key, owner, processLeaseTTL)
+			if lease != (store.Lease{}) {
+				prepared[index].lease = lease
+			}
+			if acquireErr != nil || lease.Key != key || lease.Owner != owner || !lease.ExpiresAt.After(dependencies.serviceClock.Now()) {
+				return nil, processError("daemon.lease_acquire", domain.ErrorInternal, errorLeaseAcquireFailed, false, acquireErr)
+			}
+		}
 	}
 
 	var authorizer rescue.AuthorizationSigner
@@ -392,10 +482,20 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 		var coordinator *rescue.Coordinator
 		if runtimeConfig.Mode.IsLive() {
 			coordinator, err = rescue.NewCoordinator(rescue.Config{
-				Network:     network,
-				Source:      runtimeConfig.SourceAddress,
-				Sponsor:     runtimeConfig.SponsorAddress,
-				Destination: runtimeConfig.Destination,
+				Network:        network,
+				Source:         runtimeConfig.SourceAddress,
+				Sponsor:        runtimeConfig.SponsorAddress,
+				Destination:    runtimeConfig.Destination,
+				StartupTimeout: runtimeConfig.ReadTimeout,
+				FeeReadTimeout: runtimeConfig.ReadTimeout,
+				State:          preparedNetwork.handoff,
+				LeaseManager:   preparedNetwork.handoff,
+				Lease:          preparedNetwork.lease,
+				ProcessFence:   preparedNetwork.fence,
+				LeaseTTL:       processLeaseTTL,
+				MaxAttempts:    rescueMaxAttempts,
+				RetryDelay:     candidateRetryDelay,
+				ReceiptTimeout: rescueReceiptTimeout,
 			}, authorizer, transactioner, dependencies.serviceClock, dependencies.observer)
 			if err != nil {
 				return nil, processError("daemon.coordinator", domain.ErrorConfiguration, errorStartupInvalid, false, err)
@@ -413,6 +513,7 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 			watchLookback: runtimeConfig.Watch.LookbackBlocks,
 			coordinator:   coordinator,
 			handoff:       preparedNetwork.handoff,
+			fence:         preparedNetwork.fence,
 			codec:         codec,
 			allowedTokens: make(map[common.Address]struct{}, len(network.Tokens)),
 		}
@@ -424,7 +525,7 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 		}
 		process.networks = append(process.networks, networkState)
 	}
-	storesOpen = false
+	startupComplete = true
 	return process, nil
 }
 
@@ -432,7 +533,7 @@ func (dependencies daemonDependencies) withDefaults(mode config.Mode) (daemonDep
 	if dependencies.serviceClock == nil || dependencies.observer == nil || dependencies.dial == nil || dependencies.loadManifest == nil || dependencies.openStore == nil || dependencies.openQuorum == nil {
 		return daemonDependencies{}, errors.New("не заданы обязательные зависимости процесса")
 	}
-	if mode.IsLive() && (dependencies.dialSubmission == nil || dependencies.attestNetwork == nil || dependencies.newSigners == nil) {
+	if mode.IsLive() && (dependencies.dialSubmission == nil || dependencies.attestNetwork == nil || dependencies.newSigners == nil || dependencies.acquireFence == nil) {
 		return daemonDependencies{}, errors.New("не заданы обязательные live-зависимости процесса")
 	}
 	if dependencies.newWatcher == nil {
@@ -445,23 +546,82 @@ func (dependencies daemonDependencies) withDefaults(mode config.Mode) (daemonDep
 
 func (process *daemon) Run(ctx context.Context) error {
 	if ctx == nil {
-		_ = process.closeStores()
-		return processError("daemon.run", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
+		runError := processError("daemon.run", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
+		return errors.Join(runError, process.shutdown(nil))
 	}
 
-	var workers sync.WaitGroup
-	workers.Add(len(process.networks))
+	runContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type workerResult struct {
+		network *networkProcess
+		lease   bool
+		err     error
+	}
+	liveNetworks := 0
+	for _, network := range process.networks {
+		if network.coordinator != nil {
+			liveNetworks++
+		}
+	}
+	results := make(chan workerResult, len(process.networks)+liveNetworks)
 	for _, network := range process.networks {
 		go func() {
-			defer workers.Done()
-			network.supervise(ctx, process.dependencies)
+			network.supervise(runContext, process.dependencies)
+			results <- workerResult{}
 		}()
+		if network.coordinator != nil {
+			go func() {
+				results <- workerResult{network: network, lease: true, err: network.coordinator.MaintainLease(runContext)}
+			}()
+		}
 	}
-	workers.Wait()
+
+	var runError error
+	lostLeases := make(map[*networkProcess]struct{})
+	for range len(process.networks) + liveNetworks {
+		result := <-results
+		if result.lease && rescue.IsLeaseLost(result.err) {
+			lostLeases[result.network] = struct{}{}
+		}
+		if !result.lease || runContext.Err() != nil || runError != nil {
+			continue
+		}
+		if result.err == nil {
+			result.err = errors.New("поддержание lease неожиданно остановлено")
+		}
+		runError = processError("daemon.lease_maintain", domain.ErrorInternal, errorLeaseMaintainFailed, false, result.err)
+		cancel()
+	}
+	return errors.Join(runError, process.shutdown(lostLeases))
+}
+
+func (process *daemon) shutdown(lostLeases map[*networkProcess]struct{}) error {
+	var shutdownError error
+	for _, network := range process.networks {
+		if network.coordinator == nil {
+			continue
+		}
+		releaseContext, cancel := context.WithTimeout(context.Background(), leaseReleaseTimeout)
+		err := network.coordinator.ReleaseLease(releaseContext)
+		cancel()
+		_, alreadyLost := lostLeases[network]
+		if err != nil && !alreadyLost {
+			shutdownError = errors.Join(shutdownError, processError("daemon.lease_release", domain.ErrorInternal, errorLeaseReleaseFailed, false, err))
+		}
+	}
+	for _, network := range process.networks {
+		if network.fence == nil {
+			continue
+		}
+		if err := network.fence.Release(); err != nil {
+			shutdownError = errors.Join(shutdownError, processError("daemon.fence_release", domain.ErrorInternal, errorFenceReleaseFailed, false, err))
+		}
+	}
 	if err := process.closeStores(); err != nil {
-		return processError("daemon.store.close", domain.ErrorInternal, errorStoreFailed, false, err)
+		shutdownError = errors.Join(shutdownError, processError("daemon.store.close", domain.ErrorInternal, errorStoreFailed, false, err))
 	}
-	return nil
+	return shutdownError
 }
 
 func (process *daemon) closeStores() error {
@@ -532,7 +692,7 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 	}
 	defer quorum.Close()
 
-	session, err := network.openSession(generationContext, boundedClient, dependencies)
+	session, err := network.openSession(generationContext, boundedClient, quorum, dependencies)
 	if err != nil {
 		return processError("daemon.session", domain.ErrorRPCTransient, errorSessionFailed, true, err)
 	}
@@ -556,21 +716,42 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 		return processError("daemon.watcher", domain.ErrorInternal, errorWatcherFailed, false, err)
 	}
 
-	results := make(chan error, 2)
+	workerCount := 2
+	reconciliation := reconciliationWorker(network.mode, session)
+	if reconciliation != nil {
+		workerCount++
+	}
+	results := make(chan error, workerCount)
 	go func() {
 		results <- watcherService.Run(generationContext)
 	}()
 	go func() {
 		results <- consumeCandidates(generationContext, network.network.ChainID, network.handoff, network.handoff, session, dependencies.serviceClock)
 	}()
+	if reconciliation != nil {
+		go func() {
+			results <- reconciliation.RunReconciliation(generationContext)
+		}()
+	}
 
 	first := <-results
 	cancelGeneration()
-	second := <-results
-	return generationError(first, second)
+	workerErrors := []error{first}
+	for range workerCount - 1 {
+		workerErrors = append(workerErrors, <-results)
+	}
+	return generationError(workerErrors...)
 }
 
-func (network *networkProcess) openSession(ctx context.Context, client generationClient, dependencies daemonDependencies) (candidateSession, error) {
+func reconciliationWorker(mode config.Mode, session candidateSession) reconciliationSession {
+	if !mode.IsLive() {
+		return nil
+	}
+	reconciliation, _ := session.(reconciliationSession)
+	return reconciliation
+}
+
+func (network *networkProcess) openSession(ctx context.Context, client generationClient, quorum runtimeQuorum, dependencies daemonDependencies) (candidateSession, error) {
 	if network.mode.IsDryRun() {
 		session, err := dryrun.NewSession(ctx, client.Generation(), client.Reader(), dryrun.Config{
 			Network:     network.network.ChainID,
@@ -586,7 +767,10 @@ func (network *networkProcess) openSession(ctx context.Context, client generatio
 		return network.bindTokenPolicy(session), nil
 	}
 	if dependencies.newSession != nil {
-		session, err := dependencies.newSession(ctx, network, client)
+		if err := network.validateProcessFence(); err != nil {
+			return nil, err
+		}
+		session, err := dependencies.newSession(ctx, network, client, quorum)
 		if err != nil {
 			return nil, err
 		}
@@ -605,7 +789,16 @@ func (network *networkProcess) openSession(ctx context.Context, client generatio
 		}
 		return nil, err
 	}
-	session, err := network.coordinator.NewSession(ctx, client.Generation(), client.Reader(), submission)
+	boundedBroadcaster, err := rpc.NewDeadlineBroadcaster(submission, network.readTimeout)
+	if err != nil {
+		submission.Close()
+		return nil, err
+	}
+	if err := network.validateProcessFence(); err != nil {
+		submission.Close()
+		return nil, err
+	}
+	session, err := network.coordinator.NewSession(ctx, client.Generation(), client.Reader(), quorum, boundedBroadcaster)
 	if err != nil {
 		submission.Close()
 		return nil, err
@@ -613,12 +806,26 @@ func (network *networkProcess) openSession(ctx context.Context, client generatio
 	return network.bindTokenPolicy(&liveCandidateSession{Session: session, submission: submission}), nil
 }
 
+func (network *networkProcess) validateProcessFence() error {
+	if network.fence == nil {
+		return processError("daemon.fence_validate", domain.ErrorInternal, errorFenceValidateFailed, false, store.ErrFenceLost)
+	}
+	if err := network.fence.Validate(); err != nil {
+		return processError("daemon.fence_validate", domain.ErrorInternal, errorFenceValidateFailed, false, err)
+	}
+	return nil
+}
+
 func (network *networkProcess) bindTokenPolicy(session candidateSession) candidateSession {
-	return &tokenPolicySession{
+	policySession := &tokenPolicySession{
 		candidateSession: session,
 		allowed:          network.allowedTokens,
 		allowUnknown:     network.network.AllowUnknownTokens,
 	}
+	if reconciliation, ok := session.(reconciliationSession); ok {
+		return &reconcilingTokenPolicySession{tokenPolicySession: policySession, reconciliationSession: reconciliation}
+	}
+	return policySession
 }
 
 func (network *networkProcess) dialClient(ctx context.Context, generation uint64, dependencies daemonDependencies) (generationClient, error) {
@@ -725,13 +932,13 @@ func shouldReplay(err error) bool {
 	return classified.Retryable || classified.Ambiguous
 }
 
-func generationError(first, second error) error {
-	for _, err := range []error{first, second} {
+func generationError(workerErrors ...error) error {
+	for _, err := range workerErrors {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
 	}
-	for _, err := range []error{first, second} {
+	for _, err := range workerErrors {
 		if err != nil {
 			return err
 		}

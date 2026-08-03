@@ -17,6 +17,8 @@ func TestStartupOperatorMessageIsSpecificAndRedacted(t *testing.T) {
 		{operation: "daemon.manifest", contains: "deployment manifest"},
 		{operation: "daemon.attestation", contains: "RPC quorum"},
 		{operation: "daemon.signer_address", contains: "подписывающего компонента"},
+		{operation: "daemon.lease_acquire", contains: "исключительный lease"},
+		{operation: "daemon.fence_acquire", contains: "исключительный lease"},
 	}
 	for _, test := range tests {
 		t.Run(test.operation, func(t *testing.T) {

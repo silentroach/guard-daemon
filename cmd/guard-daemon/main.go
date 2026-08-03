@@ -50,6 +50,8 @@ func startupOperatorMessage(err error) string {
 		return "RPC quorum не подтвердил deployment на общем finalized block"
 	case "daemon.signers", "daemon.signer_address":
 		return "адрес подписывающего компонента не совпал с настроенной ролью"
+	case "daemon.lease_owner", "daemon.lease_acquire", "daemon.fence_acquire":
+		return "не удалось получить исключительный lease для сети и sponsor"
 	case "daemon.networks", "daemon.config":
 		return "проверенная конфигурация не содержит допустимой включённой сети"
 	default:

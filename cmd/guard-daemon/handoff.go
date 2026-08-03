@@ -22,6 +22,7 @@ var (
 	errIncidentConflict = errors.New("candidate связан с другим incident")
 	errAckOrder         = errors.New("ack допустим только после сохранения incident")
 	errNackOrder        = errors.New("nack допустим только для головы pending очереди после сохранения incident")
+	errRescueState      = errors.New("некорректный переход состояния rescue")
 )
 
 const (
@@ -43,6 +44,11 @@ type delayedCandidate struct {
 
 type delayedCandidates []delayedCandidate
 
+type legacyMemoryLease struct {
+	lease store.Lease
+	lost  chan struct{}
+}
+
 func (candidates delayedCandidates) Len() int { return len(candidates) }
 func (candidates delayedCandidates) Less(i, j int) bool {
 	if candidates[i].retryAt.Equal(candidates[j].retryAt) {
@@ -63,9 +69,8 @@ func (candidates *delayedCandidates) Pop() any {
 	return last
 }
 
-// legacyMemoryHandoff является только process-local адаптером совместимости.
-// Он сохраняет pending и tombstone между reconnect одного процесса, но не
-// переживает аварийную остановку. Persistent реализация принадлежит Tasks 06/07.
+// legacyMemoryHandoff является только process-local реализацией для daemon
+// tests. Она не выбирается production wiring и не обеспечивает durability.
 type legacyMemoryHandoff struct {
 	mu         sync.Mutex
 	network    domain.NetworkID
@@ -75,6 +80,9 @@ type legacyMemoryHandoff struct {
 	delayed    delayedCandidates
 	delayOrder uint64
 	incidents  map[domain.CandidateID]store.Incident
+	rescue     map[domain.IncidentID]store.RescueIncident
+	nonceFloor uint64
+	leases     map[store.LeaseKey]legacyMemoryLease
 	tombstones []domain.CandidateID
 	scanCursor store.Checkpoint
 	checkpoint store.Checkpoint
@@ -87,6 +95,8 @@ func newLegacyMemoryHandoff(network domain.NetworkID, serviceClock clock.Clock) 
 		clock:     serviceClock,
 		entries:   make(map[domain.CandidateID]legacyHandoffEntry),
 		incidents: make(map[domain.CandidateID]store.Incident),
+		rescue:    make(map[domain.IncidentID]store.RescueIncident),
+		leases:    make(map[store.LeaseKey]legacyMemoryLease),
 		wake:      make(chan struct{}),
 	}
 }
@@ -305,6 +315,120 @@ func (handoff *legacyMemoryHandoff) IncidentByCandidate(ctx context.Context, can
 	return incident, exists, nil
 }
 
+func (handoff *legacyMemoryHandoff) PutRescueIncident(ctx context.Context, incident store.RescueIncident) (store.RescueIncident, error) {
+	if err := ctx.Err(); err != nil {
+		return store.RescueIncident{}, err
+	}
+	if incident.Network != handoff.network || incident.ID == (domain.IncidentID{}) || incident.Status != store.RescuePending {
+		return store.RescueIncident{}, errRescueState
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	if persisted, exists := handoff.rescue[incident.ID]; exists {
+		if !sameLegacyRescueIdentity(persisted, incident) {
+			return store.RescueIncident{}, errRescueState
+		}
+		return cloneLegacyRescueIncident(persisted), nil
+	}
+	handoff.rescue[incident.ID] = cloneLegacyRescueIncident(incident)
+	return cloneLegacyRescueIncident(incident), nil
+}
+
+func (handoff *legacyMemoryHandoff) UpdateRescueIncident(ctx context.Context, incident store.RescueIncident) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if incident.Network != handoff.network {
+		return errRescueState
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	current, exists := handoff.rescue[incident.ID]
+	if !exists || !validLegacyRescueTransition(current, incident) {
+		return errRescueState
+	}
+	handoff.rescue[incident.ID] = cloneLegacyRescueIncident(incident)
+	return nil
+}
+
+func (handoff *legacyMemoryHandoff) RescueIncident(ctx context.Context, id domain.IncidentID) (store.RescueIncident, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return store.RescueIncident{}, false, err
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	incident, exists := handoff.rescue[id]
+	return cloneLegacyRescueIncident(incident), exists, nil
+}
+
+func (handoff *legacyMemoryHandoff) RescueIncidents(ctx context.Context, network domain.NetworkID) ([]store.RescueIncident, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if network != handoff.network {
+		return nil, errHandoffNetwork
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	incidents := make([]store.RescueIncident, 0, len(handoff.rescue))
+	for _, incident := range handoff.rescue {
+		incidents = append(incidents, cloneLegacyRescueIncident(incident))
+	}
+	sort.Slice(incidents, func(i, j int) bool {
+		return bytes.Compare(incidents[i].ID[:], incidents[j].ID[:]) < 0
+	})
+	return incidents, nil
+}
+
+func (handoff *legacyMemoryHandoff) NonceFloor(ctx context.Context) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	return handoff.nonceFloor, nil
+}
+
+func (handoff *legacyMemoryHandoff) RaiseNonceFloor(ctx context.Context, floor uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	if floor > handoff.nonceFloor {
+		handoff.nonceFloor = floor
+	}
+	return nil
+}
+
+func (handoff *legacyMemoryHandoff) PruneRescueIncidents(ctx context.Context, retain int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if retain < 0 {
+		return errRescueState
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+
+	terminals := make([]store.RescueIncident, 0, len(handoff.rescue))
+	for _, incident := range handoff.rescue {
+		if legacyTerminalRescueStatus(incident.Status) {
+			terminals = append(terminals, incident)
+		}
+	}
+	sort.Slice(terminals, func(i, j int) bool {
+		if terminals[i].UpdatedAt.Equal(terminals[j].UpdatedAt) {
+			return bytes.Compare(terminals[i].ID[:], terminals[j].ID[:]) < 0
+		}
+		return terminals[i].UpdatedAt.Before(terminals[j].UpdatedAt)
+	})
+	for _, incident := range terminals[:max(0, len(terminals)-retain)] {
+		delete(handoff.rescue, incident.ID)
+	}
+	return nil
+}
+
 func (handoff *legacyMemoryHandoff) PutObserved(ctx context.Context, candidate domain.RescueCandidate) (store.PutResult, error) {
 	return handoff.Put(ctx, candidate)
 }
@@ -400,7 +524,207 @@ func (handoff *legacyMemoryHandoff) DiscoveryOverflowed(ctx context.Context, net
 	return false, nil
 }
 
-func (*legacyMemoryHandoff) Close() error { return nil }
+func (handoff *legacyMemoryHandoff) Acquire(ctx context.Context, key store.LeaseKey, owner string, ttl time.Duration) (store.Lease, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Lease{}, err
+	}
+	now := handoff.clock.Now()
+	expiresAt := now.Add(ttl)
+	if key.Network != handoff.network || key.Sponsor == (common.Address{}) || owner == "" || ttl <= 0 || !expiresAt.After(now) {
+		return store.Lease{}, errRescueState
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	if current, exists := handoff.leases[key]; exists {
+		if current.lease.ExpiresAt.After(now) {
+			return store.Lease{}, store.ErrLeaseHeld
+		}
+		close(current.lost)
+		delete(handoff.leases, key)
+	}
+	lease := store.Lease{Key: key, Owner: owner, ExpiresAt: expiresAt}
+	handoff.leases[key] = legacyMemoryLease{lease: lease, lost: make(chan struct{})}
+	return lease, nil
+}
+
+func (handoff *legacyMemoryHandoff) Renew(ctx context.Context, lease store.Lease, ttl time.Duration) (store.Lease, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Lease{}, err
+	}
+	if lease.Key.Network != handoff.network || ttl <= 0 {
+		return store.Lease{}, errRescueState
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	now := handoff.clock.Now()
+	current, exists := handoff.leases[lease.Key]
+	if !exists || current.lease != lease {
+		return store.Lease{}, store.ErrLeaseLost
+	}
+	if !current.lease.ExpiresAt.After(now) {
+		handoff.loseLegacyLeaseLocked(lease.Key)
+		return store.Lease{}, store.ErrLeaseLost
+	}
+	renewed := lease
+	renewed.ExpiresAt = now.Add(ttl)
+	if !renewed.ExpiresAt.After(now) {
+		return store.Lease{}, errRescueState
+	}
+	close(current.lost)
+	handoff.leases[lease.Key] = legacyMemoryLease{lease: renewed, lost: make(chan struct{})}
+	return renewed, nil
+}
+
+func (handoff *legacyMemoryHandoff) Validate(ctx context.Context, lease store.Lease) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if lease.Key.Network != handoff.network {
+		return errRescueState
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	current, exists := handoff.leases[lease.Key]
+	if !exists || current.lease != lease {
+		return store.ErrLeaseLost
+	}
+	if !current.lease.ExpiresAt.After(handoff.clock.Now()) {
+		handoff.loseLegacyLeaseLocked(lease.Key)
+		return store.ErrLeaseLost
+	}
+	return nil
+}
+
+func (handoff *legacyMemoryHandoff) Lost(lease store.Lease) <-chan struct{} {
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	current, exists := handoff.leases[lease.Key]
+	if !exists || current.lease != lease {
+		return closedLegacyLeaseSignal()
+	}
+	if !current.lease.ExpiresAt.After(handoff.clock.Now()) {
+		handoff.loseLegacyLeaseLocked(lease.Key)
+		return closedLegacyLeaseSignal()
+	}
+	return current.lost
+}
+
+func (handoff *legacyMemoryHandoff) Release(ctx context.Context, lease store.Lease) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	current, exists := handoff.leases[lease.Key]
+	if !exists || current.lease != lease {
+		return store.ErrLeaseLost
+	}
+	if !current.lease.ExpiresAt.After(handoff.clock.Now()) {
+		handoff.loseLegacyLeaseLocked(lease.Key)
+		return store.ErrLeaseLost
+	}
+	close(current.lost)
+	delete(handoff.leases, lease.Key)
+	return nil
+}
+
+func (handoff *legacyMemoryHandoff) Close() error {
+	handoff.mu.Lock()
+	defer handoff.mu.Unlock()
+	for key := range handoff.leases {
+		handoff.loseLegacyLeaseLocked(key)
+	}
+	return nil
+}
+
+func (handoff *legacyMemoryHandoff) loseLegacyLeaseLocked(key store.LeaseKey) {
+	if current, exists := handoff.leases[key]; exists {
+		close(current.lost)
+		delete(handoff.leases, key)
+	}
+}
+
+func closedLegacyLeaseSignal() <-chan struct{} {
+	closed := make(chan struct{})
+	close(closed)
+	return closed
+}
+
+func sameLegacyRescueIdentity(left, right store.RescueIncident) bool {
+	return left.ID == right.ID && left.Parent == right.Parent && left.Candidate == right.Candidate && left.Network == right.Network &&
+		left.Kind == right.Kind && left.Asset == right.Asset && left.Generation == right.Generation && left.Trusted == right.Trusted &&
+		left.Policy == right.Policy
+}
+
+func cloneLegacyRescueIncident(incident store.RescueIncident) store.RescueIncident {
+	incident.SignedTransaction = append([]byte(nil), incident.SignedTransaction...)
+	return incident
+}
+
+func sameLegacyRescueIncident(left, right store.RescueIncident) bool {
+	return sameLegacyRescueIdentity(left, right) && left.Status == right.Status && left.Attempts == right.Attempts &&
+		left.SponsorNonce == right.SponsorNonce && left.SourceNonce == right.SourceNonce && left.TxHash == right.TxHash &&
+		bytes.Equal(left.SignedTransaction, right.SignedTransaction) && left.SnapshotBlockNumber == right.SnapshotBlockNumber &&
+		left.SnapshotBlockHash == right.SnapshotBlockHash && left.SourceBefore == right.SourceBefore &&
+		left.DestinationBefore == right.DestinationBefore && left.RetryAt.Equal(right.RetryAt) &&
+		left.ReconcileUntil.Equal(right.ReconcileUntil) && left.LastCode == right.LastCode &&
+		left.CreatedAt.Equal(right.CreatedAt) && left.UpdatedAt.Equal(right.UpdatedAt)
+}
+
+func validLegacyRescueTransition(current, next store.RescueIncident) bool {
+	if sameLegacyRescueIncident(current, next) {
+		return true
+	}
+	if !sameLegacyRescueIdentity(current, next) || !current.CreatedAt.Equal(next.CreatedAt) || next.UpdatedAt.Before(current.UpdatedAt) || !legacyRescueTransitionAllowed(current.Status, next.Status) {
+		return false
+	}
+	if current.Status == store.RescuePending && next.Status == store.RescuePrepared {
+		return next.Attempts == 1
+	}
+	if current.Status == store.RescueRetryable && next.Status == store.RescuePrepared {
+		return next.Attempts == current.Attempts+1 && !next.UpdatedAt.Before(current.RetryAt)
+	}
+	if next.Attempts != current.Attempts {
+		return false
+	}
+	if current.Status != store.RescuePending {
+		if current.SponsorNonce != next.SponsorNonce || current.SourceNonce != next.SourceNonce ||
+			current.SnapshotBlockNumber != next.SnapshotBlockNumber || current.SnapshotBlockHash != next.SnapshotBlockHash ||
+			current.SourceBefore != next.SourceBefore || current.DestinationBefore != next.DestinationBefore ||
+			(current.TxHash != (common.Hash{}) && current.TxHash != next.TxHash) {
+			return false
+		}
+	}
+	return true
+}
+
+func legacyTerminalRescueStatus(status store.RescueStatus) bool {
+	switch status {
+	case store.RescueExhausted, store.RescueFailed, store.RescueTrustedSuccess, store.RescueTokenReported, store.RescueLostRace:
+		return true
+	default:
+		return false
+	}
+}
+
+func legacyRescueTransitionAllowed(current, next store.RescueStatus) bool {
+	switch current {
+	case store.RescuePending:
+		return next == store.RescuePrepared
+	case store.RescuePrepared:
+		return next == store.RescueSigned || next == store.RescueRetryable || next == store.RescueExhausted || next == store.RescueFailed
+	case store.RescueSigned:
+		return next == store.RescueBroadcast || next == store.RescueAmbiguous || next == store.RescueRetryable || next == store.RescueExhausted || next == store.RescueFailed
+	case store.RescueBroadcast:
+		return next == store.RescueAmbiguous || next == store.RescueRetryable || next == store.RescueExhausted || next == store.RescueFailed || next == store.RescueTrustedSuccess || next == store.RescueTokenReported || next == store.RescueLostRace
+	case store.RescueRetryable:
+		return next == store.RescuePrepared || next == store.RescueExhausted || next == store.RescueFailed
+	case store.RescueAmbiguous:
+		return next == store.RescueBroadcast || next == store.RescueRetryable || next == store.RescueExhausted || next == store.RescueFailed || next == store.RescueTrustedSuccess || next == store.RescueTokenReported || next == store.RescueLostRace
+	default:
+		return false
+	}
+}
 
 func (handoff *legacyMemoryHandoff) signalLocked() {
 	close(handoff.wake)

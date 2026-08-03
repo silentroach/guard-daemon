@@ -77,6 +77,58 @@ func TestLegacyMemoryHandoffReplayDuplicateAndAckOrder(t *testing.T) {
 	}
 }
 
+func TestLegacyMemoryHandoffCopiesSignedTransactionsAndRaisesNonceFloor(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	network := domain.NetworkID(31349)
+	handoff := newLegacyMemoryHandoff(network, clock.Real{})
+	id := domain.IncidentID{31: 1}
+	createdAt := time.Unix(1, 0)
+	incident := store.RescueIncident{
+		ID: id, Network: network, Kind: domain.CandidateNative, Status: store.RescuePending,
+		Policy: store.RescuePolicySnapshot{MaxAttempts: 3}, SignedTransaction: []byte{1, 2, 3}, CreatedAt: createdAt, UpdatedAt: createdAt,
+	}
+	stored, err := handoff.PutRescueIncident(ctx, incident)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incident.SignedTransaction[0] = 9
+	stored.SignedTransaction[1] = 9
+	got, found, err := handoff.RescueIncident(ctx, id)
+	if err != nil || !found || !reflect.DeepEqual(got.SignedTransaction, []byte{1, 2, 3}) {
+		t.Fatalf("RescueIncident() = (%v, %t, %v)", got.SignedTransaction, found, err)
+	}
+
+	prepared := got
+	prepared.Status = store.RescuePrepared
+	prepared.Attempts = 1
+	prepared.UpdatedAt = createdAt.Add(time.Second)
+	prepared.SignedTransaction = []byte{4, 5, 6}
+	if err := handoff.UpdateRescueIncident(ctx, prepared); err != nil {
+		t.Fatal(err)
+	}
+	prepared.SignedTransaction[0] = 9
+	incidents, err := handoff.RescueIncidents(ctx, network)
+	if err != nil || len(incidents) != 1 || !reflect.DeepEqual(incidents[0].SignedTransaction, []byte{4, 5, 6}) {
+		t.Fatalf("RescueIncidents() = (%v, %v)", incidents, err)
+	}
+	incidents[0].SignedTransaction[1] = 9
+	got, _, _ = handoff.RescueIncident(ctx, id)
+	if !reflect.DeepEqual(got.SignedTransaction, []byte{4, 5, 6}) {
+		t.Fatalf("stored signed transaction was aliased: %v", got.SignedTransaction)
+	}
+
+	if err := handoff.RaiseNonceFloor(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := handoff.RaiseNonceFloor(ctx, 3); err != nil {
+		t.Fatal(err)
+	}
+	if floor, err := handoff.NonceFloor(ctx); err != nil || floor != 7 {
+		t.Fatalf("NonceFloor() = (%d, %v)", floor, err)
+	}
+}
+
 func TestLegacyMemoryHandoffNextWakesAndCancels(t *testing.T) {
 	t.Parallel()
 
@@ -230,6 +282,31 @@ func TestConsumeCandidatesDoesNotAckAfterHandlingCancellation(t *testing.T) {
 	want := []string{"Next", "PutIncident", "Handle"}
 	if got := recorder.snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("transitions = %v, want %v", got, want)
+	}
+}
+
+func TestConsumeCandidatesAcknowledgesTerminalHandlingError(t *testing.T) {
+	t.Parallel()
+
+	network := domain.NetworkID(31345)
+	recorder := &transitionRecorder{}
+	ctx, cancel := context.WithCancel(context.Background())
+	handoff := &orderedHandoff{candidate: handoffCandidate(network, 9), recorder: recorder, afterAck: cancel}
+	session := &recordingHandler{
+		generation: 1,
+		recorder:   recorder,
+		handle: func(context.Context, domain.RescueCandidate) error {
+			return domain.NewError("test.terminal", domain.ErrorPostcondition, "test_terminal", false, false, nil)
+		},
+	}
+
+	err := consumeCandidates(ctx, network, handoff, handoff, session, clock.Real{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("consumeCandidates() error = %v", err)
+	}
+	want := []string{"Next", "PutIncident", "Handle", "Ack"}
+	if got := recorder.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("terminal transitions = %v, want %v", got, want)
 	}
 }
 

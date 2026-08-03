@@ -177,6 +177,19 @@ func NewIncidentID(candidate CandidateID) IncidentID {
 	return id
 }
 
+// NewAssetIncidentID связывает одну финансовую операцию с durable candidate.
+// Asset равен нулевому адресу только для native asset.
+func NewAssetIncidentID(candidate CandidateID, kind CandidateKind, asset common.Address) IncidentID {
+	h := sha256.New()
+	h.Write([]byte("guard-daemon/asset-incident/v1"))
+	h.Write(candidate[:])
+	h.Write([]byte{byte(kind)})
+	h.Write(asset[:])
+	var id IncidentID
+	copy(id[:], h.Sum(nil))
+	return id
+}
+
 func (id IncidentID) String() string {
 	return hex.EncodeToString(id[:])
 }

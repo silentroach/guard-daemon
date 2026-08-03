@@ -19,6 +19,24 @@ type DeadlineReader struct {
 	timeout time.Duration
 }
 
+type DeadlineBroadcaster struct {
+	broadcaster Broadcaster
+	timeout     time.Duration
+}
+
+func NewDeadlineBroadcaster(broadcaster Broadcaster, timeout time.Duration) (*DeadlineBroadcaster, error) {
+	if nilCapability(broadcaster) || timeout <= 0 {
+		return nil, ErrInvalidDeadlineWrapper
+	}
+	return &DeadlineBroadcaster{broadcaster: broadcaster, timeout: timeout}, nil
+}
+
+func (broadcaster *DeadlineBroadcaster) SendTransaction(ctx context.Context, transaction *types.Transaction) error {
+	callCtx, cancel := context.WithTimeout(ctx, broadcaster.timeout)
+	defer cancel()
+	return broadcaster.broadcaster.SendTransaction(callCtx, transaction)
+}
+
 func NewDeadlineReader(reader Reader, timeout time.Duration) (*DeadlineReader, error) {
 	if nilCapability(reader) || timeout <= 0 {
 		return nil, ErrInvalidDeadlineWrapper
@@ -161,5 +179,6 @@ func (subscriber *DeadlineHeadSubscriber) SubscribeNewHead(
 }
 
 var _ Reader = (*DeadlineReader)(nil)
+var _ Broadcaster = (*DeadlineBroadcaster)(nil)
 var _ LogSubscriber = (*DeadlineLogSubscriber)(nil)
 var _ HeadSubscriber = (*DeadlineHeadSubscriber)(nil)

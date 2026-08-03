@@ -29,6 +29,20 @@ type IncidentStore interface {
 	IncidentByCandidate(context.Context, domain.CandidateID) (Incident, bool, error)
 }
 
+// RescueStateStore хранит transaction state отдельно от watcher handoff.
+// PutRescueIncident идемпотентен по ID, UpdateRescueIncident принимает только
+// допустимый переход, а RescueIncidents возвращает снимок для restart/nonce
+// reconciliation.
+type RescueStateStore interface {
+	PutRescueIncident(context.Context, RescueIncident) (RescueIncident, error)
+	UpdateRescueIncident(context.Context, RescueIncident) error
+	RescueIncident(context.Context, domain.IncidentID) (RescueIncident, bool, error)
+	RescueIncidents(context.Context, domain.NetworkID) ([]RescueIncident, error)
+	NonceFloor(context.Context) (uint64, error)
+	RaiseNonceFloor(context.Context, uint64) error
+	PruneRescueIncidents(context.Context, int) error
+}
+
 // CheckpointStore разделяет scan cursor и подтверждённый checkpoint. Scanner
 // может продолжать durable backfill, пока checkpoint ждёт incident и Ack.
 type CheckpointStore interface {
@@ -51,14 +65,17 @@ type ObservationStore interface {
 type HandoffStore interface {
 	CandidateQueue
 	IncidentStore
+	RescueStateStore
 	CheckpointStore
 	ObservationStore
+	LeaseManager
 	Close() error
 }
 
 type LeaseManager interface {
 	Acquire(context.Context, LeaseKey, string, time.Duration) (Lease, error)
 	Renew(context.Context, Lease, time.Duration) (Lease, error)
+	Validate(context.Context, Lease) error
 	Lost(Lease) <-chan struct{}
 	Release(context.Context, Lease) error
 }

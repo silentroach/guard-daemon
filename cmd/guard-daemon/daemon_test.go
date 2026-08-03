@@ -18,6 +18,7 @@ import (
 	"guard-daemon/internal/domain"
 	"guard-daemon/internal/observability"
 	"guard-daemon/internal/rescue"
+	"guard-daemon/internal/rescue/dryrun"
 	"guard-daemon/internal/rpc"
 	"guard-daemon/internal/store"
 	"guard-daemon/internal/watcher"
@@ -186,7 +187,7 @@ func TestReconnectReusesCoordinatorAndInjectedDelay(t *testing.T) {
 			dialed <- endpoint
 			return clients[generation-1], nil
 		},
-		newSession: func(_ context.Context, network *networkProcess, client generationClient) (candidateSession, error) {
+		newSession: func(_ context.Context, network *networkProcess, client generationClient, _ runtimeQuorum) (candidateSession, error) {
 			coordinators <- network.coordinator
 			return &idleHandler{generation: client.Generation()}, nil
 		},
@@ -256,7 +257,12 @@ func TestGenerationUsesDeadlineQuorumAndClosesRuntimeState(t *testing.T) {
 			}
 			return quorum, nil
 		},
-		newSession: stubSessionFactory(nil),
+		newSession: func(_ context.Context, _ *networkProcess, client generationClient, got runtimeQuorum) (candidateSession, error) {
+			if got != quorum {
+				t.Fatal("rescue session не получил runtime quorum поколения")
+			}
+			return &idleHandler{generation: client.Generation()}, nil
+		},
 		newWatcher: func(watcher.Dependencies) (generationRunner, error) {
 			return runnerFunc(func(ctx context.Context) error {
 				started <- struct{}{}
@@ -279,6 +285,297 @@ func TestGenerationUsesDeadlineQuorumAndClosesRuntimeState(t *testing.T) {
 	}
 	if quorum.closed.Load() != 1 || handoff.closed.Load() != 1 || client.closed.Load() != 1 {
 		t.Fatalf("close counts: quorum=%d state=%d client=%d", quorum.closed.Load(), handoff.closed.Load(), client.closed.Load())
+	}
+}
+
+func TestDaemonGracefulShutdownReleasesLeaseBeforeStoreClose(t *testing.T) {
+	network := testNetwork("graceful-lease", 361)
+	testClock := newSupervisorClock()
+	started := make(chan struct{}, 1)
+	handoff := newLeaseLifecycleHandoff(network.ChainID, testClock)
+	dependencies := daemonDependencies{
+		serviceClock: testClock,
+		observer:     observability.Discard{},
+		dial: func(context.Context, string, uint64) (generationClient, error) {
+			return &stubGenerationClient{generation: 1}, nil
+		},
+		openStore: func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error) {
+			return handoff, nil
+		},
+		newSession: stubSessionFactory(nil),
+		newWatcher: func(watcher.Dependencies) (generationRunner, error) {
+			return runnerFunc(func(ctx context.Context) error {
+				started <- struct{}{}
+				<-ctx.Done()
+				return ctx.Err()
+			}), nil
+		},
+	}
+	dependencies = completeTestDependencies(t, dependencies)
+	dependencies.acquireFence = func(store.LeaseKey) (store.ProcessFence, error) {
+		handoff.record("fence-acquire")
+		return &testProcessFence{onRelease: func() { handoff.record("fence-release") }}, nil
+	}
+	process, err := newDaemon(context.Background(), testRuntime(t, []domain.Network{network}), dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runDaemon(process, ctx)
+	receiveWithin(t, started)
+	cancel()
+	if err := receiveWithin(t, done); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := handoff.snapshot(); !reflect.DeepEqual(got, []string{"fence-acquire", "acquire", "release", "fence-release", "close"}) {
+		t.Fatalf("shutdown lifecycle = %v", got)
+	}
+	if err := handoff.lastReleaseError(); err != nil {
+		t.Fatalf("graceful release error = %v", err)
+	}
+}
+
+func TestDaemonSurfacesGracefulLeaseReleaseFailure(t *testing.T) {
+	network := testNetwork("release-failure", 363)
+	testClock := newSupervisorClock()
+	started := make(chan struct{}, 1)
+	handoff := newLeaseLifecycleHandoff(network.ChainID, testClock)
+	handoff.releaseError = errors.New("тестовая ошибка release")
+	dependencies := daemonDependencies{
+		serviceClock: testClock,
+		observer:     observability.Discard{},
+		dial: func(context.Context, string, uint64) (generationClient, error) {
+			return &stubGenerationClient{generation: 1}, nil
+		},
+		openStore: func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error) {
+			return handoff, nil
+		},
+		newSession: stubSessionFactory(nil),
+		newWatcher: func(watcher.Dependencies) (generationRunner, error) {
+			return runnerFunc(func(ctx context.Context) error {
+				started <- struct{}{}
+				<-ctx.Done()
+				return ctx.Err()
+			}), nil
+		},
+	}
+	dependencies = completeTestDependencies(t, dependencies)
+	process, err := newDaemon(context.Background(), testRuntime(t, []domain.Network{network}), dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runDaemon(process, ctx)
+	receiveWithin(t, started)
+	cancel()
+	if err := receiveWithin(t, done); publicErrorCode(err) != errorLeaseReleaseFailed {
+		t.Fatalf("Run() release error = %v", err)
+	}
+	if got := handoff.snapshot(); !reflect.DeepEqual(got, []string{"acquire", "release", "close"}) {
+		t.Fatalf("failed release lifecycle = %v", got)
+	}
+}
+
+func TestDaemonSurfacesRedactedFenceReleaseFailure(t *testing.T) {
+	network := testNetwork("fence-release-failure", 364)
+	testClock := newSupervisorClock()
+	started := make(chan struct{}, 1)
+	handoff := newLeaseLifecycleHandoff(network.ChainID, testClock)
+	fence := &testProcessFence{releaseError: store.ErrFenceLost}
+	dependencies := daemonDependencies{
+		serviceClock: testClock,
+		observer:     observability.Discard{},
+		dial: func(context.Context, string, uint64) (generationClient, error) {
+			return &stubGenerationClient{generation: 1}, nil
+		},
+		openStore: func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error) {
+			return handoff, nil
+		},
+		newSession: stubSessionFactory(nil),
+		newWatcher: func(watcher.Dependencies) (generationRunner, error) {
+			return runnerFunc(func(ctx context.Context) error {
+				started <- struct{}{}
+				<-ctx.Done()
+				return ctx.Err()
+			}), nil
+		},
+	}
+	dependencies = completeTestDependencies(t, dependencies)
+	dependencies.acquireFence = func(store.LeaseKey) (store.ProcessFence, error) { return fence, nil }
+	process, err := newDaemon(context.Background(), testRuntime(t, []domain.Network{network}), dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runDaemon(process, ctx)
+	receiveWithin(t, started)
+	cancel()
+	runError := receiveWithin(t, done)
+	if publicErrorCode(runError) != errorFenceReleaseFailed || !errors.Is(runError, store.ErrFenceLost) {
+		t.Fatalf("Run() fence release error = %v", runError)
+	}
+	if strings.Contains(runError.Error(), "fence-release-failure") {
+		t.Fatalf("fence release error exposed network identity: %v", runError)
+	}
+}
+
+func TestLeaseMaintenanceLossCancelsWorkersAndBlocksSigning(t *testing.T) {
+	network := testNetwork("lost-lease", 362)
+	testClock := newSupervisorClock()
+	started := make(chan struct{}, 1)
+	stopped := make(chan struct{})
+	handoff := newLeaseLifecycleHandoff(network.ChainID, testClock)
+	fence := &testProcessFence{}
+	dependencies := daemonDependencies{
+		serviceClock: testClock,
+		observer:     observability.Discard{},
+		dial: func(context.Context, string, uint64) (generationClient, error) {
+			return &stubGenerationClient{generation: 1}, nil
+		},
+		openStore: func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error) {
+			return handoff, nil
+		},
+		newSession: stubSessionFactory(nil),
+		newWatcher: func(watcher.Dependencies) (generationRunner, error) {
+			return runnerFunc(func(ctx context.Context) error {
+				started <- struct{}{}
+				<-ctx.Done()
+				close(stopped)
+				return ctx.Err()
+			}), nil
+		},
+	}
+	dependencies = completeTestDependencies(t, dependencies)
+	dependencies.acquireFence = func(store.LeaseKey) (store.ProcessFence, error) { return fence, nil }
+	runtimeConfig := testRuntime(t, []domain.Network{network})
+	var attempts *dryrun.Attempts
+	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
+		authorizer, transactioner, _, guardAttempts := dryrun.NewGuards(runtimeConfig.SourceAddress, runtimeConfig.SponsorAddress)
+		attempts = guardAttempts
+		return authorizer, transactioner, nil
+	}
+	process, err := newDaemon(context.Background(), runtimeConfig, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := runDaemon(process, context.Background())
+	receiveWithin(t, started)
+	lease := handoff.currentLease(store.LeaseKey{Network: network.ChainID, Sponsor: runtimeConfig.SponsorAddress})
+	if err := handoff.legacyMemoryHandoff.Release(context.Background(), lease); err != nil {
+		t.Fatal(err)
+	}
+	runError := receiveWithin(t, done)
+	if publicErrorCode(runError) != errorLeaseMaintainFailed || !rescue.IsLeaseLost(runError) {
+		t.Fatalf("Run() lease loss error = %v", runError)
+	}
+	receiveWithin(t, stopped)
+	if attempts == nil || attempts.AuthorizationSignatures() != 0 || attempts.TransactionSignatures() != 0 || attempts.Broadcasts() != 0 {
+		t.Fatal("lease loss допустил signing или broadcast")
+	}
+	_, err = process.networks[0].coordinator.NewSession(
+		context.Background(),
+		2,
+		&startupGenerationReader{chainID: big.NewInt(int64(network.ChainID))},
+		&startupRuntimeQuorum{destination: runtimeConfig.Destination},
+		&stubSubmissionClient{},
+	)
+	if !rescue.IsLeaseLost(err) {
+		t.Fatalf("NewSession() after lease loss error = %v", err)
+	}
+	if !fence.isReleased() {
+		t.Fatal("lease-loss shutdown did not release process fence")
+	}
+}
+
+func TestLiveSessionValidatesProcessFenceBeforeFactory(t *testing.T) {
+	var events []string
+	fence := &testProcessFence{onValidate: func() { events = append(events, "validate") }}
+	network := &networkProcess{
+		mode:          config.ModeLive,
+		fence:         fence,
+		allowedTokens: make(map[common.Address]struct{}),
+	}
+	dependencies := daemonDependencies{
+		newSession: func(context.Context, *networkProcess, generationClient, runtimeQuorum) (candidateSession, error) {
+			events = append(events, "session")
+			return &idleHandler{generation: 1}, nil
+		},
+	}
+	session, err := network.openSession(context.Background(), &stubGenerationClient{generation: 1}, inertRuntimeQuorum{}, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Close()
+	if !reflect.DeepEqual(events, []string{"validate", "session"}) {
+		t.Fatalf("live session fence order = %v", events)
+	}
+
+	fence.validateError = store.ErrFenceLost
+	if _, err := network.openSession(context.Background(), &stubGenerationClient{generation: 2}, inertRuntimeQuorum{}, dependencies); !errors.Is(err, store.ErrFenceLost) {
+		t.Fatalf("openSession() after fence loss = %v", err)
+	}
+	if !reflect.DeepEqual(events, []string{"validate", "session", "validate"}) {
+		t.Fatalf("session factory ran after fence loss: %v", events)
+	}
+}
+
+func TestGenerationRunsLiveReconciliationWorker(t *testing.T) {
+	network := testNetwork("reconciliation-worker", 365)
+	testClock := newSupervisorClock()
+	reconciliationError := errors.New("reconciliation state failed")
+	reconciliationStarted := make(chan struct{}, 1)
+	watcherStopped := make(chan struct{})
+	client := &stubGenerationClient{generation: 1}
+	dependencies := daemonDependencies{
+		serviceClock: testClock,
+		observer:     observability.Discard{},
+		dial: func(context.Context, string, uint64) (generationClient, error) {
+			return client, nil
+		},
+		newSession: func(_ context.Context, _ *networkProcess, client generationClient, _ runtimeQuorum) (candidateSession, error) {
+			return &reconcilingHandler{
+				idleHandler: &idleHandler{generation: client.Generation()},
+				run: func(context.Context) error {
+					reconciliationStarted <- struct{}{}
+					return reconciliationError
+				},
+			}, nil
+		},
+		newWatcher: func(watcher.Dependencies) (generationRunner, error) {
+			return runnerFunc(func(ctx context.Context) error {
+				<-ctx.Done()
+				close(watcherStopped)
+				return ctx.Err()
+			}), nil
+		},
+	}
+	dependencies = completeTestDependencies(t, dependencies)
+	process, err := newDaemon(context.Background(), testRuntime(t, []domain.Network{network}), dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer process.shutdown(nil)
+
+	err = process.networks[0].runGeneration(context.Background(), 1, dependencies)
+	if !errors.Is(err, reconciliationError) {
+		t.Fatalf("runGeneration() reconciliation error = %v", err)
+	}
+	receiveWithin(t, reconciliationStarted)
+	receiveWithin(t, watcherStopped)
+	if client.closed.Load() != 1 {
+		t.Fatalf("client close count = %d, want 1", client.closed.Load())
+	}
+}
+
+func TestReconciliationWorkerIsLiveOnlyAndSurvivesTokenPolicy(t *testing.T) {
+	handler := &reconcilingHandler{idleHandler: &idleHandler{generation: 1}}
+	network := &networkProcess{allowedTokens: make(map[common.Address]struct{})}
+	session := network.bindTokenPolicy(handler)
+	if reconciliationWorker(config.ModeLive, session) == nil {
+		t.Fatal("live token policy wrapper hid reconciliation capability")
+	}
+	if reconciliationWorker(config.ModeDryRun, session) != nil {
+		t.Fatal("dry-run enabled reconciliation worker")
 	}
 }
 
@@ -315,8 +612,21 @@ func (*idleHandler) Handle(context.Context, domain.RescueCandidate) error {
 
 func (*idleHandler) Close() {}
 
-func stubSessionFactory(started chan<- *rescue.Coordinator) func(context.Context, *networkProcess, generationClient) (candidateSession, error) {
-	return func(_ context.Context, network *networkProcess, client generationClient) (candidateSession, error) {
+type reconcilingHandler struct {
+	*idleHandler
+	run func(context.Context) error
+}
+
+func (handler *reconcilingHandler) RunReconciliation(ctx context.Context) error {
+	if handler.run == nil {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return handler.run(ctx)
+}
+
+func stubSessionFactory(started chan<- *rescue.Coordinator) func(context.Context, *networkProcess, generationClient, runtimeQuorum) (candidateSession, error) {
+	return func(_ context.Context, network *networkProcess, client generationClient, _ runtimeQuorum) (candidateSession, error) {
 		if started != nil {
 			started <- network.coordinator
 		}
@@ -353,10 +663,19 @@ func (serviceClock *supervisorClock) Sleep(ctx context.Context, duration time.Du
 	}
 }
 
-func (*supervisorClock) NewTicker(time.Duration) clock.Ticker { return nil }
+func (*supervisorClock) NewTicker(time.Duration) clock.Ticker {
+	return &inertClockTicker{ticks: make(chan time.Time)}
+}
 func (*supervisorClock) NewTimer(duration time.Duration) clock.Timer {
 	return clock.Real{}.NewTimer(duration)
 }
+
+type inertClockTicker struct {
+	ticks chan time.Time
+}
+
+func (ticker *inertClockTicker) C() <-chan time.Time { return ticker.ticks }
+func (*inertClockTicker) Stop()                      {}
 
 func testRuntime(t *testing.T, networks []domain.Network) config.Runtime {
 	t.Helper()
@@ -420,6 +739,11 @@ func completeTestRuntimeDependencies(dependencies daemonDependencies) daemonDepe
 			return inertRuntimeQuorum{}, nil
 		}
 	}
+	if dependencies.acquireFence == nil {
+		dependencies.acquireFence = func(store.LeaseKey) (store.ProcessFence, error) {
+			return &testProcessFence{}, nil
+		}
+	}
 	return dependencies
 }
 
@@ -434,24 +758,70 @@ func (inertRuntimeQuorum) Header(context.Context, uint64) (rpc.BlockRef, error) 
 func (inertRuntimeQuorum) FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error) {
 	return nil, errors.New("test quorum read is not configured")
 }
-func (inertRuntimeQuorum) Close() {}
-
-type countingRuntimeQuorum struct{ closed atomic.Int32 }
-
-func (*countingRuntimeQuorum) Finalized(context.Context) (rpc.BlockRef, error) {
-	return rpc.BlockRef{}, errors.New("test quorum read is not configured")
-}
-func (*countingRuntimeQuorum) Header(context.Context, uint64) (rpc.BlockRef, error) {
-	return rpc.BlockRef{}, errors.New("test quorum read is not configured")
-}
-func (*countingRuntimeQuorum) FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error) {
+func (inertRuntimeQuorum) BalanceAt(context.Context, rpc.BlockRef, common.Address) (*big.Int, error) {
 	return nil, errors.New("test quorum read is not configured")
 }
+func (inertRuntimeQuorum) CodeAt(context.Context, rpc.BlockRef, common.Address) ([]byte, error) {
+	return nil, errors.New("test quorum read is not configured")
+}
+func (inertRuntimeQuorum) CallContract(context.Context, rpc.BlockRef, ethereum.CallMsg) ([]byte, error) {
+	return nil, errors.New("test quorum read is not configured")
+}
+func (inertRuntimeQuorum) Receipt(context.Context, common.Hash) (*types.Receipt, error) {
+	return nil, errors.New("test quorum read is not configured")
+}
+func (inertRuntimeQuorum) Close() {}
+
+type countingRuntimeQuorum struct {
+	inertRuntimeQuorum
+	closed atomic.Int32
+}
+
 func (quorum *countingRuntimeQuorum) Close() { quorum.closed.Add(1) }
 
 type countingHandoff struct {
 	*legacyMemoryHandoff
 	closed atomic.Int32
+}
+
+type testProcessFence struct {
+	mu            sync.Mutex
+	released      bool
+	validateError error
+	releaseError  error
+	onValidate    func()
+	onRelease     func()
+}
+
+func (fence *testProcessFence) Validate() error {
+	fence.mu.Lock()
+	defer fence.mu.Unlock()
+	if fence.onValidate != nil {
+		fence.onValidate()
+	}
+	if fence.released {
+		return store.ErrFenceLost
+	}
+	return fence.validateError
+}
+
+func (fence *testProcessFence) Release() error {
+	fence.mu.Lock()
+	defer fence.mu.Unlock()
+	if fence.released {
+		return nil
+	}
+	fence.released = true
+	if fence.onRelease != nil {
+		fence.onRelease()
+	}
+	return fence.releaseError
+}
+
+func (fence *testProcessFence) isReleased() bool {
+	fence.mu.Lock()
+	defer fence.mu.Unlock()
+	return fence.released
 }
 
 func (handoff *countingHandoff) Close() error {
