@@ -8,7 +8,11 @@ import (
 )
 
 type safeConsoleObserver struct {
-	console observability.Observer
+	console *observability.Console
+}
+
+func (observer *safeConsoleObserver) Write(event observability.SafeEvent) error {
+	return observer.console.Write(event)
 }
 
 func newSafeConsoleObserver(writer io.Writer) observability.Observer {
@@ -22,6 +26,7 @@ func (observer *safeConsoleObserver) Record(event observability.Event) {
 	observer.console.Record(observability.Event{
 		Level:       event.Level,
 		Code:        observability.EventCode(safeLabel(string(event.Code), "event_redacted")),
+		ChainID:     event.ChainID,
 		NetworkName: safeLabel(event.NetworkName, "network_redacted"),
 		ErrorCode:   domain.ErrorCode(safeOptionalLabel(string(event.ErrorCode))),
 	})
@@ -51,3 +56,4 @@ func safeLabel(value, fallback string) string {
 }
 
 var _ observability.Observer = (*safeConsoleObserver)(nil)
+var _ observability.StructuredObserver = (*safeConsoleObserver)(nil)

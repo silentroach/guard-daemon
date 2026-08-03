@@ -37,7 +37,9 @@ type Network struct {
 	BroadcastHTTP      string
 	ManifestPath       string
 	Tokens             []domain.Token
+	TrustedTokens      []common.Address
 	AllowUnknownTokens bool
+	EconomicPolicy     EconomicPolicy
 }
 
 // Format исключает RPC URL и путь manifest из случайного вывода.
@@ -128,7 +130,7 @@ func networkRegistry() []networkDefinition {
 	}
 }
 
-func loadNetworks(lookup func(string) (string, bool), mode Mode) ([]Network, error) {
+func loadNetworks(lookup func(string) (string, bool), mode Mode, global RuntimePolicy) ([]Network, error) {
 	names, err := enabledNetworkNames(lookup)
 	if err != nil {
 		return nil, err
@@ -140,7 +142,7 @@ func loadNetworks(lookup func(string) (string, bool), mode Mode) ([]Network, err
 
 	networks := make([]Network, 0, len(names))
 	for _, name := range names {
-		network, err := loadNetwork(lookup, mode, registry[name])
+		network, err := loadNetwork(lookup, mode, registry[name], global)
 		if err != nil {
 			return nil, err
 		}
@@ -182,7 +184,7 @@ func enabledNetworkNames(lookup func(string) (string, bool)) ([]string, error) {
 	return names, nil
 }
 
-func loadNetwork(lookup func(string) (string, bool), mode Mode, definition networkDefinition) (Network, error) {
+func loadNetwork(lookup func(string) (string, bool), mode Mode, definition networkDefinition, global RuntimePolicy) (Network, error) {
 	suffix := strings.ToUpper(definition.name)
 	providers := make([]ReadProvider, 0, 2)
 	canonicalHTTP := make([]string, 0, 2)
@@ -264,7 +266,11 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 	if err != nil {
 		return Network{}, err
 	}
-	tokens, allowUnknown, err := loadTokenPolicy(lookup, suffix, definition.tokens)
+	tokens, trustedTokens, allowUnknown, err := loadTokenPolicy(lookup, suffix, definition.tokens)
+	if err != nil {
+		return Network{}, err
+	}
+	economicPolicy, err := loadEconomicPolicy(lookup, suffix, economicProfileFor(definition.name), global, trustedTokens)
 	if err != nil {
 		return Network{}, err
 	}
@@ -276,7 +282,9 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 		BroadcastHTTP:      broadcast,
 		ManifestPath:       manifest,
 		Tokens:             tokens,
+		TrustedTokens:      trustedTokens,
 		AllowUnknownTokens: allowUnknown,
+		EconomicPolicy:     economicPolicy,
 	}, nil
 }
 
@@ -326,7 +334,7 @@ func endpointError(name string, websocket bool) error {
 	return fmt.Errorf("переменная %s должна содержать URL со схемой http или https", name)
 }
 
-func loadTokenPolicy(lookup func(string) (string, bool), suffix string, known []domain.Token) ([]domain.Token, bool, error) {
+func loadTokenPolicy(lookup func(string) (string, bool), suffix string, known []domain.Token) ([]domain.Token, []common.Address, bool, error) {
 	modeName := "TOKEN_MODE_" + suffix
 	mode, ok := lookup(modeName)
 	if !ok {
@@ -338,25 +346,25 @@ func loadTokenPolicy(lookup func(string) (string, bool), suffix string, known []
 	switch mode {
 	case "known-only":
 		if allowlistSet {
-			return nil, false, fmt.Errorf("переменная %s допустима только в режиме allowlist", allowlistName)
+			return nil, nil, false, fmt.Errorf("переменная %s допустима только в режиме allowlist", allowlistName)
 		}
-		return append([]domain.Token(nil), known...), false, nil
+		return append([]domain.Token(nil), known...), trustedTokenAddresses(known), false, nil
 	case "all":
 		if allowlistSet {
-			return nil, false, fmt.Errorf("переменная %s допустима только в режиме allowlist", allowlistName)
+			return nil, nil, false, fmt.Errorf("переменная %s допустима только в режиме allowlist", allowlistName)
 		}
-		return append([]domain.Token(nil), known...), true, nil
+		return append([]domain.Token(nil), known...), trustedTokenAddresses(known), true, nil
 	case "allowlist":
 		if !allowlistSet || allowlist == "" {
-			return nil, false, fmt.Errorf("не задана обязательная переменная окружения %s", allowlistName)
+			return nil, nil, false, fmt.Errorf("не задана обязательная переменная окружения %s", allowlistName)
 		}
 		return parseTokenAllowlist(allowlistName, allowlist, known)
 	default:
-		return nil, false, fmt.Errorf("переменная %s содержит неподдерживаемый режим токенов", modeName)
+		return nil, nil, false, fmt.Errorf("переменная %s содержит неподдерживаемый режим токенов", modeName)
 	}
 }
 
-func parseTokenAllowlist(name, value string, known []domain.Token) ([]domain.Token, bool, error) {
+func parseTokenAllowlist(name, value string, known []domain.Token) ([]domain.Token, []common.Address, bool, error) {
 	metadata := make(map[common.Address]domain.Token, len(known))
 	for _, knownToken := range known {
 		metadata[knownToken.Address] = knownToken
@@ -364,24 +372,36 @@ func parseTokenAllowlist(name, value string, known []domain.Token) ([]domain.Tok
 	seen := make(map[common.Address]struct{})
 	parts := strings.Split(value, ",")
 	tokens := make([]domain.Token, 0, len(parts))
+	trusted := make([]common.Address, 0, len(parts))
 	for _, part := range parts {
 		candidate := strings.TrimSpace(part)
 		if candidate == "" || !common.IsHexAddress(candidate) {
-			return nil, false, fmt.Errorf("переменная %s содержит некорректный EVM-адрес", name)
+			return nil, nil, false, fmt.Errorf("переменная %s содержит некорректный EVM-адрес", name)
 		}
 		address := common.HexToAddress(candidate)
 		if address == (common.Address{}) {
-			return nil, false, fmt.Errorf("переменная %s содержит нулевой EVM-адрес", name)
+			return nil, nil, false, fmt.Errorf("переменная %s содержит нулевой EVM-адрес", name)
 		}
 		if _, ok := seen[address]; ok {
-			return nil, false, fmt.Errorf("переменная %s содержит повторяющийся EVM-адрес", name)
+			return nil, nil, false, fmt.Errorf("переменная %s содержит повторяющийся EVM-адрес", name)
 		}
 		seen[address] = struct{}{}
-		configured := metadata[address]
+		configured, knownToken := metadata[address]
 		configured.Address = address
 		tokens = append(tokens, configured)
+		if knownToken {
+			trusted = append(trusted, address)
+		}
 	}
-	return tokens, false, nil
+	return tokens, trusted, false, nil
+}
+
+func trustedTokenAddresses(tokens []domain.Token) []common.Address {
+	result := make([]common.Address, len(tokens))
+	for index, token := range tokens {
+		result[index] = token.Address
+	}
+	return result
 }
 
 func token(address, symbol string, decimals uint8) domain.Token {

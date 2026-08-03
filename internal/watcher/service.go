@@ -599,6 +599,7 @@ func (service *Service) recordCandidate(candidate domain.RescueCandidate, result
 	service.observer.Record(observability.Event{
 		Level:       observability.LevelInfo,
 		Code:        code,
+		ChainID:     service.networkID,
 		NetworkName: service.networkName,
 		Candidate:   candidate.ID,
 		TokenSymbol: tokenSymbol,
@@ -692,6 +693,7 @@ func (service *Service) recordFailure(code observability.EventCode, errorCode do
 	service.observer.Record(observability.Event{
 		Level:       observability.LevelWarning,
 		Code:        code,
+		ChainID:     service.networkID,
 		NetworkName: service.networkName,
 		ErrorCode:   errorCode,
 	})

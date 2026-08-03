@@ -1,6 +1,14 @@
 # Task 08: Защита от злоупотребления gas и наблюдаемость
 
-Статус: `PENDING`
+Статус: `DONE`
+
+Исходный commit: `5a611cb`.
+
+Implementation, abuse/load tests и независимое review завершены.
+Отчёт: [`../reviews/08-abuse-observability.md`](../reviews/08-abuse-observability.md),
+digest проверенного diff:
+`b3686ec031b4ba88a40f20d79ac26340938f015f4baf34bdf6ee20cd6ede6077`.
+Результат включён в atomic task commit Task 08.
 
 Зависимости: Tasks 05, 06 и 07.
 

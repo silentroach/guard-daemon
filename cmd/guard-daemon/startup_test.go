@@ -107,6 +107,27 @@ func TestDaemonPassesAcquiredFenceToCoordinator(t *testing.T) {
 	}
 }
 
+func TestEmergencyStopBuildsReadOnlyLiveGraphWithoutPrivateSigners(t *testing.T) {
+	runtimeConfig := testRuntime(t, []domain.Network{testNetwork("stopped-network", 404)})
+	runtimeConfig.Policy.EmergencyStop = true
+	dependencies := startupDependencies(t)
+	var signerCalls atomic.Int32
+	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
+		signerCalls.Add(1)
+		return nil, nil, errors.New("private signer не должен создаваться")
+	}
+	process, err := newDaemon(context.Background(), runtimeConfig, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signerCalls.Load() != 0 || !process.gate.Stopped() || process.health.Snapshot().State != observability.HealthStopped || process.networks[0].coordinator == nil {
+		t.Fatalf("stopped graph: signerCalls=%d gate=%t health=%s coordinator=%v", signerCalls.Load(), process.gate.Stopped(), process.health.Snapshot().State, process.networks[0].coordinator)
+	}
+	if err := process.shutdown(nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProductionOpenStoreBindsConfiguredRoles(t *testing.T) {
 	runtimeConfig := testRuntime(t, []domain.Network{testNetwork("bound-store", 402)})
 	runtimeConfig.Watch.StateDirectory = t.TempDir()
@@ -571,7 +592,7 @@ func startupDependencies(t *testing.T) daemonDependencies {
 	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
 		return testPrivateKeySigners(t)
 	}
-	return completeTestRuntimeDependencies(dependencies)
+	return completeTestRuntimeDependencies(dependencies, t)
 }
 
 func testPrivateKeySigners(t *testing.T) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {

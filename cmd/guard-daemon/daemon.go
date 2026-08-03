@@ -3,14 +3,18 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"guard-daemon/internal/budget"
 	"guard-daemon/internal/clock"
 	"guard-daemon/internal/config"
 	"guard-daemon/internal/contracts"
@@ -24,6 +28,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/holiman/uint256"
 )
 
 const (
@@ -58,11 +63,13 @@ const (
 	errorFenceAcquireFailed  domain.ErrorCode = "daemon_fence_acquire_failed"
 	errorFenceValidateFailed domain.ErrorCode = "daemon_fence_validate_failed"
 	errorFenceReleaseFailed  domain.ErrorCode = "daemon_fence_release_failed"
+	errorBudgetFailed        domain.ErrorCode = "daemon_budget_failed"
 )
 
 const (
-	eventHTTPFallback    observability.EventCode = "daemon_rpc_http_fallback"
-	eventGenerationError observability.EventCode = "daemon_generation_failed"
+	eventHTTPFallback      observability.EventCode = "daemon_rpc_http_fallback"
+	eventGenerationError   observability.EventCode = "daemon_generation_failed"
+	eventUnknownTokenOptIn observability.EventCode = "daemon_unknown_token_opt_in"
 )
 
 type generationClient interface {
@@ -71,6 +78,27 @@ type generationClient interface {
 	LogSubscriber() rpc.LogSubscriber
 	HeadSubscriber() rpc.HeadSubscriber
 	Close()
+}
+
+type structuredAlertSink struct {
+	observer observability.Observer
+}
+
+func (sink structuredAlertSink) Notify(alert observability.Alert) error {
+	structured, ok := sink.observer.(observability.StructuredObserver)
+	if !ok {
+		return observability.ErrAlertDelivery
+	}
+	level := observability.LevelWarning
+	result := observability.ResultAccepted
+	if alert.State == observability.AlertResolved {
+		level = observability.LevelInfo
+		result = observability.ResultConfirmed
+	}
+	return structured.Write(observability.SafeEvent{
+		Level: level, Code: observability.LogAlertState, ChainID: alert.ChainID,
+		Result: result, Alert: alert.Code,
+	})
 }
 
 type submissionClient interface {
@@ -116,23 +144,35 @@ type preparedNetwork struct {
 }
 
 type daemonDependencies struct {
-	serviceClock   clock.Clock
-	observer       observability.Observer
-	dial           func(context.Context, string, uint64) (generationClient, error)
-	dialSubmission func(context.Context, string) (submissionClient, error)
-	loadManifest   func(config.Runtime, config.Network) (contracts.DeploymentManifest, error)
-	attestNetwork  func(context.Context, config.Network, contracts.DeploymentManifest, time.Duration) error
-	newSigners     func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error)
-	newSession     func(context.Context, *networkProcess, generationClient, runtimeQuorum) (candidateSession, error)
-	newWatcher     func(watcher.Dependencies) (generationRunner, error)
-	openStore      func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error)
-	openQuorum     func(context.Context, config.Network, time.Duration) (runtimeQuorum, error)
-	acquireFence   func(store.LeaseKey) (store.ProcessFence, error)
+	serviceClock       clock.Clock
+	observer           observability.Observer
+	dial               func(context.Context, string, uint64) (generationClient, error)
+	dialSubmission     func(context.Context, string) (submissionClient, error)
+	loadManifest       func(config.Runtime, config.Network) (contracts.DeploymentManifest, error)
+	attestNetwork      func(context.Context, config.Network, contracts.DeploymentManifest, time.Duration) error
+	newSigners         func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error)
+	newSession         func(context.Context, *networkProcess, generationClient, runtimeQuorum) (candidateSession, error)
+	newWatcher         func(watcher.Dependencies) (generationRunner, error)
+	openStore          func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error)
+	openQuorum         func(context.Context, config.Network, time.Duration) (runtimeQuorum, error)
+	acquireFence       func(store.LeaseKey) (store.ProcessFence, error)
+	acquireBudgetFence func(common.Address) (store.ProcessFence, error)
+	openBudget         func(config.Runtime, []preparedNetwork) (budget.Ledger, error)
+	openAdmission      func(config.Runtime, rescue.AdmissionConfig) (*rescue.AdmissionController, error)
+	alertStatePath     func(config.Runtime) (string, error)
 }
 
 type daemon struct {
-	dependencies daemonDependencies
-	networks     []*networkProcess
+	dependencies   daemonDependencies
+	networks       []*networkProcess
+	budget         budget.Ledger
+	budgetFence    store.ProcessFence
+	metrics        *observability.Metrics
+	health         *observability.Health
+	alerts         *observability.AlertManager
+	gate           *observability.PaidActionGate
+	stateDirectory string
+	admission      *rescue.AdmissionController
 }
 
 type networkProcess struct {
@@ -153,6 +193,10 @@ type networkProcess struct {
 	fence            store.ProcessFence
 	codec            *contracts.ERC20Codec
 	allowedTokens    map[common.Address]struct{}
+	emergencyStopped bool
+	metrics          *observability.Metrics
+	health           *observability.Health
+	alerts           *observability.AlertManager
 }
 
 type generationClientView struct {
@@ -170,6 +214,12 @@ type liveCandidateSession struct {
 	*rescue.Session
 	submission submissionClient
 }
+
+type guardedCandidateSession struct {
+	*rescue.Session
+}
+
+func (*guardedCandidateSession) Close() {}
 
 type tokenPolicySession struct {
 	candidateSession
@@ -222,14 +272,148 @@ func newProductionDependencies(observer observability.Observer, mode config.Mode
 			})
 		},
 		openQuorum: openRuntimeQuorum,
+		openBudget: func(runtimeConfig config.Runtime, prepared []preparedNetwork) (budget.Ledger, error) {
+			policy, err := runtimeBudgetPolicy(runtimeConfig)
+			if err != nil {
+				return nil, err
+			}
+			path, err := store.CanonicalBudgetPath(runtimeConfig.SponsorAddress)
+			if err != nil {
+				return nil, err
+			}
+			return budget.Open(path, budget.OpenOptions{
+				Policy: policy, PolicyFingerprint: budgetBindingFingerprint(runtimeConfig, prepared), Now: time.Now,
+			})
+		},
+		openAdmission: func(runtimeConfig config.Runtime, admissionConfig rescue.AdmissionConfig) (*rescue.AdmissionController, error) {
+			path, err := store.CanonicalAdmissionPath(runtimeConfig.SponsorAddress)
+			if err != nil {
+				return nil, err
+			}
+			return rescue.OpenAdmissionController(path, admissionConfig, clock.Real{})
+		},
+		alertStatePath: func(runtimeConfig config.Runtime) (string, error) {
+			return store.CanonicalAlertPath(runtimeConfig.SponsorAddress)
+		},
 	}
 	if mode.IsLive() {
 		dependencies.dialSubmission = dialSubmissionClient
 		dependencies.attestNetwork = attestConfiguredNetwork
 		dependencies.newSigners = newPrivateKeySigners
 		dependencies.acquireFence = store.AcquireProcessFence
+		dependencies.acquireBudgetFence = store.AcquireBudgetFence
 	}
 	return dependencies
+}
+
+func runtimeBudgetPolicy(runtimeConfig config.Runtime) (budget.Policy, error) {
+	global, err := budgetLimits(runtimeConfig.Policy.MaxTransactionCostWei, runtimeConfig.Policy.HourlyBudgetWei, runtimeConfig.Policy.DailyBudgetWei, runtimeConfig.Policy.CumulativeBudgetWei)
+	if err != nil {
+		return budget.Policy{}, err
+	}
+	policy := budget.Policy{Global: global, Networks: make([]budget.NetworkPolicy, 0, len(runtimeConfig.Networks))}
+	for _, network := range runtimeConfig.Networks {
+		economic := network.EconomicPolicy
+		limits, err := budgetLimits(economic.MaxTransactionCostWei, economic.HourlyBudgetWei, economic.DailyBudgetWei, economic.CumulativeBudgetWei)
+		if err != nil {
+			return budget.Policy{}, err
+		}
+		overhead, overheadOverflow := uint256.FromBig(economic.TransactionOverheadWei)
+		reserve, reserveOverflow := uint256.FromBig(economic.SponsorMinimumBalanceWei)
+		if overheadOverflow || reserveOverflow || reserve.IsZero() {
+			return budget.Policy{}, errors.New("некорректная budget policy сети")
+		}
+		policy.Networks = append(policy.Networks, budget.NetworkPolicy{
+			Network: network.ChainID, Sponsor: runtimeConfig.SponsorAddress, Limits: limits,
+			TransactionOverhead: *overhead, EmergencySponsorReserve: *reserve,
+		})
+	}
+	return policy, nil
+}
+
+func budgetLimits(perTransaction, perHour, perDay, cumulative *big.Int) (budget.Limits, error) {
+	values := []*big.Int{perTransaction, perHour, perDay, cumulative}
+	converted := make([]*uint256.Int, len(values))
+	for index, value := range values {
+		if value == nil || value.Sign() <= 0 {
+			return budget.Limits{}, errors.New("некорректные global budget limits")
+		}
+		var overflow bool
+		converted[index], overflow = uint256.FromBig(value)
+		if overflow {
+			return budget.Limits{}, errors.New("budget limit не помещается в uint256")
+		}
+	}
+	return budget.Limits{PerTransaction: *converted[0], PerHour: *converted[1], PerDay: *converted[2], Cumulative: *converted[3]}, nil
+}
+
+func budgetBindingFingerprint(runtimeConfig config.Runtime, prepared []preparedNetwork) [sha256.Size]byte {
+	hash := sha256.New()
+	_, _ = hash.Write([]byte("guard-daemon/budget-binding/v1\x00"))
+	_, _ = hash.Write(runtimeConfig.SourceAddress[:])
+	_, _ = hash.Write(runtimeConfig.SponsorAddress[:])
+	_, _ = hash.Write(runtimeConfig.Destination[:])
+	for _, network := range prepared {
+		var chain [8]byte
+		binary.BigEndian.PutUint64(chain[:], uint64(network.configured.ChainID))
+		_, _ = hash.Write(chain[:])
+		_, _ = hash.Write(network.manifest.Address[:])
+		if network.configured.AllowUnknownTokens {
+			_, _ = hash.Write([]byte{1})
+		} else {
+			_, _ = hash.Write([]byte{0})
+		}
+		for _, token := range network.configured.TrustedTokens {
+			_, _ = hash.Write(token[:])
+		}
+	}
+	var result [sha256.Size]byte
+	copy(result[:], hash.Sum(nil))
+	return result
+}
+
+func rescuePolicy(network config.Network) (rescue.FeePolicy, uint256.Int, map[common.Address]rescue.TrustedTokenValuePolicy, error) {
+	economic := network.EconomicPolicy
+	values := []*big.Int{
+		economic.MaxFeePerGasWei,
+		economic.MaxPriorityFeePerGasWei,
+		economic.TransactionOverheadWei,
+		economic.UnknownTokenMaxTransactionCostWei,
+		economic.NativeMinimumNetValueWei,
+		economic.MaxTransactionCostWei,
+	}
+	converted := make([]*uint256.Int, len(values))
+	for index, value := range values {
+		if value == nil || value.Sign() < 0 {
+			return rescue.FeePolicy{}, uint256.Int{}, nil, errors.New("некорректная rescue policy сети")
+		}
+		var overflow bool
+		converted[index], overflow = uint256.FromBig(value)
+		if overflow {
+			return rescue.FeePolicy{}, uint256.Int{}, nil, errors.New("rescue policy не помещается в uint256")
+		}
+	}
+	policy := rescue.FeePolicy{
+		Network:                 network.ChainID,
+		MaxFeePerGas:            *converted[0],
+		MaxPriorityFeePerGas:    *converted[1],
+		TokenGasLimit:           economic.TokenGasLimit,
+		NativeGasLimit:          economic.NativeGasLimit,
+		Overhead:                *converted[2],
+		UnknownTokenCostCap:     *converted[3],
+		TransactionCostCap:      *converted[5],
+		UnboundedAdditionalFees: economic.UnboundedAdditionalFees,
+	}
+	tokenValues := make(map[common.Address]rescue.TrustedTokenValuePolicy, len(economic.TokenValueRules))
+	for _, rule := range economic.TokenValueRules {
+		minimum, minimumOverflow := uint256.FromBig(rule.MinimumBalance)
+		maximum, maximumOverflow := uint256.FromBig(rule.MaxTransactionCostWei)
+		if minimumOverflow || maximumOverflow || minimum.IsZero() || maximum.IsZero() {
+			return rescue.FeePolicy{}, uint256.Int{}, nil, errors.New("некорректное правило ценности trusted token")
+		}
+		tokenValues[rule.Address] = rescue.TrustedTokenValuePolicy{MinimumBalance: *minimum, MaximumCost: *maximum}
+	}
+	return policy, *converted[4], tokenValues, nil
 }
 
 func openRuntimeQuorum(ctx context.Context, network config.Network, timeout time.Duration) (runtimeQuorum, error) {
@@ -365,6 +549,9 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 	if err != nil {
 		return nil, processError("daemon.dependencies", domain.ErrorConfiguration, errorStartupInvalid, false, err)
 	}
+	if _, err := runtimeBudgetPolicy(runtimeConfig); err != nil {
+		return nil, processError("daemon.budget_policy", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+	}
 
 	prepared := make([]preparedNetwork, 0, len(runtimeConfig.Networks))
 	for _, configuredNetwork := range runtimeConfig.Networks {
@@ -377,6 +564,46 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 	if len(prepared) == 0 {
 		return nil, processError("daemon.networks", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
 	}
+	chainIDs := make([]domain.NetworkID, 0, len(prepared))
+	for _, network := range prepared {
+		chainIDs = append(chainIDs, network.configured.ChainID)
+	}
+	metrics, err := observability.NewMetrics(chainIDs)
+	if err != nil {
+		return nil, processError("daemon.metrics", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+	}
+	health, err := observability.NewHealth(chainIDs)
+	if err != nil {
+		return nil, processError("daemon.health", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+	}
+	alertPath, err := dependencies.alertStatePath(runtimeConfig)
+	if err != nil {
+		return nil, processError("daemon.alerts", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+	}
+	alerts, err := observability.NewAlertManager(observability.AlertManagerConfig{
+		Cooldown:  runtimeConfig.Policy.AlertCooldown,
+		Capacity:  len(chainIDs) * 8,
+		StatePath: alertPath,
+	}, dependencies.serviceClock, structuredAlertSink{observer: dependencies.observer})
+	if err != nil {
+		return nil, processError("daemon.alerts", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+	}
+	gate := observability.NewPaidActionGate()
+	if runtimeConfig.Policy.EmergencyStop {
+		gate.Stop()
+		health.Stop()
+		for _, chainID := range chainIDs {
+			if _, alertErr := alerts.Raise(chainID, observability.AlertPaidActionsStopped); alertErr != nil {
+				return nil, processError("daemon.alert", domain.ErrorInternal, errorStartupInvalid, false, alertErr)
+			}
+		}
+	} else {
+		for _, chainID := range chainIDs {
+			if _, alertErr := alerts.Resolve(chainID, observability.AlertPaidActionsStopped); alertErr != nil {
+				return nil, processError("daemon.alert", domain.ErrorInternal, errorStartupInvalid, false, alertErr)
+			}
+		}
+	}
 
 	if runtimeConfig.Mode.IsLive() {
 		for _, network := range prepared {
@@ -387,6 +614,9 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 	}
 
 	startupComplete := false
+	var budgetLedger budget.Ledger
+	var budgetFence store.ProcessFence
+	var admission *rescue.AdmissionController
 	defer func() {
 		if startupComplete {
 			return
@@ -415,9 +645,28 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 				}
 			}
 		}
+		if budgetLedger != nil {
+			if err := budgetLedger.Close(); err != nil {
+				cleanupError = errors.Join(cleanupError, processError("daemon.budget.close", domain.ErrorInternal, errorBudgetFailed, false, err))
+			}
+		}
+		if admission != nil {
+			if err := admission.Close(); err != nil {
+				cleanupError = errors.Join(cleanupError, processError("daemon.admission.close", domain.ErrorInternal, errorBudgetFailed, false, err))
+			}
+		}
+		if budgetFence != nil {
+			if err := budgetFence.Release(); err != nil {
+				cleanupError = errors.Join(cleanupError, processError("daemon.budget_fence_release", domain.ErrorInternal, errorFenceReleaseFailed, false, err))
+			}
+		}
 		resultErr = errors.Join(resultErr, cleanupError)
 	}()
 	if runtimeConfig.Mode.IsLive() {
+		budgetFence, err = dependencies.acquireBudgetFence(runtimeConfig.SponsorAddress)
+		if err != nil || budgetFence == nil {
+			return nil, processError("daemon.budget_fence_acquire", domain.ErrorInternal, errorFenceAcquireFailed, false, err)
+		}
 		for index := range prepared {
 			network := prepared[index].configured.Domain(prepared[index].manifest.Address)
 			key := store.LeaseKey{Network: network.ChainID, Sponsor: runtimeConfig.SponsorAddress}
@@ -430,6 +679,19 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 			}
 		}
 	}
+	if runtimeConfig.Mode.IsLive() {
+		admissionConfig := rescue.AdmissionConfig{
+			Window: runtimeConfig.Policy.AbuseWindow, RateWindow: time.Minute, RateLimit: runtimeConfig.Policy.RateLimitPerMinute,
+			MaxAttemptsPerToken:       runtimeConfig.Policy.MaxAttemptsPerTokenWindow,
+			MaxAttemptsPerSourceEvent: runtimeConfig.Policy.MaxAttemptsPerSourceEvent,
+			MaxNewUnknownTokens:       runtimeConfig.Policy.MaxNewUnknownTokensPerWindow,
+			Capacity:                  int(maxPendingCandidates) * len(prepared),
+		}
+		admission, err = dependencies.openAdmission(runtimeConfig, admissionConfig)
+		if err != nil || admission == nil {
+			return nil, processError("daemon.admission", domain.ErrorInternal, errorBudgetFailed, false, err)
+		}
+	}
 	for index := range prepared {
 		network := prepared[index].configured.Domain(prepared[index].manifest.Address)
 		handoff, openErr := dependencies.openStore(runtimeConfig, prepared[index].configured, network)
@@ -437,6 +699,34 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 			return nil, processError("daemon.store", domain.ErrorInternal, errorStoreFailed, false, openErr)
 		}
 		prepared[index].handoff = handoff
+	}
+	if runtimeConfig.Mode.IsLive() {
+		openedBudget, openErr := dependencies.openBudget(runtimeConfig, prepared)
+		if openErr != nil || openedBudget == nil {
+			return nil, processError("daemon.budget", domain.ErrorInternal, errorBudgetFailed, false, openErr)
+		}
+		budgetLedger = openedBudget
+		snapshot, snapshotErr := budgetLedger.Snapshot(ctx)
+		if snapshotErr != nil {
+			return nil, processError("daemon.budget_snapshot", domain.ErrorInternal, errorBudgetFailed, false, snapshotErr)
+		}
+		metrics.SetGlobalBudget(snapshot.Global.Spent.Cumulative, snapshot.Global.Reserved.Cumulative, snapshot.Global.Remaining.Cumulative)
+		for chainID, network := range snapshot.Networks {
+			if metricsErr := metrics.SetBudget(chainID, network.Spent.Cumulative, network.Reserved.Cumulative, network.Remaining.Cumulative); metricsErr != nil {
+				return nil, processError("daemon.budget_metrics", domain.ErrorInternal, errorBudgetFailed, false, metricsErr)
+			}
+			blocked := snapshot.Global.Blocked() || network.Blocked()
+			if healthErr := health.SetCondition(chainID, observability.ConditionBudgetBlocked, blocked); healthErr != nil {
+				return nil, processError("daemon.budget_health", domain.ErrorInternal, errorBudgetFailed, false, healthErr)
+			}
+			if blocked {
+				if _, alertErr := alerts.Raise(chainID, observability.AlertBudgetBlocked); alertErr != nil {
+					return nil, processError("daemon.budget_alert", domain.ErrorInternal, errorBudgetFailed, false, alertErr)
+				}
+			} else if _, alertErr := alerts.Resolve(chainID, observability.AlertBudgetBlocked); alertErr != nil {
+				return nil, processError("daemon.budget_alert", domain.ErrorInternal, errorBudgetFailed, false, alertErr)
+			}
+		}
 	}
 	if runtimeConfig.Mode.IsLive() {
 		owner, ownerErr := newProcessLeaseOwner()
@@ -461,7 +751,8 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 
 	var authorizer rescue.AuthorizationSigner
 	var transactioner rescue.TransactionSigner
-	if runtimeConfig.Mode.IsLive() {
+	var stoppedBroadcaster rpc.Broadcaster
+	if runtimeConfig.Mode.IsLive() && !runtimeConfig.Policy.EmergencyStop {
 		authorizer, transactioner, err = dependencies.newSigners(runtimeConfig.LiveSecrets)
 		if err != nil || authorizer == nil || transactioner == nil {
 			return nil, processError("daemon.signers", domain.ErrorConfiguration, errorStartupInvalid, false, err)
@@ -469,6 +760,8 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 		if authorizer.Address() != runtimeConfig.SourceAddress || transactioner.Address() != runtimeConfig.SponsorAddress {
 			return nil, processError("daemon.signer_address", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
 		}
+	} else if runtimeConfig.Mode.IsLive() {
+		authorizer, transactioner, stoppedBroadcaster, _ = dryrun.NewGuards(runtimeConfig.SourceAddress, runtimeConfig.SponsorAddress)
 	}
 
 	codec, err := contracts.NewERC20Codec()
@@ -476,26 +769,44 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 		return nil, processError("daemon.erc20_codec", domain.ErrorInternal, errorStartupInvalid, false, err)
 	}
 
-	process := &daemon{dependencies: dependencies, networks: make([]*networkProcess, 0, len(prepared))}
+	process := &daemon{
+		dependencies: dependencies, networks: make([]*networkProcess, 0, len(prepared)),
+		budget: budgetLedger, budgetFence: budgetFence, metrics: metrics, health: health, alerts: alerts, gate: gate,
+		stateDirectory: runtimeConfig.Watch.StateDirectory, admission: admission,
+	}
 	for _, preparedNetwork := range prepared {
 		network := preparedNetwork.configured.Domain(preparedNetwork.manifest.Address)
 		var coordinator *rescue.Coordinator
 		if runtimeConfig.Mode.IsLive() {
+			feePolicy, nativeMinimum, tokenValues, policyErr := rescuePolicy(preparedNetwork.configured)
+			if policyErr != nil {
+				return nil, processError("daemon.rescue_policy", domain.ErrorConfiguration, errorStartupInvalid, false, policyErr)
+			}
 			coordinator, err = rescue.NewCoordinator(rescue.Config{
-				Network:        network,
-				Source:         runtimeConfig.SourceAddress,
-				Sponsor:        runtimeConfig.SponsorAddress,
-				Destination:    runtimeConfig.Destination,
-				StartupTimeout: runtimeConfig.ReadTimeout,
-				FeeReadTimeout: runtimeConfig.ReadTimeout,
-				State:          preparedNetwork.handoff,
-				LeaseManager:   preparedNetwork.handoff,
-				Lease:          preparedNetwork.lease,
-				ProcessFence:   preparedNetwork.fence,
-				LeaseTTL:       processLeaseTTL,
-				MaxAttempts:    rescueMaxAttempts,
-				RetryDelay:     candidateRetryDelay,
-				ReceiptTimeout: rescueReceiptTimeout,
+				Network:            network,
+				Source:             runtimeConfig.SourceAddress,
+				Sponsor:            runtimeConfig.SponsorAddress,
+				Destination:        runtimeConfig.Destination,
+				StartupTimeout:     runtimeConfig.ReadTimeout,
+				FeeReadTimeout:     runtimeConfig.ReadTimeout,
+				State:              preparedNetwork.handoff,
+				LeaseManager:       preparedNetwork.handoff,
+				Lease:              preparedNetwork.lease,
+				ProcessFence:       preparedNetwork.fence,
+				LeaseTTL:           processLeaseTTL,
+				MaxAttempts:        rescueMaxAttempts,
+				RetryDelay:         candidateRetryDelay,
+				ReceiptTimeout:     rescueReceiptTimeout,
+				Budget:             budgetLedger,
+				Gate:               gate,
+				Admission:          admission,
+				FeePolicy:          feePolicy,
+				NativeMinimum:      nativeMinimum,
+				TrustedTokens:      append([]common.Address(nil), preparedNetwork.configured.TrustedTokens...),
+				TrustedTokenValues: tokenValues,
+				Metrics:            metrics,
+				Alerts:             alerts,
+				Health:             health,
 			}, authorizer, transactioner, dependencies.serviceClock, dependencies.observer)
 			if err != nil {
 				return nil, processError("daemon.coordinator", domain.ErrorConfiguration, errorStartupInvalid, false, err)
@@ -503,22 +814,32 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 		}
 
 		networkState := &networkProcess{
-			configured:    preparedNetwork.configured,
-			network:       network,
-			mode:          runtimeConfig.Mode,
-			source:        runtimeConfig.SourceAddress,
-			sponsor:       runtimeConfig.SponsorAddress,
-			destination:   runtimeConfig.Destination,
-			readTimeout:   runtimeConfig.ReadTimeout,
-			watchLookback: runtimeConfig.Watch.LookbackBlocks,
-			coordinator:   coordinator,
-			handoff:       preparedNetwork.handoff,
-			fence:         preparedNetwork.fence,
-			codec:         codec,
-			allowedTokens: make(map[common.Address]struct{}, len(network.Tokens)),
+			configured:       preparedNetwork.configured,
+			network:          network,
+			mode:             runtimeConfig.Mode,
+			source:           runtimeConfig.SourceAddress,
+			sponsor:          runtimeConfig.SponsorAddress,
+			destination:      runtimeConfig.Destination,
+			readTimeout:      runtimeConfig.ReadTimeout,
+			watchLookback:    runtimeConfig.Watch.LookbackBlocks,
+			coordinator:      coordinator,
+			handoff:          preparedNetwork.handoff,
+			fence:            preparedNetwork.fence,
+			codec:            codec,
+			allowedTokens:    make(map[common.Address]struct{}, len(network.Tokens)),
+			emergencyStopped: runtimeConfig.Policy.EmergencyStop,
+			dryBroadcaster:   stoppedBroadcaster,
+			metrics:          metrics,
+			health:           health,
+			alerts:           alerts,
 		}
 		for _, token := range network.Tokens {
 			networkState.allowedTokens[token.Address] = struct{}{}
+		}
+		if network.AllowUnknownTokens {
+			dependencies.observer.Record(observability.Event{
+				Level: observability.LevelWarning, Code: eventUnknownTokenOptIn, ChainID: network.ChainID, NetworkName: network.Name,
+			})
 		}
 		if runtimeConfig.Mode.IsDryRun() {
 			networkState.dryAuthorizer, networkState.dryTransactioner, networkState.dryBroadcaster, networkState.dryAttempts = dryrun.NewGuards(runtimeConfig.SourceAddress, runtimeConfig.SponsorAddress)
@@ -530,10 +851,10 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 }
 
 func (dependencies daemonDependencies) withDefaults(mode config.Mode) (daemonDependencies, error) {
-	if dependencies.serviceClock == nil || dependencies.observer == nil || dependencies.dial == nil || dependencies.loadManifest == nil || dependencies.openStore == nil || dependencies.openQuorum == nil {
+	if dependencies.serviceClock == nil || dependencies.observer == nil || dependencies.dial == nil || dependencies.loadManifest == nil || dependencies.openStore == nil || dependencies.openQuorum == nil || dependencies.alertStatePath == nil {
 		return daemonDependencies{}, errors.New("не заданы обязательные зависимости процесса")
 	}
-	if mode.IsLive() && (dependencies.dialSubmission == nil || dependencies.attestNetwork == nil || dependencies.newSigners == nil || dependencies.acquireFence == nil) {
+	if mode.IsLive() && (dependencies.dialSubmission == nil || dependencies.attestNetwork == nil || dependencies.newSigners == nil || dependencies.acquireFence == nil || dependencies.acquireBudgetFence == nil || dependencies.openBudget == nil || dependencies.openAdmission == nil) {
 		return daemonDependencies{}, errors.New("не заданы обязательные live-зависимости процесса")
 	}
 	if dependencies.newWatcher == nil {
@@ -552,11 +873,17 @@ func (process *daemon) Run(ctx context.Context) error {
 
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	diagnostics, err := newDiagnosticsServer(filepath.Join(process.stateDirectory, "diagnostics.sock"), process.health, process.metrics, process.alerts)
+	if err != nil {
+		return errors.Join(processError("daemon.diagnostics", domain.ErrorInternal, errorStartupInvalid, false, err), process.shutdown(nil))
+	}
+	defer diagnostics.Close()
 
 	type workerResult struct {
-		network *networkProcess
-		lease   bool
-		err     error
+		network     *networkProcess
+		lease       bool
+		diagnostics bool
+		err         error
 	}
 	liveNetworks := 0
 	for _, network := range process.networks {
@@ -564,11 +891,13 @@ func (process *daemon) Run(ctx context.Context) error {
 			liveNetworks++
 		}
 	}
-	results := make(chan workerResult, len(process.networks)+liveNetworks)
+	results := make(chan workerResult, len(process.networks)+liveNetworks+1)
+	go func() {
+		results <- workerResult{diagnostics: true, err: diagnostics.Run(runContext)}
+	}()
 	for _, network := range process.networks {
 		go func() {
-			network.supervise(runContext, process.dependencies)
-			results <- workerResult{}
+			results <- workerResult{network: network, err: network.supervise(runContext, process.dependencies)}
 		}()
 		if network.coordinator != nil {
 			go func() {
@@ -579,12 +908,29 @@ func (process *daemon) Run(ctx context.Context) error {
 
 	var runError error
 	lostLeases := make(map[*networkProcess]struct{})
-	for range len(process.networks) + liveNetworks {
+	for range len(process.networks) + liveNetworks + 1 {
 		result := <-results
+		if result.diagnostics {
+			if runContext.Err() == nil && runError == nil {
+				runError = processError("daemon.diagnostics", domain.ErrorInternal, errorWorkerStopped, false, result.err)
+				cancel()
+			}
+			continue
+		}
 		if result.lease && rescue.IsLeaseLost(result.err) {
 			lostLeases[result.network] = struct{}{}
 		}
-		if !result.lease || runContext.Err() != nil || runError != nil {
+		if !result.lease {
+			if runContext.Err() == nil && runError == nil {
+				if result.err == nil {
+					result.err = errors.New("network worker неожиданно остановлен")
+				}
+				runError = processError("daemon.network", domain.ErrorInternal, errorWorkerStopped, false, result.err)
+				cancel()
+			}
+			continue
+		}
+		if runContext.Err() != nil || runError != nil {
 			continue
 		}
 		if result.err == nil {
@@ -621,6 +967,21 @@ func (process *daemon) shutdown(lostLeases map[*networkProcess]struct{}) error {
 	if err := process.closeStores(); err != nil {
 		shutdownError = errors.Join(shutdownError, processError("daemon.store.close", domain.ErrorInternal, errorStoreFailed, false, err))
 	}
+	if process.budget != nil {
+		if err := process.budget.Close(); err != nil {
+			shutdownError = errors.Join(shutdownError, processError("daemon.budget.close", domain.ErrorInternal, errorBudgetFailed, false, err))
+		}
+	}
+	if process.admission != nil {
+		if err := process.admission.Close(); err != nil {
+			shutdownError = errors.Join(shutdownError, processError("daemon.admission.close", domain.ErrorInternal, errorBudgetFailed, false, err))
+		}
+	}
+	if process.budgetFence != nil {
+		if err := process.budgetFence.Release(); err != nil {
+			shutdownError = errors.Join(shutdownError, processError("daemon.budget_fence_release", domain.ErrorInternal, errorFenceReleaseFailed, false, err))
+		}
+	}
 	return shutdownError
 }
 
@@ -634,24 +995,37 @@ func (process *daemon) closeStores() error {
 	return firstError
 }
 
-func (network *networkProcess) supervise(ctx context.Context, dependencies daemonDependencies) {
+func (network *networkProcess) supervise(ctx context.Context, dependencies daemonDependencies) error {
 	for generation := uint64(1); ; generation++ {
 		if ctx.Err() != nil {
-			return
+			return ctx.Err()
 		}
 
 		err := network.runGeneration(ctx, generation, dependencies)
 		if ctx.Err() != nil {
-			return
+			return ctx.Err()
 		}
 		dependencies.observer.Record(observability.Event{
 			Level:       observability.LevelWarning,
 			Code:        eventGenerationError,
+			ChainID:     network.network.ChainID,
 			NetworkName: network.network.Name,
 			ErrorCode:   publicErrorCode(err),
 		})
+		if network.metrics != nil {
+			_ = network.metrics.RecordReconnect(network.network.ChainID)
+			_ = network.metrics.RecordRPCError(network.network.ChainID)
+		}
+		if network.health != nil {
+			_ = network.health.SetCondition(network.network.ChainID, observability.ConditionRPCDegraded, true)
+		}
+		if network.alerts != nil {
+			if _, alertErr := network.alerts.Raise(network.network.ChainID, observability.AlertRPCDegraded); alertErr != nil {
+				return alertErr
+			}
+		}
 		if err := dependencies.serviceClock.Sleep(ctx, reconnectDelay); err != nil {
-			return
+			return err
 		}
 	}
 }
@@ -697,6 +1071,17 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 		return processError("daemon.session", domain.ErrorRPCTransient, errorSessionFailed, true, err)
 	}
 	defer session.Close()
+	if network.alerts != nil {
+		if _, alertErr := network.alerts.Resolve(network.network.ChainID, observability.AlertRPCDegraded); alertErr != nil {
+			return processError("daemon.rpc_alert", domain.ErrorInternal, errorSessionFailed, true, alertErr)
+		}
+	}
+	if network.health != nil {
+		_ = network.health.SetCondition(network.network.ChainID, observability.ConditionRPCDegraded, false)
+	}
+	if err := updateQueueDepth(generationContext, network.network.ChainID, network.handoff, network.metrics); err != nil {
+		return err
+	}
 	watcherService, err := dependencies.newWatcher(watcher.Dependencies{
 		Contracts:      reader,
 		Finalized:      quorum,
@@ -726,7 +1111,7 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 		results <- watcherService.Run(generationContext)
 	}()
 	go func() {
-		results <- consumeCandidates(generationContext, network.network.ChainID, network.handoff, network.handoff, session, dependencies.serviceClock)
+		results <- consumeCandidates(generationContext, network.network.ChainID, network.handoff, network.handoff, session, dependencies.serviceClock, network.metrics)
 	}()
 	if reconciliation != nil {
 		go func() {
@@ -778,6 +1163,13 @@ func (network *networkProcess) openSession(ctx context.Context, client generatio
 			return nil, errors.New("session factory вернула пустой результат")
 		}
 		return network.bindTokenPolicy(session), nil
+	}
+	if network.emergencyStopped {
+		session, err := network.coordinator.NewSession(ctx, client.Generation(), client.Reader(), quorum, network.dryBroadcaster)
+		if err != nil {
+			return nil, err
+		}
+		return network.bindTokenPolicy(&guardedCandidateSession{Session: session}), nil
 	}
 
 	dialContext, cancel := context.WithTimeout(ctx, network.readTimeout)
@@ -850,6 +1242,7 @@ func (network *networkProcess) dialClient(ctx context.Context, generation uint64
 			dependencies.observer.Record(observability.Event{
 				Level:       observability.LevelWarning,
 				Code:        eventHTTPFallback,
+				ChainID:     network.network.ChainID,
 				NetworkName: network.network.Name,
 				ErrorCode:   publicErrorCode(lastError),
 			})
@@ -872,7 +1265,7 @@ func (network *networkProcess) dialClient(ctx context.Context, generation uint64
 	return nil, processError("daemon.rpc_dial", domain.ErrorRPCTransient, errorDialFailed, true, lastError)
 }
 
-func consumeCandidates(ctx context.Context, network domain.NetworkID, queue store.CandidateQueue, incidents store.IncidentStore, session candidateHandler, serviceClock clock.Clock) error {
+func consumeCandidates(ctx context.Context, network domain.NetworkID, queue store.CandidateQueue, incidents store.IncidentStore, session candidateHandler, serviceClock clock.Clock, metrics *observability.Metrics) error {
 	for {
 		candidate, err := queue.Next(ctx, network)
 		if err != nil {
@@ -880,6 +1273,9 @@ func consumeCandidates(ctx context.Context, network domain.NetworkID, queue stor
 				return ctx.Err()
 			}
 			return processError("daemon.queue_next", domain.ErrorInternal, errorQueueNextFailed, true, err)
+		}
+		if metrics != nil {
+			_ = metrics.RecordCandidate(network)
 		}
 
 		incidentID := domain.NewIncidentID(candidate.ID)
@@ -907,8 +1303,15 @@ func consumeCandidates(ctx context.Context, network domain.NetworkID, queue stor
 		}
 		if shouldReplay(handleError) {
 			retryAt := serviceClock.Now().Add(candidateRetryDelay)
+			var scheduled interface{ NextRetryAt() time.Time }
+			if errors.As(handleError, &scheduled) && scheduled.NextRetryAt().After(retryAt) {
+				retryAt = scheduled.NextRetryAt()
+			}
 			if err := queue.Nack(ctx, candidate.ID, incidentID, retryAt); err != nil {
 				return processError("daemon.candidate_nack", domain.ErrorInternal, errorCandidateNackFailed, true, err)
+			}
+			if err := updateQueueDepth(ctx, network, queue, metrics); err != nil {
+				return err
 			}
 			continue
 		}
@@ -918,7 +1321,24 @@ func consumeCandidates(ctx context.Context, network domain.NetworkID, queue stor
 			}
 			return processError("daemon.candidate_ack", domain.ErrorInternal, errorCandidateAckFailed, true, err)
 		}
+		if err := updateQueueDepth(ctx, network, queue, metrics); err != nil {
+			return err
+		}
 	}
+}
+
+func updateQueueDepth(ctx context.Context, network domain.NetworkID, queue store.CandidateQueue, metrics *observability.Metrics) error {
+	if metrics == nil {
+		return nil
+	}
+	candidates, err := queue.Replay(ctx, network)
+	if err != nil {
+		return processError("daemon.queue_depth", domain.ErrorInternal, errorQueueNextFailed, true, err)
+	}
+	if err := metrics.SetQueueDepth(network, uint64(len(candidates))); err != nil {
+		return processError("daemon.queue_metrics", domain.ErrorInternal, errorQueueNextFailed, true, err)
+	}
+	return nil
 }
 
 func shouldReplay(err error) bool {

@@ -72,8 +72,8 @@ func (LiveSecrets) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "LiveSecrets{скрыто}")
 }
 
-func loadLiveSecrets(lookup func(string) (string, bool), mode Mode) (LiveSecrets, error) {
-	if mode.IsDryRun() {
+func loadLiveSecrets(lookup func(string) (string, bool), mode Mode, emergencyStop bool) (LiveSecrets, error) {
+	if mode.IsDryRun() || emergencyStop {
 		return LiveSecrets{}, nil
 	}
 	source, err := loadPrivateKey(lookup, "SOURCE_PRIVATE_KEY")

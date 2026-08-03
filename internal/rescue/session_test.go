@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"guard-daemon/internal/budget"
 	"guard-daemon/internal/clock"
 	"guard-daemon/internal/domain"
 	"guard-daemon/internal/observability"
@@ -26,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/holiman/uint256"
 )
 
 func TestConcurrentCandidatesWaitAndUseDistinctSponsorNonces(t *testing.T) {
@@ -90,7 +92,7 @@ func TestExternalSponsorNonceJumpReconcilesBeforeSigning(t *testing.T) {
 
 func TestAtomicNativeHasAuthorizationAndCallDataWithoutProactiveRenewal(t *testing.T) {
 	rig := newTestRig(t, rigOptions{nativeThreshold: big.NewInt(0)})
-	rig.chain.setNative(rig.source, 11)
+	rig.chain.setNative(rig.source, 1_000_000_000_000_000)
 	if len(rig.broadcaster.snapshot()) != 0 || rig.authorizer.count() != 0 {
 		t.Fatal("NewSession performed proactive delegation renewal")
 	}
@@ -116,7 +118,7 @@ func TestAtomicNativeHasAuthorizationAndCallDataWithoutProactiveRenewal(t *testi
 
 func TestAuthorizationFailureCannotCreateDelegationOnlyTransaction(t *testing.T) {
 	rig := newTestRig(t, rigOptions{nativeThreshold: big.NewInt(0), authorizationError: errors.New("sign failed")})
-	rig.chain.setNative(rig.source, 11)
+	rig.chain.setNative(rig.source, 1_000_000_000_000_000)
 	err := rig.session.Handle(context.Background(), rig.nativeCandidate(1))
 	assertCode(t, err, codeSigning)
 	if rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
@@ -147,6 +149,13 @@ func TestSuccessfulReceiptWithPostconditionRPCErrorIsAmbiguous(t *testing.T) {
 	if status := rig.incident(candidate, domain.CandidateToken, token).Status; status != store.RescueAmbiguous {
 		t.Fatalf("incident status = %v, want RescueAmbiguous", status)
 	}
+	snapshot, err := rig.coordinator.budget.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Global.Spent.Cumulative.IsZero() || !snapshot.Global.Reserved.Cumulative.IsZero() {
+		t.Fatalf("finalized receipt cost was not committed before postcondition: %+v", snapshot.Global)
+	}
 	rig.clock.advance(time.Second)
 	assertAmbiguous(t, rig.session.Handle(context.Background(), candidate))
 	if status := rig.incident(candidate, domain.CandidateToken, token).Status; status != store.RescueAmbiguous {
@@ -166,6 +175,23 @@ func TestUnknownTokenNeverGetsTrustedSuccess(t *testing.T) {
 	incident := rig.incident(candidate, domain.CandidateToken, unknown)
 	if incident.Trusted || incident.Status != store.RescueTokenReported {
 		t.Fatalf("unknown incident trust/status = %t/%v, want false/RescueTokenReported", incident.Trusted, incident.Status)
+	}
+}
+
+func TestExplicitlyAllowlistedUnknownTokenGetsOnlyTokenReportedOutcome(t *testing.T) {
+	token := testAddress(7)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
+	delete(rig.coordinator.trustedTokens, token)
+	delete(rig.coordinator.trustedTokenValues, token)
+	rig.coordinator.allowedUntrustedTokens[token] = struct{}{}
+	rig.chain.setToken(token, rig.source, 5)
+	candidate := rig.tokenCandidate(token, 1)
+	if err := rig.session.Handle(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	incident := rig.incident(candidate, domain.CandidateToken, token)
+	if incident.Trusted || incident.Status != store.RescueTokenReported {
+		t.Fatalf("allowlisted unknown trust/status = %t/%v", incident.Trusted, incident.Status)
 	}
 }
 
@@ -617,11 +643,11 @@ func TestPersistedNonceFloorSurvivesRestart(t *testing.T) {
 func TestCoordinatorRequiresAndValidatesProcessFence(t *testing.T) {
 	rig := newTestRig(t, rigOptions{})
 	config := func(fence store.ProcessFence) Config {
-		return Config{
+		return withTestEconomicPolicy(t, Config{
 			Network: rig.coordinator.network, Source: rig.source, Sponsor: rig.sponsor, Destination: rig.destination,
 			State: rig.state, LeaseManager: rig.lease, Lease: rig.coordinator.currentLease(), ProcessFence: fence,
 			LeaseTTL: time.Second, RetryDelay: time.Millisecond, ReceiptTimeout: time.Millisecond,
-		}
+		}, rig.clock)
 	}
 	if coordinator, err := NewCoordinator(config(nil), rig.authorizer, rig.transactioner, rig.clock, observability.Discard{}); coordinator != nil || errorCode(err) != codeInvalidConfig {
 		t.Fatalf("NewCoordinator() without process fence = (%v, %v)", coordinator, err)
@@ -688,7 +714,7 @@ func TestProcessFenceLossClosesPostSignerAndSendWindows(t *testing.T) {
 			t.Fatalf("Handle() before send fence loss = %v", err)
 		}
 		incident := rig.incident(candidate, domain.CandidateToken, token)
-		if incident.Status != store.RescueAmbiguous || incident.LastCode != CodeLeaseLost || len(incident.SignedTransaction) == 0 || len(rig.broadcaster.snapshot()) != 0 {
+		if incident.Status != store.RescueSigned || incident.LastCode != "" || len(incident.SignedTransaction) == 0 || len(rig.broadcaster.snapshot()) != 0 {
 			t.Fatalf("pre-send fence loss state = %v code %s payload %d broadcasts %d", incident.Status, incident.LastCode, len(incident.SignedTransaction), len(rig.broadcaster.snapshot()))
 		}
 	})
@@ -712,11 +738,12 @@ func TestReplacedProcessFenceStopsExistingCoordinatorBeforeSend(t *testing.T) {
 	network.ChainID = chainID
 	lease := rig.coordinator.currentLease()
 	lease.Key = key
-	coordinator, err := NewCoordinator(Config{
+	coordinatorConfig := withTestEconomicPolicy(t, Config{
 		Network: network, Source: rig.source, Sponsor: rig.sponsor, Destination: rig.destination,
 		State: rig.state, LeaseManager: rig.lease, Lease: lease, ProcessFence: fence,
 		LeaseTTL: time.Second, RetryDelay: time.Millisecond, ReceiptTimeout: time.Millisecond,
-	}, rig.authorizer, rig.transactioner, rig.clock, observability.Discard{})
+	}, rig.clock)
+	coordinator, err := NewCoordinator(coordinatorConfig, rig.authorizer, rig.transactioner, rig.clock, observability.Discard{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +776,7 @@ func TestLeaseContentionAndLossBlockSigning(t *testing.T) {
 	t.Run("contention", func(t *testing.T) {
 		lease := newFakeLease()
 		lease.valid = false
-		_, err := buildTestRig(rigOptions{lease: lease})
+		_, err := buildTestRig(t, rigOptions{lease: lease})
 		if !IsLeaseLost(err) {
 			t.Fatalf("NewSession() error = %v, want lease loss", err)
 		}
@@ -800,7 +827,7 @@ func TestLeaseLossClosesPostSignerAndSendWindows(t *testing.T) {
 			t.Fatalf("Handle() error = %v, want lease loss", err)
 		}
 		incident := rig.incident(candidate, domain.CandidateToken, token)
-		if incident.Status != store.RescueAmbiguous || incident.LastCode != CodeLeaseLost || len(incident.SignedTransaction) == 0 || len(rig.broadcaster.snapshot()) != 0 {
+		if incident.Status != store.RescueSigned || incident.LastCode != "" || len(incident.SignedTransaction) == 0 || len(rig.broadcaster.snapshot()) != 0 {
 			t.Fatalf("pre-send loss state = %v code %s payload %d broadcasts %d", incident.Status, incident.LastCode, len(incident.SignedTransaction), len(rig.broadcaster.snapshot()))
 		}
 	})
@@ -874,7 +901,7 @@ func TestRestartReceiptClearsExpiredNonceFence(t *testing.T) {
 	first.chain.receiptError = nil
 	first.chain.mu.Unlock()
 
-	restarted := newTestRig(t, rigOptions{tokens: []common.Address{firstToken, secondToken}, state: state, clock: serviceClock, chain: first.chain})
+	restarted := newTestRig(t, rigOptions{tokens: []common.Address{firstToken, secondToken}, state: state, clock: serviceClock, chain: first.chain, budget: first.coordinator.budget})
 	if status := restarted.incident(firstCandidate, domain.CandidateToken, firstToken).Status; status != store.RescueTrustedSuccess {
 		t.Fatalf("recovered old status = %v, want RescueTrustedSuccess", status)
 	}
@@ -969,7 +996,7 @@ func TestAttackerAuthorizationRaceCodeMismatchIsLostRace(t *testing.T) {
 }
 
 func TestFinalityOrReorgErrorCannotProduceSuccess(t *testing.T) {
-	rig := newTestRig(t, rigOptions{tokens: []common.Address{testAddress(5)}, finalizedErrorAt: 3})
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{testAddress(5)}, finalizedErrorAt: 8})
 	token := rig.tokens[0]
 	rig.chain.setToken(token, rig.source, 5)
 	candidate := rig.tokenCandidate(token, 1)
@@ -982,7 +1009,7 @@ func TestFinalityOrReorgErrorCannotProduceSuccess(t *testing.T) {
 func TestPeriodicCreatesSeparateNativeAndTokenIncidents(t *testing.T) {
 	tokens := []common.Address{testAddress(5), testAddress(6)}
 	rig := newTestRig(t, rigOptions{tokens: tokens, nativeThreshold: big.NewInt(0)})
-	rig.chain.setNative(rig.source, 4)
+	rig.chain.setNative(rig.source, 1_000_000_000_000_000)
 	for _, token := range tokens {
 		rig.chain.setToken(token, rig.source, 3)
 	}
@@ -1012,6 +1039,195 @@ func TestFeeRPCErrorFailsClosedBeforeSigning(t *testing.T) {
 	}
 }
 
+func TestBudgetExhaustionStopsBeforeEverySignatureAndKeepsIncident(t *testing.T) {
+	token := testAddress(5)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
+	rig.chain.setToken(token, rig.source, 5)
+	blocker := domain.NewBlockCandidate(rig.chainID, domain.CandidateNative, rig.source, testHash(0xee), 999)
+	_, err := rig.coordinator.budget.Reserve(context.Background(), budget.ReservationRequest{
+		Network: rig.chainID, Sponsor: rig.sponsor, Candidate: blocker.ID,
+		Attempt:        budget.Attempt{Incident: domain.NewAssetIncidentID(blocker.ID, domain.CandidateNative, common.Address{}), Number: 1},
+		Quote:          budget.CostQuote{GasLimit: 1, MaxFeePerGas: *uint256.NewInt(1_000_000_000_000_000_000)},
+		SponsorBalance: *uint256.NewInt(2_000_000_000_000_000_000),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := rig.tokenCandidate(token, 1)
+	assertCode(t, rig.session.Handle(context.Background(), candidate), codeBudgetExceeded)
+	incident := rig.incident(candidate, domain.CandidateToken, token)
+	if incident.Status != store.RescuePrepared || incident.Attempts != 1 || rig.authorizer.count() != 0 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
+		t.Fatalf("budget block: status=%v attempts=%d signatures=%d/%d broadcasts=%d", incident.Status, incident.Attempts, rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
+	}
+}
+
+func TestSponsorReserveAndEmergencyStopProduceNoPaidActions(t *testing.T) {
+	token := testAddress(5)
+	t.Run("reserve", func(t *testing.T) {
+		rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
+		rig.chain.setToken(token, rig.source, 5)
+		rig.chain.setNative(rig.sponsor, 1)
+		assertCode(t, rig.session.Handle(context.Background(), rig.tokenCandidate(token, 1)), codeSponsorReserve)
+		if rig.authorizer.count() != 0 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
+			t.Fatal("sponsor reserve block reached a paid action")
+		}
+	})
+	t.Run("emergency stop", func(t *testing.T) {
+		rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
+		rig.chain.setToken(token, rig.source, 5)
+		rig.coordinator.gate.Stop()
+		candidate := rig.tokenCandidate(token, 1)
+		assertCode(t, rig.session.Handle(context.Background(), candidate), codePaidActionsStopped)
+		if _, found, _ := rig.state.RescueIncident(context.Background(), domain.NewAssetIncidentID(candidate.ID, domain.CandidateToken, token)); found {
+			t.Fatal("emergency stop создал attempt вместо сохранения candidate в очереди")
+		}
+		if rig.authorizer.count() != 0 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
+			t.Fatal("emergency stop reached a paid action")
+		}
+	})
+}
+
+func TestSimulationFailureReleasesReservationBeforeSponsorSignature(t *testing.T) {
+	token := testAddress(5)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
+	rig.chain.setToken(token, rig.source, 5)
+	rig.primary.estimateError = errors.New("simulation rejected")
+	assertCode(t, rig.session.Handle(context.Background(), rig.tokenCandidate(token, 1)), codeSimulation)
+	snapshot, err := rig.coordinator.budget.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rig.authorizer.count() != 1 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 || !snapshot.Global.Reserved.Cumulative.IsZero() {
+		t.Fatalf("simulation failure: signatures=%d/%d broadcasts=%d reserved=%s", rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()), snapshot.Global.Reserved.Cumulative.String())
+	}
+}
+
+func TestQuorumSimulationFailureStopsBeforeSponsorSignature(t *testing.T) {
+	token := testAddress(5)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}, quorumSimulationError: errors.New("quorum rejected")})
+	rig.chain.setToken(token, rig.source, 5)
+	assertCode(t, rig.session.Handle(context.Background(), rig.tokenCandidate(token, 1)), codeSimulation)
+	if rig.authorizer.count() != 1 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
+		t.Fatalf("quorum simulation failure: signatures=%d/%d broadcasts=%d", rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
+	}
+}
+
+func TestCoordinatorRejectsUnboundedAdditionalFeeModel(t *testing.T) {
+	_, err := buildTestRig(t, rigOptions{tokens: []common.Address{testAddress(5)}, unboundedAdditionalFees: true})
+	assertCode(t, err, codeInvalidConfig)
+}
+
+func TestTerminalReplayDoesNotClearRPCDegradationWithoutRead(t *testing.T) {
+	token := testAddress(5)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
+	health, err := observability.NewHealth([]domain.NetworkID{rig.chainID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.coordinator.health = health
+	rig.chain.setToken(token, rig.source, 5)
+	candidate := rig.tokenCandidate(token, 1)
+	if err := rig.session.Handle(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	rig.coordinator.recordFailure(candidate.ID, common.Hash{}, newError("test.rpc", domain.ErrorRPCTransient, codeFinalityRead, true, true, nil))
+	if err := rig.session.Handle(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	if !health.Snapshot().Chains[rig.chainID].Conditions.RPCDegraded {
+		t.Fatal("terminal replay cleared RPC degradation without a successful read")
+	}
+}
+
+func TestPeriodicFailureLogIsBoundToFailingChildIncident(t *testing.T) {
+	token := testAddress(5)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}, nativeThreshold: new(big.Int)})
+	rig.chain.setNative(rig.source, 1)
+	rig.chain.setToken(token, rig.source, 5)
+	capture := &capturingStructuredObserver{}
+	rig.coordinator.structured = capture
+	candidate := domain.NewPeriodicCandidate(rig.chainID, rig.source, 1, 1)
+	assertCode(t, rig.session.Handle(context.Background(), candidate), codeMinimumValue)
+	nativeID := domain.NewAssetIncidentID(candidate.ID, domain.CandidateNative, common.Address{})
+	tokenID := domain.NewAssetIncidentID(candidate.ID, domain.CandidateToken, token)
+	var failures []domain.IncidentID
+	for _, event := range capture.events {
+		if event.Level == observability.LevelError && event.Error != nil && event.Incident != (domain.IncidentID{}) {
+			failures = append(failures, event.Incident)
+		}
+	}
+	if len(failures) != 1 || failures[0] != nativeID {
+		t.Fatalf("periodic failure incidents = %v, want [%s] and never %s", failures, nativeID, tokenID)
+	}
+}
+
+func TestEveryPeriodicChildFailureUpdatesRPCTelemetry(t *testing.T) {
+	token := testAddress(5)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}, nativeThreshold: new(big.Int)})
+	rig.chain.setNative(rig.source, 1)
+	rig.chain.setToken(token, rig.source, 5)
+	rig.chain.tokenBalanceError = token
+	metrics, err := observability.NewMetrics([]domain.NetworkID{rig.chainID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	health, err := observability.NewHealth([]domain.NetworkID{rig.chainID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := health.SetCondition(rig.chainID, observability.ConditionRPCDegraded, false); err != nil {
+		t.Fatal(err)
+	}
+	rig.coordinator.metrics = metrics
+	rig.coordinator.health = health
+	candidate := domain.NewPeriodicCandidate(rig.chainID, rig.source, 1, 1)
+	assertCode(t, rig.session.Handle(context.Background(), candidate), codeMinimumValue)
+	if got := metrics.Snapshot().Chains[rig.chainID].RPCErrors; got != 1 {
+		t.Fatalf("RPC errors = %d, want token child error", got)
+	}
+	if !health.Snapshot().Chains[rig.chainID].Conditions.RPCDegraded {
+		t.Fatal("later periodic token RPC error did not degrade health")
+	}
+}
+
+func TestFinalizedReceiptCommitsActualBudgetAndClearsReservation(t *testing.T) {
+	token := testAddress(5)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
+	rig.chain.setToken(token, rig.source, 5)
+	if err := rig.session.Handle(context.Background(), rig.tokenCandidate(token, 1)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := rig.coordinator.budget.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Global.Spent.Cumulative.IsZero() || !snapshot.Global.Reserved.Cumulative.IsZero() {
+		t.Fatalf("finalized budget: spent=%s reserved=%s", snapshot.Global.Spent.Cumulative.String(), snapshot.Global.Reserved.Cumulative.String())
+	}
+}
+
+func TestFinalizedBudgetUsesReceiptFeeInsteadOfUnrelatedSponsorDebit(t *testing.T) {
+	token := testAddress(5)
+	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
+	rig.chain.setToken(token, rig.source, 5)
+	rig.chain.extraSponsorDebit = big.NewInt(123_456)
+	if err := rig.session.Handle(context.Background(), rig.tokenCandidate(token, 1)); err != nil {
+		t.Fatal(err)
+	}
+	transactions := rig.broadcaster.snapshot()
+	if len(transactions) != 1 {
+		t.Fatalf("broadcasts = %d", len(transactions))
+	}
+	want := new(big.Int).Mul(new(big.Int).SetUint64(transactions[0].Gas()), transactions[0].GasFeeCap())
+	snapshot, err := rig.coordinator.budget.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Global.Spent.Cumulative.ToBig().Cmp(want) != 0 {
+		t.Fatalf("spent = %s, want canonical receipt fee %s", snapshot.Global.Spent.Cumulative.String(), want)
+	}
+}
+
 func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 	serviceClock := newFakeClock()
 	source, sponsor := testSignerAddress(1), testSignerAddress(2)
@@ -1029,17 +1245,19 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 		t.Fatalf("Acquire() error = %v", err)
 	}
 
-	chain := newFakeFinality(source, destination, rescuer)
+	chain := newFakeFinality(source, sponsor, destination, rescuer)
+	chain.native[sponsor] = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 	chain.setToken(token, source, 7)
 	authorizer := &fakeAuthorizationSigner{address: source, key: testPrivateKey(1)}
 	transactioner := &fakeTransactionSigner{address: sponsor, key: testPrivateKey(2)}
 	broadcaster := &fakeBroadcaster{chain: chain}
-	coordinator, err := NewCoordinator(Config{
+	coordinatorConfig := withTestEconomicPolicy(t, Config{
 		Network: domain.Network{Name: "durable-test", ChainID: 901, Rescuer: rescuer, HasRescuer: true, Tokens: []domain.Token{{Address: token}}},
 		Source:  source, Sponsor: sponsor, Destination: destination, State: state, LeaseManager: state, Lease: lease,
 		ProcessFence: newFakeProcessFence(),
 		LeaseTTL:     time.Second, RetryDelay: time.Millisecond, ReceiptTimeout: time.Millisecond,
-	}, authorizer, transactioner, serviceClock, observability.Discard{})
+	}, serviceClock)
+	coordinator, err := NewCoordinator(coordinatorConfig, authorizer, transactioner, serviceClock, observability.Discard{})
 	if err != nil {
 		t.Fatalf("NewCoordinator() error = %v", err)
 	}
@@ -1113,31 +1331,34 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 }
 
 type rigOptions struct {
-	tokens                 []common.Address
-	allowUnknown           bool
-	nativeThreshold        *big.Int
-	state                  *memoryState
-	clock                  *fakeClock
-	chain                  *fakeFinality
-	lease                  *fakeLeaseManager
-	fence                  *fakeProcessFence
-	authorizationError     error
-	headerError            error
-	gasPriceError          error
-	sendError              error
-	receiptError           error
-	postCodeError          error
-	zeroSourceWithoutDelta bool
-	delegatedTarget        common.Address
-	finalizedErrorAt       int
-	finalizedErrorAfter    int
-	preBalanceError        error
-	invalidTokenBalance    bool
-	keepSourceAfter        bool
-	advanceDuringPostRead  bool
-	headerMismatchNumber   uint64
-	headerMismatchAfter    int
-	receiptStatus          *uint64
+	tokens                  []common.Address
+	allowUnknown            bool
+	nativeThreshold         *big.Int
+	state                   *memoryState
+	clock                   *fakeClock
+	chain                   *fakeFinality
+	lease                   *fakeLeaseManager
+	fence                   *fakeProcessFence
+	authorizationError      error
+	headerError             error
+	gasPriceError           error
+	sendError               error
+	receiptError            error
+	postCodeError           error
+	zeroSourceWithoutDelta  bool
+	delegatedTarget         common.Address
+	finalizedErrorAt        int
+	finalizedErrorAfter     int
+	preBalanceError         error
+	invalidTokenBalance     bool
+	keepSourceAfter         bool
+	advanceDuringPostRead   bool
+	headerMismatchNumber    uint64
+	headerMismatchAfter     int
+	receiptStatus           *uint64
+	budget                  budget.Ledger
+	quorumSimulationError   error
+	unboundedAdditionalFees bool
 }
 
 type testRig struct {
@@ -1160,16 +1381,25 @@ type testRig struct {
 	session       *Session
 }
 
+type capturingStructuredObserver struct {
+	events []observability.SafeEvent
+}
+
+func (observer *capturingStructuredObserver) Write(event observability.SafeEvent) error {
+	observer.events = append(observer.events, event)
+	return nil
+}
+
 func newTestRig(t *testing.T, options rigOptions) *testRig {
 	t.Helper()
-	rig, err := buildTestRig(options)
+	rig, err := buildTestRig(t, options)
 	if err != nil {
 		t.Fatalf("buildTestRig() error = %v", err)
 	}
 	return rig
 }
 
-func buildTestRig(options rigOptions) (*testRig, error) {
+func buildTestRig(t testing.TB, options rigOptions) (*testRig, error) {
 	sourceKey := testPrivateKey(1)
 	sponsorKey := testPrivateKey(2)
 	serviceClock := options.clock
@@ -1193,7 +1423,8 @@ func buildTestRig(options rigOptions) (*testRig, error) {
 	}
 	rig.chain = options.chain
 	if rig.chain == nil {
-		rig.chain = newFakeFinality(rig.source, rig.destination, rig.rescuer)
+		rig.chain = newFakeFinality(rig.source, rig.sponsor, rig.destination, rig.rescuer)
+		rig.chain.native[rig.sponsor] = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 	}
 	rig.chain.receiptError = options.receiptError
 	rig.chain.postCodeError = options.postCodeError
@@ -1207,6 +1438,7 @@ func buildTestRig(options rigOptions) (*testRig, error) {
 	rig.chain.headerMismatchNumber = options.headerMismatchNumber
 	rig.chain.headerMismatchAfter = options.headerMismatchAfter
 	rig.chain.receiptStatus = options.receiptStatus
+	rig.chain.quorumSimulationError = options.quorumSimulationError
 	if options.delegatedTarget != (common.Address{}) {
 		rig.chain.delegatedTarget = options.delegatedTarget
 	}
@@ -1220,11 +1452,14 @@ func buildTestRig(options rigOptions) (*testRig, error) {
 	for _, token := range rig.tokens {
 		network.Tokens = append(network.Tokens, domain.Token{Address: token})
 	}
-	coordinator, err := NewCoordinator(Config{
+	coordinatorConfig := withTestEconomicPolicy(t, Config{
 		Network: network, Source: rig.source, Sponsor: rig.sponsor, Destination: rig.destination, NativeThreshold: options.nativeThreshold,
 		State: rig.state, LeaseManager: lease, Lease: store.Lease{Key: store.LeaseKey{Network: rig.chainID, Sponsor: rig.sponsor}, Owner: "test-owner"}, ProcessFence: fence,
 		LeaseTTL: time.Second, MaxAttempts: 3, RetryDelay: time.Millisecond, ReceiptTimeout: time.Millisecond,
-	}, rig.authorizer, rig.transactioner, rig.clock, observability.Discard{})
+		Budget: options.budget,
+	}, rig.clock)
+	coordinatorConfig.FeePolicy.UnboundedAdditionalFees = options.unboundedAdditionalFees
+	coordinator, err := NewCoordinator(coordinatorConfig, rig.authorizer, rig.transactioner, rig.clock, observability.Discard{})
 	if err != nil {
 		return nil, err
 	}
@@ -1236,6 +1471,59 @@ func buildTestRig(options rigOptions) (*testRig, error) {
 		return nil, err
 	}
 	return rig, nil
+}
+
+func withTestEconomicPolicy(t testing.TB, config Config, serviceClock clock.Clock) Config {
+	t.Helper()
+	limit := *uint256.NewInt(1_000_000_000_000_000_000)
+	transactionCap := *uint256.NewInt(1_000_000_000_000_000)
+	ledger := config.Budget
+	if ledger == nil {
+		var err error
+		ledger, err = budget.Open(filepath.Join(t.TempDir(), "budget.db"), budget.OpenOptions{
+			Policy: budget.Policy{
+				Global: budget.Limits{PerTransaction: limit, PerHour: limit, PerDay: limit, Cumulative: limit},
+				Networks: []budget.NetworkPolicy{{
+					Network: config.Network.ChainID, Sponsor: config.Sponsor,
+					Limits:                  budget.Limits{PerTransaction: limit, PerHour: limit, PerDay: limit, Cumulative: limit},
+					EmergencySponsorReserve: *uint256.NewInt(1),
+				}},
+			},
+			PolicyFingerprint: sha256.Sum256([]byte("deterministic-test-budget-policy")),
+			Now:               serviceClock.Now,
+		})
+		if err != nil {
+			t.Fatalf("budget.Open() error = %v", err)
+		}
+		t.Cleanup(func() {
+			if err := ledger.Close(); err != nil {
+				t.Errorf("budget.Close() error = %v", err)
+			}
+		})
+	}
+	admission, err := NewAdmissionController(AdmissionConfig{
+		Window: time.Hour, RateLimit: 1024, MaxAttemptsPerToken: 1024,
+		MaxAttemptsPerSourceEvent: 1024, MaxNewUnknownTokens: 1024, Capacity: 1024,
+	}, serviceClock)
+	if err != nil {
+		t.Fatalf("NewAdmissionController() error = %v", err)
+	}
+	config.Budget = ledger
+	config.Gate = observability.NewPaidActionGate()
+	config.Admission = admission
+	config.FeePolicy = FeePolicy{
+		Network:      config.Network.ChainID,
+		MaxFeePerGas: *uint256.NewInt(100_000_000_000), MaxPriorityFeePerGas: *uint256.NewInt(5_000_000_000),
+		TokenGasLimit: 220_000, NativeGasLimit: 80_000,
+		UnknownTokenCostCap: transactionCap, TransactionCostCap: transactionCap,
+	}
+	config.TrustedTokens = make([]common.Address, 0, len(config.Network.Tokens))
+	config.TrustedTokenValues = make(map[common.Address]TrustedTokenValuePolicy, len(config.Network.Tokens))
+	for _, token := range config.Network.Tokens {
+		config.TrustedTokens = append(config.TrustedTokens, token.Address)
+		config.TrustedTokenValues[token.Address] = TrustedTokenValuePolicy{MinimumBalance: *uint256.NewInt(1), MaximumCost: transactionCap}
+	}
+	return config
 }
 
 func (rig *testRig) tokenCandidate(token common.Address, observation uint64) domain.RescueCandidate {
@@ -1473,6 +1761,8 @@ type fakePrimary struct {
 	sponsorNonceError error
 	headerError       error
 	gasPriceError     error
+	estimateError     error
+	estimate          uint64
 }
 
 func (reader *fakePrimary) ChainID(context.Context) (*big.Int, error) {
@@ -1505,9 +1795,23 @@ func (reader *fakePrimary) SuggestGasPrice(context.Context) (*big.Int, error) {
 	return big.NewInt(2_000_000), nil
 }
 
+func (reader *fakePrimary) EstimateGas(_ context.Context, call ethereum.CallMsg) (uint64, error) {
+	if reader.estimateError != nil {
+		return 0, reader.estimateError
+	}
+	if reader.estimate != 0 {
+		return reader.estimate, nil
+	}
+	if call.Gas == 0 {
+		return 0, errors.New("gas limit не задан")
+	}
+	return call.Gas, nil
+}
+
 type fakeFinality struct {
 	mu                     sync.Mutex
 	source                 common.Address
+	sponsor                common.Address
 	destination            common.Address
 	rescuer                common.Address
 	delegatedTarget        common.Address
@@ -1532,11 +1836,14 @@ type fakeFinality struct {
 	finalizedErrorAt       int
 	finalizedErrorAfter    int
 	broadcasts             int
+	extraSponsorDebit      *big.Int
+	quorumSimulationError  error
+	tokenBalanceError      common.Address
 }
 
-func newFakeFinality(source, destination, rescuer common.Address) *fakeFinality {
+func newFakeFinality(source, sponsor, destination, rescuer common.Address) *fakeFinality {
 	return &fakeFinality{
-		source: source, destination: destination, rescuer: rescuer, delegatedTarget: rescuer,
+		source: source, sponsor: sponsor, destination: destination, rescuer: rescuer, delegatedTarget: rescuer,
 		block: rpc.BlockRef{Number: 10, Hash: testHash(10), ParentHash: testHash(9)}, native: make(map[common.Address]*big.Int),
 		headers:     map[uint64]rpc.BlockRef{10: {Number: 10, Hash: testHash(10), ParentHash: testHash(9)}},
 		headerCalls: make(map[uint64]int),
@@ -1598,6 +1905,15 @@ func (chain *fakeFinality) CallContract(_ context.Context, _ rpc.BlockRef, call 
 	}
 	if *call.To == chain.rescuer {
 		return common.LeftPadBytes(chain.destination.Bytes(), 32), nil
+	}
+	if *call.To == chain.source && len(call.AuthorizationList) == 1 {
+		if chain.quorumSimulationError != nil {
+			return nil, chain.quorumSimulationError
+		}
+		return nil, nil
+	}
+	if *call.To == chain.tokenBalanceError {
+		return nil, errors.New("token balance unavailable")
 	}
 	if chain.broadcasts > 0 && chain.postCodeError != nil {
 		return nil, chain.postCodeError
@@ -1664,6 +1980,9 @@ func (chain *fakeFinality) accept(transaction *types.Transaction) {
 	chain.mu.Lock()
 	defer chain.mu.Unlock()
 	chain.broadcasts++
+	fee := new(big.Int).Mul(new(big.Int).SetUint64(transaction.Gas()), transaction.GasFeeCap())
+	fee.Add(fee, cloneAmount(chain.extraSponsorDebit))
+	chain.native[chain.sponsor] = new(big.Int).Sub(cloneAmount(chain.native[chain.sponsor]), fee)
 	chain.advanceBlockLocked()
 	if len(transaction.Data()) > 4 {
 		token := common.BytesToAddress(transaction.Data()[len(transaction.Data())-20:])
@@ -1692,6 +2011,7 @@ func (chain *fakeFinality) accept(transaction *types.Transaction) {
 	}
 	chain.receipts[transaction.Hash()] = &types.Receipt{
 		Status: status, TxHash: transaction.Hash(), BlockHash: chain.block.Hash, BlockNumber: new(big.Int).SetUint64(chain.block.Number), Logs: []*types.Log{},
+		GasUsed: transaction.Gas(), EffectiveGasPrice: new(big.Int).Set(transaction.GasFeeCap()),
 	}
 }
 

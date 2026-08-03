@@ -100,15 +100,15 @@ func loadFrom(lookup func(string) (string, bool), names []string) (Runtime, erro
 		return Runtime{}, err
 	}
 
-	networks, err := loadNetworks(lookup, mode)
-	if err != nil {
-		return Runtime{}, err
-	}
 	artifact, err := loadArtifactTrust(lookup)
 	if err != nil {
 		return Runtime{}, err
 	}
 	policy, err := loadRuntimePolicy(lookup)
+	if err != nil {
+		return Runtime{}, err
+	}
+	networks, err := loadNetworks(lookup, mode, policy)
 	if err != nil {
 		return Runtime{}, err
 	}
@@ -121,7 +121,7 @@ func loadFrom(lookup func(string) (string, bool), names []string) (Runtime, erro
 		return Runtime{}, err
 	}
 
-	secrets, err := loadLiveSecrets(lookup, mode)
+	secrets, err := loadLiveSecrets(lookup, mode, policy.EmergencyStop)
 	if err != nil {
 		return Runtime{}, err
 	}
@@ -216,10 +216,18 @@ func processEnvironmentNames() []string {
 }
 
 var staticEnvironmentFields = []string{
+	"ABUSE_WINDOW",
+	"ALERT_COOLDOWN",
 	"CUMULATIVE_BUDGET_WEI",
+	"DAILY_BUDGET_WEI",
 	"DESTINATION_ADDRESS",
 	"DRY_RUN",
+	"EMERGENCY_STOP",
 	"ENABLED_NETWORKS",
+	"HOURLY_BUDGET_WEI",
+	"MAX_ATTEMPTS_PER_SOURCE_EVENT",
+	"MAX_ATTEMPTS_PER_TOKEN_WINDOW",
+	"MAX_NEW_UNKNOWN_TOKENS_PER_WINDOW",
 	"MAX_TRANSACTION_COST_WEI",
 	"RATE_LIMIT_PER_MINUTE",
 	"RESCUER_ARTIFACT",
@@ -234,6 +242,16 @@ var staticEnvironmentFields = []string{
 }
 
 var environmentFieldTemplates = []string{
+	"CHAIN_OVERHEAD_MAX_WEI_<N>",
+	"MAX_FEE_PER_GAS_WEI_<N>",
+	"MAX_PRIORITY_FEE_PER_GAS_WEI_<N>",
+	"NATIVE_GAS_LIMIT_<N>",
+	"NATIVE_MIN_NET_VALUE_WEI_<N>",
+	"NETWORK_CUMULATIVE_BUDGET_WEI_<N>",
+	"NETWORK_DAILY_BUDGET_WEI_<N>",
+	"NETWORK_HOURLY_BUDGET_WEI_<N>",
+	"NETWORK_MAX_TRANSACTION_COST_WEI_<N>",
+	"NETWORK_SPONSOR_MIN_BALANCE_WEI_<N>",
 	"RPC_READ_1_HTTP_<N>",
 	"RPC_READ_1_WS_<N>",
 	"RPC_READ_1_TRUST_DOMAIN_<N>",
@@ -244,6 +262,9 @@ var environmentFieldTemplates = []string{
 	"RESCUER_MANIFEST_<N>",
 	"TOKEN_MODE_<N>",
 	"TOKEN_ALLOWLIST_<N>",
+	"TOKEN_GAS_LIMIT_<N>",
+	"TOKEN_VALUE_RULES_<N>",
+	"UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_<N>",
 }
 
 // SupportedEnvironmentFields возвращает все точные поддерживаемые имена полей.

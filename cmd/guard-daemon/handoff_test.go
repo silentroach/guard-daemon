@@ -250,7 +250,7 @@ func TestConsumeCandidatesPersistsHandlesAndAcknowledgesInOrder(t *testing.T) {
 	handoff := &orderedHandoff{candidate: candidate, recorder: recorder, afterAck: cancel}
 	session := &recordingHandler{generation: 2, recorder: recorder}
 
-	err := consumeCandidates(ctx, network, handoff, handoff, session, clock.Real{})
+	err := consumeCandidates(ctx, network, handoff, handoff, session, clock.Real{}, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("consumeCandidates() error = %v", err)
 	}
@@ -275,7 +275,7 @@ func TestConsumeCandidatesDoesNotAckAfterHandlingCancellation(t *testing.T) {
 		return nil
 	}}
 
-	err := consumeCandidates(ctx, network, handoff, handoff, session, clock.Real{})
+	err := consumeCandidates(ctx, network, handoff, handoff, session, clock.Real{}, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("consumeCandidates() error = %v", err)
 	}
@@ -300,7 +300,7 @@ func TestConsumeCandidatesAcknowledgesTerminalHandlingError(t *testing.T) {
 		},
 	}
 
-	err := consumeCandidates(ctx, network, handoff, handoff, session, clock.Real{})
+	err := consumeCandidates(ctx, network, handoff, handoff, session, clock.Real{}, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("consumeCandidates() error = %v", err)
 	}
@@ -344,7 +344,7 @@ func TestConsumeCandidatesReplaysRetryableAndAmbiguousFailures(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() {
-				done <- consumeCandidates(ctx, network, handoff, handoff, handler, clock.Real{})
+				done <- consumeCandidates(ctx, network, handoff, handoff, handler, clock.Real{}, nil)
 			}()
 			<-attempted
 			waitForDelayed(t, handoff, 1)
@@ -392,7 +392,7 @@ func TestRetryableCandidateDoesNotStarveFollowingWork(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- consumeCandidates(ctx, network, handoff, handoff, handler, clock.Real{})
+		done <- consumeCandidates(ctx, network, handoff, handoff, handler, clock.Real{}, nil)
 	}()
 	<-firstAttempted
 	waitForDelayed(t, handoff, 1)

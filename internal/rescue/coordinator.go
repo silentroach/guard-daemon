@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"guard-daemon/internal/budget"
 	"guard-daemon/internal/clock"
 	"guard-daemon/internal/contracts"
 	"guard-daemon/internal/domain"
@@ -17,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/holiman/uint256"
 )
 
 const (
@@ -51,6 +53,12 @@ const (
 	codeRetryPending         domain.ErrorCode = "rescue_retry_pending"
 	codeNoPaidAction         domain.ErrorCode = "rescue_no_paid_action"
 	codeUnknownToken         domain.ErrorCode = "rescue_unknown_token_forbidden"
+	codeAdmissionLimited     domain.ErrorCode = "rescue_admission_limited"
+	codeBudgetExceeded       domain.ErrorCode = "rescue_budget_exceeded"
+	codeSponsorReserve       domain.ErrorCode = "rescue_sponsor_reserve"
+	codeSimulation           domain.ErrorCode = "rescue_simulation_failed"
+	codeMinimumValue         domain.ErrorCode = "rescue_minimum_value"
+	codePaidActionsStopped   domain.ErrorCode = "rescue_paid_actions_stopped"
 
 	// CodeLeaseLost is safe to expose through health and operator APIs.
 	CodeLeaseLost domain.ErrorCode = "rescue_lease_lost"
@@ -102,6 +110,7 @@ type RPCReader interface {
 	PendingNonceAt(context.Context, common.Address) (uint64, error)
 	HeaderByNumber(context.Context, *big.Int) (*types.Header, error)
 	SuggestGasPrice(context.Context) (*big.Int, error)
+	EstimateGas(context.Context, ethereum.CallMsg) (uint64, error)
 }
 
 // FinalityReader exposes only hash-pinned quorum reads. Receipt must return a
@@ -118,50 +127,76 @@ type FinalityReader interface {
 // Config contains immutable values used by one network coordinator. Lease and
 // ProcessFence are acquired by the daemon before construction.
 type Config struct {
-	Network         domain.Network
-	Source          common.Address
-	Sponsor         common.Address
-	Destination     common.Address
-	NativeThreshold *big.Int
-	StartupTimeout  time.Duration
-	FeeReadTimeout  time.Duration
-	State           store.RescueStateStore
-	LeaseManager    store.LeaseManager
-	Lease           store.Lease
-	ProcessFence    store.ProcessFence
-	LeaseTTL        time.Duration
-	MaxAttempts     uint32
-	RetryDelay      time.Duration
-	ReceiptTimeout  time.Duration
-	FinalityTimeout time.Duration
+	Network            domain.Network
+	Source             common.Address
+	Sponsor            common.Address
+	Destination        common.Address
+	NativeThreshold    *big.Int
+	StartupTimeout     time.Duration
+	FeeReadTimeout     time.Duration
+	State              store.RescueStateStore
+	LeaseManager       store.LeaseManager
+	Lease              store.Lease
+	ProcessFence       store.ProcessFence
+	LeaseTTL           time.Duration
+	MaxAttempts        uint32
+	RetryDelay         time.Duration
+	ReceiptTimeout     time.Duration
+	FinalityTimeout    time.Duration
+	Budget             budget.Ledger
+	Gate               *observability.PaidActionGate
+	Admission          *AdmissionController
+	FeePolicy          FeePolicy
+	NativeMinimum      uint256.Int
+	TrustedTokens      []common.Address
+	TrustedTokenValues map[common.Address]TrustedTokenValuePolicy
+	Metrics            *observability.Metrics
+	Alerts             *observability.AlertManager
+	Health             *observability.Health
+}
+
+type TrustedTokenValuePolicy struct {
+	MinimumBalance uint256.Int
+	MaximumCost    uint256.Int
 }
 
 // Coordinator serializes nonce allocation, signing, and submission for one
 // chain+sponsor pair.
 type Coordinator struct {
-	network         domain.Network
-	source          common.Address
-	sponsor         common.Address
-	destination     common.Address
-	rescuer         common.Address
-	nativeThreshold *big.Int
-	startupTimeout  time.Duration
-	feeReadTimeout  time.Duration
-	leaseTTL        time.Duration
-	maxAttempts     uint32
-	retryDelay      time.Duration
-	receiptTimeout  time.Duration
-	finalityTimeout time.Duration
-	state           store.RescueStateStore
-	leaseManager    store.LeaseManager
-	processFence    store.ProcessFence
-	authorizer      AuthorizationSigner
-	transactioner   TransactionSigner
-	clock           clock.Clock
-	observer        observability.Observer
-	erc20           *contracts.ERC20Codec
-	rescuerCodec    *contracts.RescuerCodec
-	trustedTokens   map[common.Address]struct{}
+	network                domain.Network
+	source                 common.Address
+	sponsor                common.Address
+	destination            common.Address
+	rescuer                common.Address
+	nativeThreshold        *big.Int
+	startupTimeout         time.Duration
+	feeReadTimeout         time.Duration
+	leaseTTL               time.Duration
+	maxAttempts            uint32
+	retryDelay             time.Duration
+	receiptTimeout         time.Duration
+	finalityTimeout        time.Duration
+	state                  store.RescueStateStore
+	leaseManager           store.LeaseManager
+	processFence           store.ProcessFence
+	authorizer             AuthorizationSigner
+	transactioner          TransactionSigner
+	clock                  clock.Clock
+	observer               observability.Observer
+	erc20                  *contracts.ERC20Codec
+	rescuerCodec           *contracts.RescuerCodec
+	trustedTokens          map[common.Address]struct{}
+	trustedTokenValues     map[common.Address]TrustedTokenValuePolicy
+	allowedUntrustedTokens map[common.Address]struct{}
+	budget                 budget.Ledger
+	gate                   *observability.PaidActionGate
+	admission              *AdmissionController
+	feePolicy              FeePolicy
+	nativeMinimum          uint256.Int
+	metrics                *observability.Metrics
+	alerts                 *observability.AlertManager
+	health                 *observability.Health
+	structured             observability.StructuredObserver
 
 	operationMu  sync.Mutex
 	nonceFloor   uint64
@@ -183,6 +218,7 @@ type Session struct {
 	finality      FinalityReader
 	broadcaster   rpc.Broadcaster
 	lastFinalized rpc.BlockRef
+	rpcSucceeded  bool
 }
 
 func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner TransactionSigner, serviceClock clock.Clock, observer observability.Observer) (*Coordinator, error) {
@@ -190,7 +226,8 @@ func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner
 	if config.Network.ChainID <= 0 || !config.Network.HasRescuer || config.Network.Rescuer == zero ||
 		config.Source == zero || config.Sponsor == zero || config.Destination == zero ||
 		config.Source == config.Sponsor || config.Source == config.Destination || config.Sponsor == config.Destination ||
-		config.State == nil || config.LeaseManager == nil || config.ProcessFence == nil || authorizer == nil || transactioner == nil || serviceClock == nil || observer == nil ||
+		config.State == nil || config.LeaseManager == nil || config.ProcessFence == nil || config.Budget == nil || config.Gate == nil || config.Admission == nil ||
+		!validFeePolicy(config.FeePolicy) || config.FeePolicy.Network != config.Network.ChainID || authorizer == nil || transactioner == nil || serviceClock == nil || observer == nil ||
 		config.Lease.Key.Network != config.Network.ChainID || config.Lease.Key.Sponsor != config.Sponsor || config.Lease.Owner == "" {
 		return nil, newError("rescue.coordinator", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 	}
@@ -209,12 +246,41 @@ func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner
 
 	network := config.Network
 	network.Tokens = append([]domain.Token(nil), config.Network.Tokens...)
-	trustedTokens := make(map[common.Address]struct{}, len(network.Tokens))
+	configuredTokens := make(map[common.Address]struct{}, len(network.Tokens))
 	for _, token := range network.Tokens {
 		if token.Address == zero {
 			return nil, newError("rescue.tokens", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 		}
-		trustedTokens[token.Address] = struct{}{}
+		configuredTokens[token.Address] = struct{}{}
+	}
+	trustedTokens := make(map[common.Address]struct{}, len(config.TrustedTokens))
+	for _, address := range config.TrustedTokens {
+		if address == zero {
+			return nil, newError("rescue.trusted_tokens", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+		}
+		if _, configured := configuredTokens[address]; !configured {
+			return nil, newError("rescue.trusted_tokens", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+		}
+		trustedTokens[address] = struct{}{}
+	}
+	trustedTokenValues := make(map[common.Address]TrustedTokenValuePolicy, len(config.TrustedTokenValues))
+	for address, policy := range config.TrustedTokenValues {
+		if _, trusted := trustedTokens[address]; !trusted || policy.MinimumBalance.IsZero() || policy.MaximumCost.IsZero() {
+			return nil, newError("rescue.token_values", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+		}
+		trustedTokenValues[address] = policy
+	}
+	if !config.Gate.Stopped() && len(trustedTokenValues) != len(trustedTokens) {
+		return nil, newError("rescue.token_values", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+	}
+	if !config.Gate.Stopped() && config.FeePolicy.UnboundedAdditionalFees {
+		return nil, newError("rescue.fee_model", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+	}
+	allowedUntrustedTokens := make(map[common.Address]struct{})
+	for address := range configuredTokens {
+		if _, trusted := trustedTokens[address]; !trusted {
+			allowedUntrustedTokens[address] = struct{}{}
+		}
 	}
 
 	threshold := big.NewInt(defaultNativeThresholdWei)
@@ -238,33 +304,45 @@ func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner
 		return nil, newError("rescue.timeouts", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 	}
 
-	return &Coordinator{
-		network:         network,
-		source:          config.Source,
-		sponsor:         config.Sponsor,
-		destination:     config.Destination,
-		rescuer:         network.Rescuer,
-		nativeThreshold: threshold,
-		startupTimeout:  startupTimeout,
-		feeReadTimeout:  feeReadTimeout,
-		leaseTTL:        leaseTTL,
-		maxAttempts:     maxAttempts,
-		retryDelay:      retryDelay,
-		receiptTimeout:  receiptTimeout,
-		finalityTimeout: finalityTimeout,
-		state:           config.State,
-		leaseManager:    config.LeaseManager,
-		processFence:    config.ProcessFence,
-		lease:           config.Lease,
-		authorizer:      authorizer,
-		transactioner:   transactioner,
-		clock:           serviceClock,
-		observer:        observer,
-		erc20:           erc20,
-		rescuerCodec:    rescuerCodec,
-		trustedTokens:   trustedTokens,
-		leaseLost:       make(chan struct{}),
-	}, nil
+	coordinator := &Coordinator{
+		network:                network,
+		source:                 config.Source,
+		sponsor:                config.Sponsor,
+		destination:            config.Destination,
+		rescuer:                network.Rescuer,
+		nativeThreshold:        threshold,
+		startupTimeout:         startupTimeout,
+		feeReadTimeout:         feeReadTimeout,
+		leaseTTL:               leaseTTL,
+		maxAttempts:            maxAttempts,
+		retryDelay:             retryDelay,
+		receiptTimeout:         receiptTimeout,
+		finalityTimeout:        finalityTimeout,
+		state:                  config.State,
+		leaseManager:           config.LeaseManager,
+		processFence:           config.ProcessFence,
+		lease:                  config.Lease,
+		authorizer:             authorizer,
+		transactioner:          transactioner,
+		clock:                  serviceClock,
+		observer:               observer,
+		erc20:                  erc20,
+		rescuerCodec:           rescuerCodec,
+		trustedTokens:          trustedTokens,
+		trustedTokenValues:     trustedTokenValues,
+		allowedUntrustedTokens: allowedUntrustedTokens,
+		budget:                 config.Budget,
+		gate:                   config.Gate,
+		admission:              config.Admission,
+		feePolicy:              config.FeePolicy,
+		nativeMinimum:          config.NativeMinimum,
+		metrics:                config.Metrics,
+		alerts:                 config.Alerts,
+		health:                 config.Health,
+		leaseLost:              make(chan struct{}),
+	}
+	coordinator.structured, _ = observer.(observability.StructuredObserver)
+	return coordinator, nil
 }
 
 func durationDefault(value, fallback time.Duration) time.Duration {
@@ -407,6 +485,12 @@ func (session *Session) Handle(ctx context.Context, candidate domain.RescueCandi
 
 	coordinator.operationMu.Lock()
 	defer coordinator.operationMu.Unlock()
+	session.rpcSucceeded = false
+	if coordinator.gate.Stopped() {
+		err := newError("rescue.emergency_stop", domain.ErrorSigning, codePaidActionsStopped, true, false, observability.ErrPaidActionsStopped)
+		coordinator.recordFailure(candidate.ID, common.Hash{}, err)
+		return err
+	}
 
 	var err error
 	switch candidate.Kind {
@@ -420,7 +504,12 @@ func (session *Session) Handle(ctx context.Context, candidate domain.RescueCandi
 		err = newError("rescue.handle", domain.ErrorConfiguration, codeUnsupportedCandidate, false, false, nil)
 	}
 	if err != nil {
-		coordinator.recordFailure(candidate.ID, common.Hash{}, err)
+		if candidate.Kind != domain.CandidatePeriodic {
+			coordinator.recordFailure(candidate.ID, common.Hash{}, err)
+			coordinator.recordCandidateFailure(ctx, candidate.ID, err)
+		}
+	} else if session.rpcSucceeded {
+		coordinator.recordRPCHealthy()
 	}
 	return err
 }
@@ -480,6 +569,7 @@ func (session *Session) reconcileExpired(ctx context.Context) error {
 	}
 
 	now := coordinator.clock.Now()
+	complete := true
 	for index := range incidents {
 		incident := &incidents[index]
 		if incident.Network != coordinator.network.ChainID {
@@ -494,9 +584,28 @@ func (session *Session) reconcileExpired(ctx context.Context) error {
 			continue
 		}
 		coordinator.recordFailure(incident.Candidate, publicTransactionHash(*incident), err)
+		coordinator.recordIncidentFailure(incident, err)
+		complete = false
 		if fatalReconciliationError(err) {
 			return err
 		}
+	}
+	if err := session.refreshAmbiguousTelemetry(ctx); err != nil {
+		return err
+	}
+	if coordinator.alerts != nil {
+		var alertErr error
+		if complete {
+			_, alertErr = coordinator.alerts.Resolve(coordinator.network.ChainID, observability.AlertReconciliationStale)
+		} else {
+			_, alertErr = coordinator.alerts.Raise(coordinator.network.ChainID, observability.AlertReconciliationStale)
+		}
+		if alertErr != nil {
+			return newError("rescue.reconciliation_alert", domain.ErrorInternal, codeStateWrite, true, true, alertErr)
+		}
+	}
+	if complete && coordinator.metrics != nil {
+		_ = coordinator.metrics.RecordSuccessfulReconciliation(coordinator.network.ChainID, coordinator.clock.Now())
 	}
 	return nil
 }
@@ -582,9 +691,19 @@ func (session *Session) recoverPersisted(ctx context.Context) error {
 				return err
 			}
 			session.coordinator.recordFailure(incident.Candidate, publicTransactionHash(*incident), err)
+			session.coordinator.recordIncidentFailure(incident, err)
 		}
 	}
-	return session.refreshNonceBlock(ctx)
+	if err := session.refreshNonceBlock(ctx); err != nil {
+		return err
+	}
+	if err := session.refreshAmbiguousTelemetry(ctx); err != nil {
+		return err
+	}
+	if session.coordinator.metrics != nil {
+		_ = session.coordinator.metrics.RecordSuccessfulReconciliation(session.coordinator.network.ChainID, session.coordinator.clock.Now())
+	}
+	return nil
 }
 
 func incidentHasSignedTransaction(incident store.RescueIncident) bool {
@@ -679,6 +798,7 @@ func (coordinator *Coordinator) record(code observability.EventCode, level obser
 	coordinator.observer.Record(observability.Event{
 		Level:       level,
 		Code:        code,
+		ChainID:     coordinator.network.ChainID,
 		NetworkName: coordinator.network.Name,
 		Candidate:   candidate,
 		TxHash:      hash,
@@ -688,6 +808,147 @@ func (coordinator *Coordinator) record(code observability.EventCode, level obser
 
 func (coordinator *Coordinator) recordFailure(candidate domain.CandidateID, hash common.Hash, err error) {
 	coordinator.record(eventOperationFailed, observability.LevelError, candidate, hash, errorCode(err))
+	var classified *domain.ClassifiedError
+	if errors.As(err, &classified) {
+		if classified.Class == domain.ErrorRPCTransient || classified.Class == domain.ErrorRPCInvalidResponse {
+			if coordinator.metrics != nil {
+				_ = coordinator.metrics.RecordRPCError(coordinator.network.ChainID)
+			}
+			if coordinator.health != nil {
+				_ = coordinator.health.SetCondition(coordinator.network.ChainID, observability.ConditionRPCDegraded, true)
+			}
+			if coordinator.alerts != nil {
+				if _, alertErr := coordinator.alerts.Raise(coordinator.network.ChainID, observability.AlertRPCDegraded); alertErr != nil && coordinator.health != nil {
+					_ = coordinator.health.SetCondition(coordinator.network.ChainID, observability.ConditionRPCDegraded, true)
+				}
+			}
+		}
+		coordinator.recordSafe(observability.SafeEvent{
+			Level: observability.LevelError, Code: observability.LogStateTransition,
+			ChainID: coordinator.network.ChainID, Result: observability.ResultFailed,
+			Error: coordinator.safeError(classified.Class, classified.Code, classified.Retryable, classified.Ambiguous),
+		})
+	}
+}
+
+func (coordinator *Coordinator) recordCandidateFailure(ctx context.Context, candidate domain.CandidateID, failure error) {
+	incidents, err := coordinator.state.RescueIncidents(ctx, coordinator.network.ChainID)
+	if err != nil {
+		return
+	}
+	for index := range incidents {
+		if incidents[index].Candidate == candidate {
+			coordinator.recordIncidentFailure(&incidents[index], failure)
+		}
+	}
+}
+
+func (coordinator *Coordinator) recordIncidentFailure(incident *store.RescueIncident, failure error) {
+	if incident == nil {
+		return
+	}
+	state, result := incidentFailureState(incident.Status)
+	event := observability.SafeEvent{
+		Level: observability.LevelError, Code: observability.LogStateTransition,
+		ChainID: coordinator.network.ChainID, Incident: incident.ID, State: state, Result: result,
+	}
+	var classified *domain.ClassifiedError
+	if errors.As(failure, &classified) {
+		event.Error = coordinator.safeError(classified.Class, classified.Code, classified.Retryable, classified.Ambiguous)
+	}
+	if hash := publicTransactionHash(*incident); hash != (common.Hash{}) {
+		if publicHash, err := observability.NewPublicTxHashAfterBroadcast(hash); err == nil {
+			event.TxHash = publicHash
+		}
+	}
+	coordinator.recordSafe(event)
+}
+
+func incidentFailureState(status store.RescueStatus) (observability.DurableState, observability.Result) {
+	switch status {
+	case store.RescuePending:
+		return observability.DurablePending, observability.ResultFailed
+	case store.RescuePrepared:
+		return observability.DurableProcessing, observability.ResultFailed
+	case store.RescueSigned, store.RescueRetryable:
+		return observability.DurableRetryPending, observability.ResultFailed
+	case store.RescueBroadcast:
+		return observability.DurableBroadcast, observability.ResultBroadcast
+	case store.RescueAmbiguous:
+		return observability.DurableAmbiguous, observability.ResultAmbiguous
+	case store.RescueTrustedSuccess:
+		return observability.DurableConfirmed, observability.ResultConfirmed
+	case store.RescueTokenReported:
+		return observability.DurableConfirmed, observability.ResultTokenReported
+	case store.RescueLostRace:
+		return observability.DurableFailed, observability.ResultLostRace
+	default:
+		return observability.DurableFailed, observability.ResultFailed
+	}
+}
+
+func (coordinator *Coordinator) recordRPCHealthy() {
+	if coordinator.alerts != nil {
+		if _, err := coordinator.alerts.Resolve(coordinator.network.ChainID, observability.AlertRPCDegraded); err != nil {
+			if coordinator.health != nil {
+				_ = coordinator.health.SetCondition(coordinator.network.ChainID, observability.ConditionRPCDegraded, true)
+			}
+			return
+		}
+	}
+	if coordinator.health != nil {
+		_ = coordinator.health.SetCondition(coordinator.network.ChainID, observability.ConditionRPCDegraded, false)
+	}
+}
+
+func (coordinator *Coordinator) recordSafe(event observability.SafeEvent) {
+	if coordinator.structured != nil {
+		_ = coordinator.structured.Write(event)
+	}
+}
+
+func (coordinator *Coordinator) safeError(class domain.ErrorClass, code domain.ErrorCode, retryable, ambiguous bool) *observability.SafeError {
+	safeClass := observability.ErrorInternal
+	switch class {
+	case domain.ErrorConfiguration:
+		safeClass = observability.ErrorConfiguration
+	case domain.ErrorRPCTransient:
+		safeClass = observability.ErrorRPCTransient
+	case domain.ErrorRPCInvalidResponse:
+		safeClass = observability.ErrorRPCInvalidResponse
+	case domain.ErrorBudget:
+		safeClass = observability.ErrorBudget
+	case domain.ErrorSigning:
+		safeClass = observability.ErrorSigning
+	case domain.ErrorBroadcast:
+		safeClass = observability.ErrorBroadcast
+	case domain.ErrorPostcondition:
+		safeClass = observability.ErrorPostcondition
+	}
+	safeCode := observability.ErrorInternalFailure
+	switch code {
+	case codeBudgetExceeded, codeAdmissionLimited:
+		safeCode = observability.ErrorBudgetExhausted
+	case codeSponsorReserve:
+		safeCode = observability.ErrorSponsorReserve
+	case codeSigning, codeSignerMismatch:
+		safeCode = observability.ErrorSigningFailed
+	case codeBroadcast:
+		safeCode = observability.ErrorBroadcastFailed
+	case codePostcondition, codeLostRace, codeMinimumValue:
+		safeCode = observability.ErrorPostconditionFailed
+	case codePaidActionsStopped:
+		safeCode = observability.ErrorPaidActionsStopped
+	case codeFinalityRead, codeBalanceRead, codeNonceRead, codeFeeRead:
+		safeCode = observability.ErrorRPCUnavailable
+	case codeReceiptInvalid, codeBalanceDecode, codeFeeInvalid:
+		safeCode = observability.ErrorRPCResponseInvalid
+	}
+	result, err := observability.NewSafeError(safeClass, safeCode, retryable, ambiguous)
+	if err != nil {
+		return nil
+	}
+	return &result
 }
 
 func errorCode(err error) domain.ErrorCode {

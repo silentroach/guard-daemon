@@ -5,6 +5,8 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"math/big"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"guard-daemon/internal/budget"
 	"guard-daemon/internal/clock"
 	"guard-daemon/internal/config"
 	"guard-daemon/internal/contracts"
@@ -683,6 +686,22 @@ func testRuntime(t *testing.T, networks []domain.Network) config.Runtime {
 	sponsorKey := deterministicKey(t, 2)
 	configured := make([]config.Network, 0, len(networks))
 	for _, network := range networks {
+		limit := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+		economic := config.EconomicPolicy{
+			MaxTransactionCostWei: new(big.Int).Set(limit), HourlyBudgetWei: new(big.Int).Set(limit),
+			DailyBudgetWei: new(big.Int).Set(limit), CumulativeBudgetWei: new(big.Int).Set(limit),
+			SponsorMinimumBalanceWei: big.NewInt(1), MaxFeePerGasWei: big.NewInt(100_000_000_000),
+			MaxPriorityFeePerGasWei: big.NewInt(5_000_000_000), TokenGasLimit: 220_000, NativeGasLimit: 80_000,
+			TransactionOverheadWei: new(big.Int), NativeMinimumNetValueWei: big.NewInt(1),
+			UnknownTokenMaxTransactionCostWei: new(big.Int).Set(limit),
+		}
+		trusted := make([]common.Address, 0, len(network.Tokens))
+		for _, token := range network.Tokens {
+			trusted = append(trusted, token.Address)
+			economic.TokenValueRules = append(economic.TokenValueRules, config.TokenValueRule{
+				Address: token.Address, MinimumBalance: big.NewInt(1), MaxTransactionCostWei: new(big.Int).Set(limit),
+			})
+		}
 		configured = append(configured, config.Network{
 			Name:    network.Name,
 			ChainID: network.ChainID,
@@ -690,11 +709,14 @@ func testRuntime(t *testing.T, networks []domain.Network) config.Runtime {
 				{ID: network.Name + "-read-1", HTTPURL: network.HTTPURL, WSURL: network.WSURL, TrustDomain: network.Name + "-one", EndpointFingerprint: network.Name + "-one"},
 				{ID: network.Name + "-read-2", HTTPURL: network.HTTPURL + "-two", WSURL: network.WSURL + "-two", TrustDomain: network.Name + "-two", EndpointFingerprint: network.Name + "-two"},
 			},
-			BroadcastHTTP: network.HTTPURL + "-broadcast",
-			ManifestPath:  network.Name + "-manifest",
-			Tokens:        append([]domain.Token(nil), network.Tokens...),
+			BroadcastHTTP:  network.HTTPURL + "-broadcast",
+			ManifestPath:   network.Name + "-manifest",
+			Tokens:         append([]domain.Token(nil), network.Tokens...),
+			TrustedTokens:  trusted,
+			EconomicPolicy: economic,
 		})
 	}
+	globalLimit := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
 	return config.Runtime{
 		Mode:           config.ModeLive,
 		SourceAddress:  crypto.PubkeyToAddress(sourceKey.PublicKey),
@@ -702,8 +724,25 @@ func testRuntime(t *testing.T, networks []domain.Network) config.Runtime {
 		Destination:    testProcessAddress(3),
 		Networks:       configured,
 		ReadTimeout:    time.Second,
-		Watch:          config.WatchPolicy{StateDirectory: "test-state", LookbackBlocks: 64},
+		Watch:          config.WatchPolicy{StateDirectory: shortTestStateDirectory(t), LookbackBlocks: 64},
+		Policy: config.RuntimePolicy{
+			MaxTransactionCostWei: new(big.Int).Set(globalLimit), HourlyBudgetWei: new(big.Int).Set(globalLimit),
+			DailyBudgetWei: new(big.Int).Set(globalLimit), CumulativeBudgetWei: new(big.Int).Set(globalLimit),
+			SponsorMinimumBalanceWei: big.NewInt(1), RateLimitPerMinute: 1024, AbuseWindow: time.Hour,
+			MaxNewUnknownTokensPerWindow: 1024, MaxAttemptsPerTokenWindow: 1024, MaxAttemptsPerSourceEvent: 1024,
+			AlertCooldown: time.Minute,
+		},
 	}
+}
+
+func shortTestStateDirectory(t testing.TB) string {
+	t.Helper()
+	directory, err := os.MkdirTemp("/tmp", "guard-daemon-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	return directory
 }
 
 func completeTestDependencies(t *testing.T, dependencies daemonDependencies) daemonDependencies {
@@ -725,10 +764,10 @@ func completeTestDependencies(t *testing.T, dependencies daemonDependencies) dae
 	dependencies.dialSubmission = func(context.Context, string) (submissionClient, error) {
 		return &stubSubmissionClient{}, nil
 	}
-	return completeTestRuntimeDependencies(dependencies)
+	return completeTestRuntimeDependencies(dependencies, t)
 }
 
-func completeTestRuntimeDependencies(dependencies daemonDependencies) daemonDependencies {
+func completeTestRuntimeDependencies(dependencies daemonDependencies, tests ...*testing.T) daemonDependencies {
 	if dependencies.openStore == nil {
 		dependencies.openStore = func(_ config.Runtime, _ config.Network, network domain.Network) (store.HandoffStore, error) {
 			return newLegacyMemoryHandoff(network.ChainID, dependencies.serviceClock), nil
@@ -742,6 +781,33 @@ func completeTestRuntimeDependencies(dependencies daemonDependencies) daemonDepe
 	if dependencies.acquireFence == nil {
 		dependencies.acquireFence = func(store.LeaseKey) (store.ProcessFence, error) {
 			return &testProcessFence{}, nil
+		}
+	}
+	if dependencies.acquireBudgetFence == nil {
+		dependencies.acquireBudgetFence = func(common.Address) (store.ProcessFence, error) {
+			return &testProcessFence{}, nil
+		}
+	}
+	if dependencies.openBudget == nil && len(tests) != 0 {
+		test := tests[0]
+		dependencies.openBudget = func(runtimeConfig config.Runtime, prepared []preparedNetwork) (budget.Ledger, error) {
+			policy, err := runtimeBudgetPolicy(runtimeConfig)
+			if err != nil {
+				return nil, err
+			}
+			return budget.Open(filepath.Join(test.TempDir(), "budget.db"), budget.OpenOptions{
+				Policy: policy, PolicyFingerprint: budgetBindingFingerprint(runtimeConfig, prepared), Now: time.Now,
+			})
+		}
+	}
+	if dependencies.openAdmission == nil {
+		dependencies.openAdmission = func(_ config.Runtime, admissionConfig rescue.AdmissionConfig) (*rescue.AdmissionController, error) {
+			return rescue.NewAdmissionController(admissionConfig, dependencies.serviceClock)
+		}
+	}
+	if dependencies.alertStatePath == nil {
+		dependencies.alertStatePath = func(runtimeConfig config.Runtime) (string, error) {
+			return filepath.Join(runtimeConfig.Watch.StateDirectory, "alerts.json"), nil
 		}
 	}
 	return dependencies

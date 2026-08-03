@@ -3,10 +3,12 @@ package rescue
 import (
 	"bytes"
 	"context"
+	"errors"
 	"math/big"
 	"strings"
 	"time"
 
+	"guard-daemon/internal/budget"
 	"guard-daemon/internal/contracts"
 	"guard-daemon/internal/domain"
 	"guard-daemon/internal/observability"
@@ -20,8 +22,6 @@ import (
 )
 
 const (
-	tokenSweepGas          = uint64(220_000)
-	nativeSweepGas         = uint64(80_000)
 	receiptPollingInterval = 400 * time.Millisecond
 	rescueIncidentRetain   = 1024
 )
@@ -35,11 +35,28 @@ func (session *Session) handlePeriodic(ctx context.Context, candidate domain.Res
 		}
 	}
 
-	remember(session.handleAsset(ctx, candidate, domain.CandidateNative, common.Address{}, parent))
+	nativeErr := session.handleAsset(ctx, candidate, domain.CandidateNative, common.Address{}, parent)
+	session.recordAssetFailure(ctx, candidate, domain.CandidateNative, common.Address{}, nativeErr)
+	remember(nativeErr)
 	for _, token := range session.coordinator.network.Tokens {
-		remember(session.handleAsset(ctx, candidate, domain.CandidateToken, token.Address, parent))
+		assetErr := session.handleAsset(ctx, candidate, domain.CandidateToken, token.Address, parent)
+		session.recordAssetFailure(ctx, candidate, domain.CandidateToken, token.Address, assetErr)
+		remember(assetErr)
 	}
 	return firstError
+}
+
+func (session *Session) recordAssetFailure(ctx context.Context, candidate domain.RescueCandidate, kind domain.CandidateKind, asset common.Address, failure error) {
+	if failure == nil {
+		return
+	}
+	incident, found, err := session.coordinator.state.RescueIncident(ctx, domain.NewAssetIncidentID(candidate.ID, kind, asset))
+	if err == nil && found {
+		session.coordinator.recordFailure(candidate.ID, publicTransactionHash(incident), failure)
+		session.coordinator.recordIncidentFailure(&incident, failure)
+		return
+	}
+	session.coordinator.recordFailure(candidate.ID, common.Hash{}, failure)
 }
 
 func (session *Session) handleAsset(ctx context.Context, candidate domain.RescueCandidate, kind domain.CandidateKind, asset common.Address, parent domain.IncidentID) error {
@@ -120,7 +137,8 @@ func (session *Session) resumeIncident(ctx context.Context, incident *store.Resc
 			}
 			return nil
 		}
-		if incident.Kind == domain.CandidateToken && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens {
+		_, explicitlyAllowed := session.coordinator.allowedUntrustedTokens[incident.Asset]
+		if incident.Kind == domain.CandidateToken && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens && !explicitlyAllowed {
 			if err := session.setTerminal(ctx, incident, store.RescueFailed, codeUnknownToken); err != nil {
 				return err
 			}
@@ -178,6 +196,7 @@ func (session *Session) prepareAndSubmit(ctx context.Context, incident *store.Re
 	if err != nil {
 		return session.preparationFailure(ctx, incident, attempt, block, sourceBefore, destinationBefore, err)
 	}
+	session.rpcSucceeded = true
 	sourceBytes, err := amountBytes(sourceBefore)
 	if err != nil {
 		failure := newError("rescue.prestate_source", domain.ErrorRPCInvalidResponse, codeBalanceDecode, true, true, err)
@@ -199,7 +218,8 @@ func (session *Session) prepareAndSubmit(ctx context.Context, incident *store.Re
 		}
 		return nil
 	}
-	if incident.Kind == domain.CandidateToken && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens {
+	_, explicitlyAllowed := session.coordinator.allowedUntrustedTokens[incident.Asset]
+	if incident.Kind == domain.CandidateToken && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens && !explicitlyAllowed {
 		if err := session.updateIncident(ctx, incident); err != nil {
 			return err
 		}
@@ -222,6 +242,14 @@ func (session *Session) prepareAndSubmit(ctx context.Context, incident *store.Re
 	if err := session.updateIncident(ctx, incident); err != nil {
 		return err
 	}
+	if session.coordinator.metrics != nil {
+		_ = session.coordinator.metrics.RecordAttempt(session.coordinator.network.ChainID)
+	}
+	session.coordinator.recordSafe(observability.SafeEvent{
+		Level: observability.LevelInfo, Code: observability.LogAttemptStarted,
+		ChainID: session.coordinator.network.ChainID, Incident: incident.ID,
+		State: observability.DurableProcessing, Result: observability.ResultAccepted,
+	})
 	session.coordinator.record(eventOperationPrepared, observability.LevelInfo, incident.Candidate, common.Hash{}, "")
 	return session.signSubmitAndConfirm(ctx, incident)
 }
@@ -279,72 +307,172 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 		failure := newError("rescue.sponsor_nonce", domain.ErrorRPCTransient, codeNonceRead, true, false, nil)
 		return session.beforeSignedFailure(ctx, incident, failure)
 	}
-	fees, err := session.readFees(ctx)
+	data, asset, err := session.operationData(incident)
 	if err != nil {
 		return session.beforeSignedFailure(ctx, incident, err)
 	}
-	data, gas, multiplier, err := session.operationData(incident)
+	fees, err := session.readFees(ctx, asset)
 	if err != nil {
 		return session.beforeSignedFailure(ctx, incident, err)
 	}
-	fees = ApplyFeePolicy(fees, multiplier)
+	gas := fees.GasLimit
+
+	unknown := incident.Kind == domain.CandidateToken && !incident.Trusted
+	budgetBlock, err := session.finality.Finalized(ctx)
+	if err != nil || budgetBlock.Hash == (common.Hash{}) {
+		return session.beforeSignedFailure(ctx, incident, contextOrError(ctx, "rescue.budget_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err))
+	}
+	sponsorBalance, err := session.nativeBalanceAt(ctx, budgetBlock, coordinator.sponsor)
+	if err != nil {
+		return session.beforeSignedFailure(ctx, incident, err)
+	}
+	decision, admissionErr := coordinator.admission.Admit(AdmissionRequest{
+		Network:     coordinator.network.ChainID,
+		Incident:    incident.ID,
+		Attempt:     incident.Attempts,
+		Token:       incident.Asset,
+		Parent:      incident.Parent,
+		SourceEvent: incident.Candidate,
+		Unknown:     unknown,
+		ObservedAt:  session.blockTime(budgetBlock),
+	})
+	if admissionErr != nil || !decision.Allowed {
+		return session.admissionBlocked(incident, admissionErr)
+	}
+	reservationMaximum := coordinator.feePolicy.TransactionCostCap
+	if incident.Kind == domain.CandidateNative {
+		value, valueErr := EvaluateMinimumValue(coordinator.feePolicy, FeeAssetNative, new(big.Int).SetBytes(incident.SourceBefore[:]), coordinator.nativeMinimum, reservationMaximum)
+		if valueErr != nil || !value.Allowed {
+			return session.beforeSignedFailure(ctx, incident, newError("rescue.minimum_value", domain.ErrorPostcondition, codeMinimumValue, false, false, valueErr))
+		}
+	} else if unknown {
+		reservationMaximum = coordinator.feePolicy.UnknownTokenCostCap
+		value, valueErr := EvaluateMinimumValue(coordinator.feePolicy, FeeAssetUnknownToken, nil, uint256.Int{}, fees.MaximumCost)
+		if valueErr != nil || !value.Allowed || value.Trusted {
+			return session.beforeSignedFailure(ctx, incident, newError("rescue.minimum_value", domain.ErrorPostcondition, codeMinimumValue, false, false, valueErr))
+		}
+	} else {
+		valuePolicy, ok := coordinator.trustedTokenValues[incident.Asset]
+		reservationMaximum = valuePolicy.MaximumCost
+		sourceValue, sourceOverflow := uint256.FromBig(new(big.Int).SetBytes(incident.SourceBefore[:]))
+		if !ok || sourceOverflow || sourceValue.Cmp(&valuePolicy.MinimumBalance) < 0 || fees.MaximumCost.Cmp(&valuePolicy.MaximumCost) > 0 {
+			return session.beforeSignedFailure(ctx, incident, newError("rescue.minimum_value", domain.ErrorPostcondition, codeMinimumValue, false, false, nil))
+		}
+	}
+	if reservationMaximum.Lt(&fees.MaximumCost) {
+		return session.beforeSignedFailure(ctx, incident, newError("rescue.maximum_cost", domain.ErrorBudget, codeBudgetExceeded, true, false, nil))
+	}
+	sponsorBalanceU256, overflow := uint256.FromBig(sponsorBalance)
+	if overflow {
+		return session.beforeSignedFailure(ctx, incident, newError("rescue.sponsor_balance", domain.ErrorRPCInvalidResponse, codeBalanceDecode, true, true, nil))
+	}
+	maximumFee, feeOverflow := uint256.FromBig(fees.FeeCap)
+	if feeOverflow {
+		return session.beforeSignedFailure(ctx, incident, newError("rescue.fees", domain.ErrorRPCInvalidResponse, codeFeeInvalid, true, true, nil))
+	}
+	reservation, err := coordinator.budget.Reserve(ctx, budget.ReservationRequest{
+		Network:        coordinator.network.ChainID,
+		Sponsor:        coordinator.sponsor,
+		Candidate:      incident.Candidate,
+		Attempt:        budget.Attempt{Incident: incident.ID, Number: incident.Attempts},
+		Quote:          budget.CostQuote{GasLimit: gas, MaxFeePerGas: *maximumFee, MaximumCost: reservationMaximum},
+		SponsorBalance: *sponsorBalanceU256,
+		ObservedAt:     session.blockTime(budgetBlock),
+	})
+	if err != nil {
+		return session.budgetBlocked(incident, err)
+	}
+	if err := session.updateBudgetMetrics(ctx); err != nil {
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, err)
+	}
 	chainID := big.NewInt(int64(coordinator.network.ChainID))
 	chainU256, overflow := uint256.FromBig(chainID)
 	if overflow {
-		return session.beforeSignedFailure(ctx, incident, newError("rescue.chain_id", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil))
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, newError("rescue.chain_id", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil))
 	}
 	tip, tipOverflow := uint256.FromBig(fees.TipCap)
 	feeCap, capOverflow := uint256.FromBig(fees.FeeCap)
 	if tipOverflow || capOverflow {
-		return session.beforeSignedFailure(ctx, incident, newError("rescue.fees", domain.ErrorRPCInvalidResponse, codeFeeInvalid, true, true, nil))
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, newError("rescue.fees", domain.ErrorRPCInvalidResponse, codeFeeInvalid, true, true, nil))
 	}
 
 	// This is intentionally the final RPC read before authorization signing.
 	sourceNonce, err := session.checkedPendingNonce(ctx, coordinator.source)
 	if err != nil {
-		return session.beforeSignedFailure(ctx, incident, err)
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, err)
 	}
 	if sourceNonce != incident.SourceNonce {
-		return session.beforeSignedFailure(ctx, incident, newError("rescue.source_nonce", domain.ErrorRPCTransient, codeNonceRead, true, false, nil))
-	}
-	if err := coordinator.guardSigning(ctx); err != nil {
-		return session.beforeSignedFailure(ctx, incident, err)
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, newError("rescue.source_nonce", domain.ErrorRPCTransient, codeNonceRead, true, false, nil))
 	}
 	authorizationRequest := types.SetCodeAuthorization{ChainID: *chainU256, Address: coordinator.rescuer, Nonce: sourceNonce}
-	authorization, err := coordinator.authorizer.SignAuthorization(ctx, authorizationRequest)
+	var authorization types.SetCodeAuthorization
+	err = coordinator.gate.Do(func() error {
+		if err := coordinator.guardSigning(ctx); err != nil {
+			return err
+		}
+		if err := session.recheckSponsorReserve(ctx, reservation.ID); err != nil {
+			return err
+		}
+		var signErr error
+		authorization, signErr = coordinator.authorizer.SignAuthorization(ctx, authorizationRequest)
+		return signErr
+	})
 	if err != nil {
-		return session.beforeSignedFailure(ctx, incident, contextOrError(ctx, "rescue.sign_authorization", domain.ErrorSigning, codeSigning, true, false, err))
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, paidActionError(ctx, "rescue.sign_authorization", err))
 	}
 	authority, authorityErr := authorization.Authority()
 	if authorityErr != nil || authority != coordinator.source || authorization.ChainID != authorizationRequest.ChainID ||
 		authorization.Address != authorizationRequest.Address || authorization.Nonce != authorizationRequest.Nonce {
-		return session.beforeSignedFailure(ctx, incident, newError("rescue.sign_authorization", domain.ErrorSigning, codeSignerMismatch, true, true, nil))
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, newError("rescue.sign_authorization", domain.ErrorSigning, codeSignerMismatch, true, true, nil))
+	}
+	simulation := EIP7702SimulationRequest{
+		Sponsor: coordinator.sponsor, Source: coordinator.source, GasLimit: gas,
+		GasTipCap: fees.TipCap, GasFeeCap: fees.FeeCap, Data: data,
+		AuthorizationList: []types.SetCodeAuthorization{authorization},
+	}
+	simulationBlock, err := session.finality.Finalized(ctx)
+	if err != nil || simulationBlock.Hash == (common.Hash{}) {
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, contextOrError(ctx, "rescue.simulation_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err))
+	}
+	if err := SimulateEIP7702At(ctx, session.finality, simulationBlock, simulation); err != nil {
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, contextOrError(ctx, "rescue.simulation_quorum", domain.ErrorRPCTransient, codeSimulation, true, false, err))
+	}
+	if _, err := EstimateEIP7702Gas(ctx, session.reader, simulation); err != nil {
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, contextOrError(ctx, "rescue.simulation", domain.ErrorRPCTransient, codeSimulation, true, false, err))
 	}
 
 	transaction := types.NewTx(&types.SetCodeTx{
 		ChainID: chainU256, Nonce: incident.SponsorNonce, To: coordinator.source, Gas: gas,
 		GasTipCap: tip, GasFeeCap: feeCap, Data: data, AuthList: []types.SetCodeAuthorization{authorization},
 	})
-	if err := coordinator.guardSigning(ctx); err != nil {
-		return session.beforeSignedFailure(ctx, incident, err)
-	}
-	signed, err := coordinator.transactioner.SignTransaction(ctx, transaction, chainID)
+	var signed *types.Transaction
+	err = coordinator.gate.Do(func() error {
+		if err := coordinator.guardSigning(ctx); err != nil {
+			return err
+		}
+		if err := session.recheckSponsorReserve(ctx, reservation.ID); err != nil {
+			return err
+		}
+		var signErr error
+		signed, signErr = coordinator.transactioner.SignTransaction(ctx, transaction, chainID)
+		return signErr
+	})
 	if err != nil {
-		return session.beforeSignedFailure(ctx, incident, contextOrError(ctx, "rescue.sign_transaction", domain.ErrorSigning, codeSigning, true, false, err))
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, paidActionError(ctx, "rescue.sign_transaction", err))
 	}
 	if !validSignedOperation(signed, transaction) {
-		return session.beforeSignedFailure(ctx, incident, newError("rescue.sign_transaction", domain.ErrorSigning, codeSigning, true, true, nil))
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, newError("rescue.sign_transaction", domain.ErrorSigning, codeSigning, true, true, nil))
 	}
 	sender, senderErr := types.Sender(types.LatestSignerForChainID(chainID), signed)
 	if senderErr != nil || sender != coordinator.sponsor {
-		return session.beforeSignedFailure(ctx, incident, newError("rescue.sign_transaction", domain.ErrorSigning, codeSignerMismatch, true, true, nil))
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, newError("rescue.sign_transaction", domain.ErrorSigning, codeSignerMismatch, true, true, nil))
 	}
 	encoded, err := signed.MarshalBinary()
 	if err != nil {
-		return session.beforeSignedFailure(ctx, incident, newError("rescue.sign_transaction", domain.ErrorSigning, codeSigning, true, true, err))
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, newError("rescue.sign_transaction", domain.ErrorSigning, codeSigning, true, true, err))
 	}
 	if err := coordinator.guardSigning(ctx); err != nil {
-		return session.beforeSignedFailure(ctx, incident, err)
+		return session.releaseBeforeSigned(ctx, incident, reservation.ID, err)
 	}
 
 	now := coordinator.clock.Now()
@@ -355,7 +483,7 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 	incident.RetryAt = time.Time{}
 	incident.LastCode = ""
 	if err := session.updateIncidentAt(ctx, incident, now); err != nil {
-		return err
+		return session.releaseReservation(ctx, reservation.ID, err)
 	}
 	coordinator.nonceBlocked = true
 	floor := incident.SponsorNonce + 1
@@ -366,19 +494,22 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 	return session.broadcastAndWait(ctx, incident, signed)
 }
 
-func (session *Session) operationData(incident *store.RescueIncident) ([]byte, uint64, int64, error) {
+func (session *Session) operationData(incident *store.RescueIncident) ([]byte, FeeAsset, error) {
 	if incident.Kind == domain.CandidateToken {
 		data, err := session.coordinator.rescuerCodec.PackSweepAll([]common.Address{incident.Asset})
 		if err != nil || len(data) == 0 {
-			return nil, 0, 0, newError("rescue.operation_data", domain.ErrorInternal, codeEncoding, false, false, err)
+			return nil, 0, newError("rescue.operation_data", domain.ErrorInternal, codeEncoding, false, false, err)
 		}
-		return data, tokenSweepGas, tokenFeeMultiplier, nil
+		if incident.Trusted {
+			return data, FeeAssetToken, nil
+		}
+		return data, FeeAssetUnknownToken, nil
 	}
 	data, err := session.coordinator.rescuerCodec.PackSweepEth()
 	if err != nil || len(data) == 0 {
-		return nil, 0, 0, newError("rescue.operation_data", domain.ErrorInternal, codeEncoding, false, false, err)
+		return nil, 0, newError("rescue.operation_data", domain.ErrorInternal, codeEncoding, false, false, err)
 	}
-	return data, nativeSweepGas, sponsorFeeMultiplier, nil
+	return data, FeeAssetNative, nil
 }
 
 func validSignedOperation(signed, unsigned *types.Transaction) bool {
@@ -407,8 +538,9 @@ func (session *Session) validatePersistedTransaction(incident *store.RescueIncid
 		*transaction.To() != session.coordinator.source || transaction.Value().Sign() != 0 {
 		return nil, newError("rescue.signed_payload", domain.ErrorInternal, codeSignedPayloadInvalid, false, true, err)
 	}
-	data, gas, _, err := session.operationData(incident)
-	if err != nil || !bytes.Equal(transaction.Data(), data) || transaction.Gas() != gas ||
+	data, asset, err := session.operationData(incident)
+	gas, gasOK := session.coordinator.feePolicy.gasLimit(asset)
+	if err != nil || !gasOK || !bytes.Equal(transaction.Data(), data) || transaction.Gas() != gas ||
 		transaction.GasTipCap().Sign() <= 0 || transaction.GasFeeCap().Sign() <= 0 ||
 		transaction.ChainId().Cmp(big.NewInt(int64(session.coordinator.network.ChainID))) != 0 || len(transaction.AccessList()) != 0 {
 		return nil, newError("rescue.signed_payload", domain.ErrorInternal, codeSignedPayloadInvalid, false, true, err)
@@ -466,11 +598,102 @@ func (session *Session) beforeSignedFailure(ctx context.Context, incident *store
 	return failure
 }
 
-func (session *Session) broadcastAndWait(ctx context.Context, incident *store.RescueIncident, transaction *types.Transaction) error {
-	if err := session.guardPersistedSend(ctx, incident); err != nil {
+func (session *Session) releaseBeforeSigned(ctx context.Context, incident *store.RescueIncident, id budget.ReservationID, failure error) error {
+	failure = session.releaseReservation(ctx, id, failure)
+	if errorCode(failure) == codePaidActionsStopped {
+		return failure
+	}
+	return session.beforeSignedFailure(ctx, incident, failure)
+}
+
+func (session *Session) releaseReservation(ctx context.Context, id budget.ReservationID, original error) error {
+	if _, err := session.coordinator.budget.ReleaseProvenUnused(ctx, id); err != nil {
+		return session.budgetError("rescue.budget_release", errors.Join(original, err))
+	}
+	if err := session.updateBudgetMetrics(ctx); err != nil {
 		return err
 	}
-	sendErr := session.broadcaster.SendTransaction(ctx, transaction)
+	return original
+}
+
+func (session *Session) admissionBlocked(incident *store.RescueIncident, cause error) error {
+	return newError("rescue.admission", domain.ErrorBudget, codeAdmissionLimited, true, false, cause)
+}
+
+func (session *Session) budgetBlocked(incident *store.RescueIncident, cause error) error {
+	coordinator := session.coordinator
+	code := codeBudgetExceeded
+	alertCode := observability.AlertBudgetBlocked
+	if errors.Is(cause, budget.ErrSponsorReserve) {
+		code = codeSponsorReserve
+	}
+	if coordinator.health != nil {
+		_ = coordinator.health.SetCondition(coordinator.network.ChainID, observability.ConditionBudgetBlocked, true)
+	}
+	if coordinator.alerts != nil {
+		if _, alertErr := coordinator.alerts.Raise(coordinator.network.ChainID, alertCode); alertErr != nil {
+			cause = errors.Join(cause, alertErr)
+		}
+	}
+	coordinator.recordSafe(observability.SafeEvent{
+		Level: observability.LevelWarning, Code: observability.LogBudgetBlocked,
+		ChainID: coordinator.network.ChainID, Incident: incident.ID,
+		State: observability.DurableProcessing, Result: observability.ResultSkipped,
+		Error: coordinator.safeError(domain.ErrorBudget, code, true, false),
+	})
+	return newError("rescue.budget", domain.ErrorBudget, code, true, false, cause)
+}
+
+func (session *Session) budgetError(operation string, cause error) error {
+	return newError(operation, domain.ErrorBudget, codeBudgetExceeded, true, true, cause)
+}
+
+func (session *Session) updateBudgetMetrics(ctx context.Context) error {
+	coordinator := session.coordinator
+	snapshot, err := coordinator.budget.Snapshot(ctx)
+	if err != nil {
+		return session.budgetError("rescue.budget_snapshot", err)
+	}
+	network, ok := snapshot.Networks[coordinator.network.ChainID]
+	if !ok {
+		return session.budgetError("rescue.budget_snapshot", budget.ErrCorrupt)
+	}
+	if coordinator.metrics != nil {
+		coordinator.metrics.SetGlobalBudget(snapshot.Global.Spent.Cumulative, snapshot.Global.Reserved.Cumulative, snapshot.Global.Remaining.Cumulative)
+		if err := coordinator.metrics.SetBudget(coordinator.network.ChainID, network.Spent.Cumulative, network.Reserved.Cumulative, network.Remaining.Cumulative); err != nil {
+			return newError("rescue.metrics", domain.ErrorInternal, codeStateWrite, true, true, err)
+		}
+	}
+	blocked := snapshot.Global.Blocked() || network.Blocked()
+	if coordinator.health != nil {
+		_ = coordinator.health.SetCondition(coordinator.network.ChainID, observability.ConditionBudgetBlocked, blocked)
+	}
+	if coordinator.alerts != nil {
+		var alertErr error
+		if blocked {
+			_, alertErr = coordinator.alerts.Raise(coordinator.network.ChainID, observability.AlertBudgetBlocked)
+		} else {
+			_, alertErr = coordinator.alerts.Resolve(coordinator.network.ChainID, observability.AlertBudgetBlocked)
+		}
+		if alertErr != nil {
+			return newError("rescue.budget_alert", domain.ErrorInternal, codeStateWrite, true, true, alertErr)
+		}
+	}
+	return nil
+}
+
+func paidActionError(ctx context.Context, operation string, err error) error {
+	if errors.Is(err, observability.ErrPaidActionsStopped) {
+		return newError(operation, domain.ErrorSigning, codePaidActionsStopped, true, false, err)
+	}
+	return contextOrError(ctx, operation, domain.ErrorSigning, codeSigning, true, false, err)
+}
+
+func (session *Session) broadcastAndWait(ctx context.Context, incident *store.RescueIncident, transaction *types.Transaction) error {
+	sent, sendErr := session.sendPersisted(ctx, incident, transaction)
+	if !sent {
+		return sendErr
+	}
 	var sendFailure error
 	if sendErr == nil {
 		incident.Status = store.RescueBroadcast
@@ -482,6 +705,7 @@ func (session *Session) broadcastAndWait(ctx context.Context, incident *store.Re
 		if err := session.refreshNonceBlock(ctx); err != nil {
 			return err
 		}
+		session.recordBroadcast(incident)
 		session.coordinator.record(eventBroadcastAccepted, observability.LevelInfo, incident.Candidate, incident.TxHash, "")
 	} else {
 		sendFailure = contextOrError(ctx, "rescue.broadcast", domain.ErrorBroadcast, codeBroadcast, true, true, sendErr)
@@ -538,10 +762,15 @@ func (session *Session) reconcileOnce(ctx context.Context, incident *store.Rescu
 	}
 
 	if incident.Status == store.RescueSigned || incident.Status == store.RescueAmbiguous {
-		if err := session.guardPersistedSend(ctx, incident); err != nil {
-			return err
+		sent, sendErr := session.sendPersisted(ctx, incident, transaction)
+		if !sent {
+			if incident.Status == store.RescueAmbiguous {
+				if err := session.persistAmbiguous(ctx, incident, sendErr); err != nil {
+					return err
+				}
+			}
+			return sendErr
 		}
-		sendErr := session.broadcaster.SendTransaction(ctx, transaction)
 		var sendFailure error
 		if sendErr == nil {
 			incident.Status = store.RescueBroadcast
@@ -553,6 +782,7 @@ func (session *Session) reconcileOnce(ctx context.Context, incident *store.Rescu
 			if err := session.refreshNonceBlock(ctx); err != nil {
 				return err
 			}
+			session.recordBroadcast(incident)
 			session.coordinator.record(eventBroadcastAccepted, observability.LevelInfo, incident.Candidate, incident.TxHash, "")
 		} else {
 			sendFailure = contextOrError(ctx, "rescue.rebroadcast", domain.ErrorBroadcast, codeBroadcast, true, true, sendErr)
@@ -598,7 +828,14 @@ func (session *Session) reconcileExpiredIncident(ctx context.Context, incident *
 	if ctx.Err() != nil {
 		return contextOrError(ctx, "rescue.receipt", domain.ErrorRPCTransient, codeContextCanceled, true, true, err)
 	}
-	if err != nil || receipt == nil {
+	if err != nil {
+		failure := contextOrError(ctx, "rescue.expired_receipt", domain.ErrorRPCTransient, codeReceiptTimeout, true, true, err)
+		if persistErr := session.persistExpiredAmbiguous(ctx, incident); persistErr != nil {
+			return persistErr
+		}
+		return failure
+	}
+	if receipt == nil {
 		if err := session.persistExpiredAmbiguous(ctx, incident); err != nil {
 			return err
 		}
@@ -632,12 +869,111 @@ func (session *Session) guardPersistedSend(ctx context.Context, incident *store.
 	return nil
 }
 
+func (session *Session) sendPersisted(ctx context.Context, incident *store.RescueIncident, transaction *types.Transaction) (bool, error) {
+	reservation, err := session.ensureReservation(ctx, incident, transaction)
+	if err != nil {
+		return false, err
+	}
+	var sendErr error
+	err = session.coordinator.gate.Do(func() error {
+		if err := session.coordinator.guardSigning(ctx); err != nil {
+			return err
+		}
+		if err := session.recheckSponsorReserve(ctx, reservation.ID); err != nil {
+			return err
+		}
+		if _, err := session.coordinator.budget.MarkExposed(ctx, reservation.ID, incident.TxHash); err != nil {
+			return session.budgetError("rescue.budget_expose", err)
+		}
+		if err := session.updateBudgetMetrics(ctx); err != nil {
+			return err
+		}
+		sendErr = session.broadcaster.SendTransaction(ctx, transaction)
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, observability.ErrPaidActionsStopped) {
+			return false, newError("rescue.broadcast_gate", domain.ErrorSigning, codePaidActionsStopped, true, false, err)
+		}
+		return false, err
+	}
+	return true, sendErr
+}
+
+func (session *Session) recheckSponsorReserve(ctx context.Context, reservationID budget.ReservationID) error {
+	block, err := session.finality.Finalized(ctx)
+	if err != nil || block.Hash == (common.Hash{}) {
+		return contextOrError(ctx, "rescue.sponsor_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err)
+	}
+	balance, err := session.nativeBalanceAt(ctx, block, session.coordinator.sponsor)
+	if err != nil {
+		return err
+	}
+	converted, overflow := uint256.FromBig(balance)
+	if overflow {
+		return newError("rescue.sponsor_balance", domain.ErrorRPCInvalidResponse, codeBalanceDecode, true, true, nil)
+	}
+	if err := session.coordinator.budget.CheckSponsorCapacity(ctx, reservationID, *converted); err != nil {
+		if errors.Is(err, budget.ErrSponsorReserve) {
+			return newError("rescue.sponsor_reserve", domain.ErrorBudget, codeSponsorReserve, true, false, err)
+		}
+		return session.budgetError("rescue.sponsor_capacity", err)
+	}
+	return nil
+}
+
+func (session *Session) ensureReservation(ctx context.Context, incident *store.RescueIncident, transaction *types.Transaction) (budget.Reservation, error) {
+	attempt := budget.Attempt{Incident: incident.ID, Number: incident.Attempts}
+	reservation, found, err := session.coordinator.budget.ReservationByAttempt(ctx, attempt)
+	if err != nil {
+		return budget.Reservation{}, session.budgetError("rescue.budget_lookup", err)
+	}
+	if found {
+		return reservation, nil
+	}
+	block, err := session.finality.Finalized(ctx)
+	if err != nil || block.Hash == (common.Hash{}) {
+		return budget.Reservation{}, contextOrError(ctx, "rescue.budget_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err)
+	}
+	balance, err := session.nativeBalanceAt(ctx, block, session.coordinator.sponsor)
+	if err != nil {
+		return budget.Reservation{}, err
+	}
+	balanceU256, overflow := uint256.FromBig(balance)
+	feeU256, feeOverflow := uint256.FromBig(transaction.GasFeeCap())
+	if overflow || feeOverflow {
+		return budget.Reservation{}, newError("rescue.budget_restore", domain.ErrorRPCInvalidResponse, codeBalanceDecode, true, true, nil)
+	}
+	maximum := session.coordinator.feePolicy.TransactionCostCap
+	if incident.Kind == domain.CandidateToken && !incident.Trusted {
+		maximum = session.coordinator.feePolicy.UnknownTokenCostCap
+	} else if incident.Kind == domain.CandidateToken {
+		value, ok := session.coordinator.trustedTokenValues[incident.Asset]
+		if !ok {
+			return budget.Reservation{}, newError("rescue.budget_restore", domain.ErrorConfiguration, codeMinimumValue, false, true, nil)
+		}
+		maximum = value.MaximumCost
+	}
+	reservation, err = session.coordinator.budget.Reserve(ctx, budget.ReservationRequest{
+		Network: session.coordinator.network.ChainID, Sponsor: session.coordinator.sponsor,
+		Candidate: incident.Candidate, Attempt: attempt,
+		Quote:          budget.CostQuote{GasLimit: transaction.Gas(), MaxFeePerGas: *feeU256, MaximumCost: maximum},
+		SponsorBalance: *balanceU256,
+		ObservedAt:     session.blockTime(block),
+	})
+	if err != nil {
+		return budget.Reservation{}, session.budgetError("rescue.budget_restore", err)
+	}
+	return reservation, session.updateBudgetMetrics(ctx)
+}
+
 func (session *Session) persistAmbiguous(ctx context.Context, incident *store.RescueIncident, failure error) error {
 	return session.persistAmbiguousCode(ctx, incident, errorCode(failure))
 }
 
 func (session *Session) persistAmbiguousCode(ctx context.Context, incident *store.RescueIncident, code domain.ErrorCode) error {
 	now := session.coordinator.clock.Now()
+	wasAmbiguous := incident.Status == store.RescueAmbiguous
 	if !now.Before(incident.ReconcileUntil) {
 		return session.persistExpiredAmbiguous(ctx, incident)
 	}
@@ -651,7 +987,13 @@ func (session *Session) persistAmbiguousCode(ctx context.Context, incident *stor
 		retryAt = incident.ReconcileUntil
 	}
 	incident.RetryAt = retryAt
-	return session.updateIncidentAt(ctx, incident, now)
+	if err := session.updateIncidentAt(ctx, incident, now); err != nil {
+		return err
+	}
+	if !wasAmbiguous && session.coordinator.metrics != nil {
+		_ = session.coordinator.metrics.OpenAmbiguous(session.coordinator.network.ChainID)
+	}
+	return session.refreshAmbiguousTelemetry(ctx)
 }
 
 func nonceBlockingCode(code domain.ErrorCode) bool {
@@ -697,6 +1039,77 @@ func (session *Session) refreshNonceBlock(ctx context.Context) error {
 	return nil
 }
 
+func (session *Session) refreshAmbiguousTelemetry(ctx context.Context) error {
+	coordinator := session.coordinator
+	incidents, err := coordinator.state.RescueIncidents(ctx, coordinator.network.ChainID)
+	if err != nil {
+		return newError("rescue.ambiguity_state", domain.ErrorInternal, codeStateRead, true, true, err)
+	}
+	var active uint64
+	for _, incident := range incidents {
+		if incident.Status == store.RescueAmbiguous {
+			active++
+		}
+	}
+	if coordinator.metrics != nil {
+		if err := coordinator.metrics.SetActiveAmbiguous(coordinator.network.ChainID, active); err != nil {
+			return newError("rescue.ambiguity_metrics", domain.ErrorInternal, codeStateWrite, true, true, err)
+		}
+	}
+	if coordinator.health != nil {
+		_ = coordinator.health.SetCondition(coordinator.network.ChainID, observability.ConditionAmbiguousRescue, active > 0)
+	}
+	if coordinator.alerts != nil {
+		var alertErr error
+		if active > 0 {
+			_, alertErr = coordinator.alerts.Raise(coordinator.network.ChainID, observability.AlertAmbiguousRescue)
+		} else {
+			_, alertErr = coordinator.alerts.Resolve(coordinator.network.ChainID, observability.AlertAmbiguousRescue)
+		}
+		if alertErr != nil {
+			return newError("rescue.ambiguity_alert", domain.ErrorInternal, codeStateWrite, true, true, alertErr)
+		}
+	}
+	return nil
+}
+
+func (session *Session) recordBroadcast(incident *store.RescueIncident) {
+	publicHash, err := observability.NewPublicTxHashAfterBroadcast(incident.TxHash)
+	if err != nil {
+		return
+	}
+	session.coordinator.recordSafe(observability.SafeEvent{
+		Level: observability.LevelInfo, Code: observability.LogBroadcastAccepted,
+		ChainID: session.coordinator.network.ChainID, Incident: incident.ID,
+		State: observability.DurableBroadcast, Result: observability.ResultBroadcast,
+		TxHash: publicHash,
+	})
+}
+
+func (session *Session) recordTerminal(incident *store.RescueIncident, status store.RescueStatus) {
+	result := observability.ResultFailed
+	state := observability.DurableFailed
+	switch status {
+	case store.RescueTrustedSuccess:
+		result, state = observability.ResultConfirmed, observability.DurableConfirmed
+	case store.RescueTokenReported:
+		result, state = observability.ResultTokenReported, observability.DurableConfirmed
+	case store.RescueLostRace:
+		result = observability.ResultLostRace
+	}
+	event := observability.SafeEvent{
+		Level: observability.LevelInfo, Code: observability.LogStateTransition,
+		ChainID: session.coordinator.network.ChainID, Incident: incident.ID,
+		State: state, Result: result,
+	}
+	if incident.TxHash != (common.Hash{}) {
+		if hash, err := observability.NewPublicTxHashAfterBroadcast(incident.TxHash); err == nil {
+			event.TxHash = hash
+		}
+	}
+	session.coordinator.recordSafe(event)
+}
+
 func (session *Session) waitReceipt(ctx context.Context, hash common.Hash, reconcileUntil time.Time) (*types.Receipt, error) {
 	now := session.coordinator.clock.Now()
 	deadline := now.Add(session.coordinator.receiptTimeout)
@@ -730,7 +1143,8 @@ func (session *Session) waitReceipt(ctx context.Context, hash common.Hash, recon
 
 func (session *Session) applyReceipt(ctx context.Context, incident *store.RescueIncident, receipt *types.Receipt) error {
 	if receipt == nil || receipt.TxHash != incident.TxHash || receipt.BlockHash == (common.Hash{}) || receipt.BlockNumber == nil ||
-		!receipt.BlockNumber.IsUint64() || receipt.Status > types.ReceiptStatusSuccessful {
+		!receipt.BlockNumber.IsUint64() || receipt.Status > types.ReceiptStatusSuccessful || receipt.GasUsed == 0 ||
+		receipt.EffectiveGasPrice == nil || receipt.EffectiveGasPrice.Sign() <= 0 || receipt.EffectiveGasPrice.BitLen() > 256 {
 		failure := newError("rescue.receipt", domain.ErrorRPCInvalidResponse, codeReceiptInvalid, true, true, nil)
 		if err := session.persistAmbiguous(ctx, incident, failure); err != nil {
 			return err
@@ -744,13 +1158,17 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 		}
 		return err
 	}
-	if receipt.Status == types.ReceiptStatusFailed {
-		if err := session.canonicalProofEnd(ctx, incident, receipt, postBlock); err != nil {
-			if persistErr := session.persistAmbiguous(ctx, incident, err); persistErr != nil {
-				return persistErr
-			}
-			return err
+	if err := session.canonicalProofEnd(ctx, incident, receipt, postBlock); err != nil {
+		if persistErr := session.persistAmbiguous(ctx, incident, err); persistErr != nil {
+			return persistErr
 		}
+		return err
+	}
+	session.rpcSucceeded = true
+	if err := session.commitReceiptCost(ctx, incident, receipt, postBlock); err != nil {
+		return session.postconditionAmbiguous(ctx, incident, err)
+	}
+	if receipt.Status == types.ReceiptStatusFailed {
 		if err := session.setTerminal(ctx, incident, store.RescueFailed, codeReverted); err != nil {
 			return err
 		}
@@ -759,10 +1177,21 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 
 	code, err := session.finality.CodeAt(ctx, postBlock, session.coordinator.source)
 	if err != nil {
+		if session.coordinator.metrics != nil {
+			_ = session.coordinator.metrics.SetDelegationState(session.coordinator.network.ChainID, observability.DelegationUnknown)
+		}
 		return session.postconditionAmbiguous(ctx, incident, contextOrError(ctx, "rescue.post_code", domain.ErrorRPCTransient, codeCodeRead, true, true, err))
 	}
 	target, parseErr := contracts.ParseDelegation(code)
 	if parseErr != nil || target != session.coordinator.rescuer {
+		if session.coordinator.metrics != nil {
+			_ = session.coordinator.metrics.SetDelegationState(session.coordinator.network.ChainID, observability.DelegationUnexpected)
+		}
+		if session.coordinator.alerts != nil {
+			if _, alertErr := session.coordinator.alerts.Raise(session.coordinator.network.ChainID, observability.AlertDelegationUnexpected); alertErr != nil {
+				return session.postconditionAmbiguous(ctx, incident, newError("rescue.delegation_alert", domain.ErrorInternal, codeStateWrite, true, true, alertErr))
+			}
+		}
 		if err := session.canonicalProofEnd(ctx, incident, receipt, postBlock); err != nil {
 			return session.postconditionAmbiguous(ctx, incident, err)
 		}
@@ -770,6 +1199,14 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 			return err
 		}
 		return newError("rescue.post_code", domain.ErrorPostcondition, codeLostRace, false, false, nil)
+	}
+	if session.coordinator.metrics != nil {
+		_ = session.coordinator.metrics.SetDelegationState(session.coordinator.network.ChainID, observability.DelegationExpected)
+	}
+	if session.coordinator.alerts != nil {
+		if _, alertErr := session.coordinator.alerts.Resolve(session.coordinator.network.ChainID, observability.AlertDelegationUnexpected); alertErr != nil {
+			return session.postconditionAmbiguous(ctx, incident, newError("rescue.delegation_alert", domain.ErrorInternal, codeStateWrite, true, true, alertErr))
+		}
 	}
 
 	var sourceAfter, destinationAfter *big.Int
@@ -790,7 +1227,6 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 	if err := session.canonicalProofEnd(ctx, incident, receipt, postBlock); err != nil {
 		return session.postconditionAmbiguous(ctx, incident, err)
 	}
-
 	sourceBefore := new(big.Int).SetBytes(incident.SourceBefore[:])
 	destinationBefore := new(big.Int).SetBytes(incident.DestinationBefore[:])
 	deltaValid := destinationAfter.Cmp(destinationBefore) >= 0 && new(big.Int).Sub(destinationAfter, destinationBefore).Cmp(sourceBefore) >= 0
@@ -809,6 +1245,54 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 	}
 	session.coordinator.record(eventOperationConfirmed, observability.LevelInfo, incident.Candidate, incident.TxHash, "")
 	return nil
+}
+
+func (session *Session) commitReceiptCost(ctx context.Context, incident *store.RescueIncident, receipt *types.Receipt, postBlock rpc.BlockRef) error {
+	if session.coordinator.feePolicy.UnboundedAdditionalFees {
+		return newError("rescue.budget_actual", domain.ErrorConfiguration, codeInvalidConfig, false, true, nil)
+	}
+	transaction, err := session.validatePersistedTransaction(incident)
+	if err != nil {
+		return err
+	}
+	if receipt.GasUsed > transaction.Gas() {
+		return newError("rescue.budget_actual", domain.ErrorRPCInvalidResponse, codeReceiptInvalid, true, true, nil)
+	}
+	fee, overflow := uint256.FromBig(receipt.EffectiveGasPrice)
+	if overflow {
+		return newError("rescue.budget_actual", domain.ErrorRPCInvalidResponse, codeReceiptInvalid, true, true, nil)
+	}
+	executionCost, err := maximumFeeCost(receipt.GasUsed, fee, &uint256.Int{})
+	if err != nil {
+		return session.budgetError("rescue.budget_actual", err)
+	}
+	reservation, err := session.ensureReservation(ctx, incident, transaction)
+	if err != nil {
+		return err
+	}
+	if reservation.State == budget.ReservationHeld {
+		reservation, err = session.coordinator.budget.MarkExposed(ctx, reservation.ID, incident.TxHash)
+		if err != nil {
+			return session.budgetError("rescue.budget_receipt_expose", err)
+		}
+	}
+	_, err = session.coordinator.budget.CommitFinalized(ctx, budget.FinalizedCharge{
+		ReservationID: reservation.ID,
+		TxHash:        incident.TxHash,
+		Actual:        executionCost,
+		ObservedAt:    session.blockTime(postBlock),
+	})
+	if err != nil {
+		return session.budgetError("rescue.budget_commit", err)
+	}
+	return session.updateBudgetMetrics(ctx)
+}
+
+func (session *Session) blockTime(block rpc.BlockRef) time.Time {
+	if block.Timestamp == 0 {
+		return session.coordinator.clock.Now().UTC()
+	}
+	return time.Unix(int64(block.Timestamp), 0).UTC()
 }
 
 func (session *Session) canonicalProofStart(ctx context.Context, incident *store.RescueIncident, receipt *types.Receipt) (rpc.BlockRef, error) {
@@ -855,6 +1339,7 @@ func (session *Session) postconditionAmbiguous(ctx context.Context, incident *st
 }
 
 func (session *Session) setTerminal(ctx context.Context, incident *store.RescueIncident, status store.RescueStatus, code domain.ErrorCode) error {
+	previous := incident.Status
 	incident.Status = status
 	incident.SignedTransaction = nil
 	incident.RetryAt = time.Time{}
@@ -866,6 +1351,17 @@ func (session *Session) setTerminal(ctx context.Context, incident *store.RescueI
 	if err := session.refreshNonceBlock(ctx); err != nil {
 		return err
 	}
+	if previous == store.RescueAmbiguous {
+		if err := session.refreshAmbiguousTelemetry(ctx); err != nil {
+			return err
+		}
+	}
+	if status == store.RescueLostRace {
+		if session.coordinator.metrics != nil {
+			_ = session.coordinator.metrics.RecordLostRace(session.coordinator.network.ChainID)
+		}
+	}
+	session.recordTerminal(incident, status)
 	return session.pruneTerminal(ctx)
 }
 
@@ -931,7 +1427,8 @@ func amountBytes(amount *big.Int) ([32]byte, error) {
 }
 
 func publicTransactionHash(incident store.RescueIncident) common.Hash {
-	if incident.Status == store.RescueBroadcast || incident.Status == store.RescueTrustedSuccess || incident.Status == store.RescueTokenReported || incident.Status == store.RescueLostRace {
+	if incident.Status == store.RescueBroadcast || incident.Status == store.RescueTrustedSuccess || incident.Status == store.RescueTokenReported || incident.Status == store.RescueLostRace ||
+		(incident.Status == store.RescueAmbiguous && incident.LastCode != codeBroadcast) {
 		return incident.TxHash
 	}
 	return common.Hash{}
@@ -969,7 +1466,7 @@ func isRateLimitError(err error) bool {
 	return strings.Contains(message, "429") || strings.Contains(message, "Too Many Requests")
 }
 
-func (session *Session) readFees(ctx context.Context) (FeeQuote, error) {
+func (session *Session) readFees(ctx context.Context, asset FeeAsset) (FeeQuote, error) {
 	readContext, cancel := context.WithTimeout(ctx, session.coordinator.feeReadTimeout)
 	defer cancel()
 
@@ -988,10 +1485,9 @@ func (session *Session) readFees(ctx context.Context) (FeeQuote, error) {
 		return FeeQuote{}, newError("rescue.fees_gas_price", domain.ErrorRPCInvalidResponse, codeFeeInvalid, true, true, nil)
 	}
 
-	tip := new(big.Int).Div(new(big.Int).Set(gasPrice), big.NewInt(10))
-	if tip.Cmp(big.NewInt(minimumTipWei)) < 0 {
-		tip.SetInt64(minimumTipWei)
+	quote, err := BuildFeeQuote(session.coordinator.feePolicy, asset, head.BaseFee, gasPrice)
+	if err != nil {
+		return FeeQuote{}, newError("rescue.fees_policy", domain.ErrorRPCInvalidResponse, codeFeeInvalid, true, false, err)
 	}
-	feeCap := new(big.Int).Add(new(big.Int).Mul(head.BaseFee, big.NewInt(2)), tip)
-	return FeeQuote{TipCap: tip, FeeCap: feeCap}, nil
+	return quote, nil
 }

@@ -14,16 +14,24 @@
 | `SPONSOR_ADDRESS` | Обязательный публичный адрес роли sponsor, оплачивающей gas. |
 | `DESTINATION_ADDRESS` | Обязательный публичный адрес безопасной роли destination. |
 | `ENABLED_NETWORKS` | Обязательный список сетей через запятую, только в нижнем регистре. Значения по умолчанию нет. |
-| `SOURCE_PRIVATE_KEY` | Обязателен только в окружении live-процесса при `DRY_RUN=false`. Из `.env` не загружается. |
-| `SPONSOR_PRIVATE_KEY` | Обязателен только в окружении live-процесса при `DRY_RUN=false`. Из `.env` не загружается. |
+| `SOURCE_PRIVATE_KEY` | Обязателен только при `DRY_RUN=false` и `EMERGENCY_STOP=false`. Из `.env` не загружается. |
+| `SPONSOR_PRIVATE_KEY` | Обязателен только при `DRY_RUN=false` и `EMERGENCY_STOP=false`. Из `.env` не загружается. |
 | `RESCUER_ARTIFACT` | Необязательно, по умолчанию `artifacts/contracts/RescuerV2.json`. |
 | `RPC_READ_TIMEOUT` | Необязательно, по умолчанию `10s`. |
 | `STATE_DIRECTORY` | Необязательно, по умолчанию `state`. Непустой нормализованный путь без NUL. |
 | `WATCH_LOOKBACK_BLOCKS` | Необязательно, по умолчанию `64`. Строго положительное десятичное целое `uint64`, не больше `10000`. |
-| `MAX_TRANSACTION_COST_WEI` | Необязательно, по умолчанию `10000000000000000`. |
-| `CUMULATIVE_BUDGET_WEI` | Необязательно, по умолчанию `50000000000000000`. |
-| `SPONSOR_MIN_BALANCE_WEI` | Необязательно, по умолчанию `20000000000000000`. |
-| `RATE_LIMIT_PER_MINUTE` | Необязательно, по умолчанию `6`. |
+| `MAX_TRANSACTION_COST_WEI` | Global cap одной транзакции, по умолчанию `10000000000000000`. Положительный `uint256`. |
+| `HOURLY_BUDGET_WEI` | Global бюджет скользящего часа, по умолчанию `20000000000000000`. Положительный `uint256`. |
+| `DAILY_BUDGET_WEI` | Global бюджет скользящих суток, по умолчанию `30000000000000000`. Положительный `uint256`. |
+| `CUMULATIVE_BUDGET_WEI` | Global накопительный бюджет, по умолчанию `50000000000000000`. Положительный `uint256`. |
+| `SPONSOR_MIN_BALANCE_WEI` | Global emergency reserve sponsor, по умолчанию `20000000000000000`. Положительный `uint256`. |
+| `RATE_LIMIT_PER_MINUTE` | Ограничение частоты, по умолчанию `6`. Положительный `uint32`. |
+| `ABUSE_WINDOW` | Окно учёта неизвестных токенов и попыток, по умолчанию `1h`. Положительная длительность Go без пробелов и знака. |
+| `MAX_NEW_UNKNOWN_TOKENS_PER_WINDOW` | Новые unknown token addresses за `ABUSE_WINDOW`, по умолчанию `16`. Положительный `uint32`. |
+| `MAX_ATTEMPTS_PER_TOKEN_WINDOW` | Попытки для одного token address за `ABUSE_WINDOW`, по умолчанию `3`. Положительный `uint32`. |
+| `MAX_ATTEMPTS_PER_SOURCE_EVENT` | Попытки для одного source event, по умолчанию `3`. Положительный `uint32`. |
+| `EMERGENCY_STOP` | Необязательно, по умолчанию строго `false`. Допустимы только `true` и `false`; `true` запрещает новые signing/broadcast actions, сохраняя read-only monitoring. |
+| `ALERT_COOLDOWN` | Cooldown повторного предупреждения, по умолчанию `15m`. Положительная длительность Go без пробелов и знака. |
 
 Адреса source, sponsor и destination должны быть ненулевыми и попарно
 различными. Поддерживаются сети `base`, `ethereum`, `arbitrum`, `optimism`,
@@ -31,10 +39,11 @@
 сеть и имя не в нижнем регистре отклоняются. Демон подключается только к сетям,
 явно перечисленным в `ENABLED_NETWORKS`.
 
-Поля стоимости, суммарного бюджета, минимального баланса и ограничения частоты
-сейчас разбираются и строго проверяются как типизированные входы политики.
-Принудительное соблюдение бюджета и ограничения частоты относится к Task 08.
-Эта предварительная задача не разрешает эксплуатацию в рабочей среде.
+Global бюджеты обязаны удовлетворять
+`MAX_TRANSACTION_COST_WEI <= HOURLY_BUDGET_WEI <= DAILY_BUDGET_WEI <= CUMULATIVE_BUDGET_WEI`.
+Все wei-поля разбираются только как десятичные значения в диапазоне `uint256`;
+знак, пробел, дробь, шестнадцатеричная форма, ноль для положительного поля и
+переполнение отклоняются.
 
 ## Политика state и backfill
 
@@ -49,6 +58,12 @@
 и никогда не переинициализируется автоматически. Для намеренного первого запуска
 оператор удаляет такой файл только при остановленном демоне и после проверки, что
 восстанавливать незавершённую работу не требуется.
+
+Global budget, admission counters и cooldown alerts live-режима не хранятся в
+`STATE_DIRECTORY`. Их канонический sponsor-bound каталог
+`/var/lib/guard-daemon` должен быть durable, принадлежать пользователю daemon и
+иметь режим `0700`. Потеря этого каталога рассматривается как потеря финансового
+состояния, а не как штатный способ сбросить limits.
 
 Checkpoint продвигается только после durable `Ack` соответствующих candidates.
 Поэтому восстановление после сбоя повторяет неподтверждённую работу, а checkpoint
@@ -72,6 +87,19 @@ Checkpoint продвигается только после durable `Ack` соо
 | `RESCUER_MANIFEST_<N>` | Обязательный путь к доверенному манифесту сети. Значения по умолчанию нет. |
 | `TOKEN_MODE_<N>` | Необязательно, по умолчанию `known-only`. |
 | `TOKEN_ALLOWLIST_<N>` | Обязателен и допустим только при режиме `allowlist`. |
+| `NETWORK_MAX_TRANSACTION_COST_WEI_<N>` | Network cap одной транзакции. |
+| `NETWORK_HOURLY_BUDGET_WEI_<N>` | Network бюджет скользящего часа. |
+| `NETWORK_DAILY_BUDGET_WEI_<N>` | Network бюджет скользящих суток. |
+| `NETWORK_CUMULATIVE_BUDGET_WEI_<N>` | Network накопительный бюджет. |
+| `NETWORK_SPONSOR_MIN_BALANCE_WEI_<N>` | Network emergency reserve sponsor. |
+| `MAX_FEE_PER_GAS_WEI_<N>` | Максимальный `maxFeePerGas` сети. |
+| `MAX_PRIORITY_FEE_PER_GAS_WEI_<N>` | Максимальный priority fee сети. |
+| `TOKEN_GAS_LIMIT_<N>` | Верхняя граница gas для token action. |
+| `TOKEN_VALUE_RULES_<N>` | Правила ценности trusted tokens в формате `address:minimum_raw_balance:max_cost_wei`, через запятую. |
+| `NATIVE_GAS_LIMIT_<N>` | Верхняя граница gas для native action. |
+| `CHAIN_OVERHEAD_MAX_WEI_<N>` | Консервативная оценка chain-specific расходов сверх `gas * maxFee`; единственное wei-поле, для которого допустим ноль. Не является protocol cap. |
+| `NATIVE_MIN_NET_VALUE_WEI_<N>` | Минимальная чистая ценность native action после расходов. |
+| `UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_<N>` | Дополнительный per-transaction cap неизвестного токена. |
 
 Поля, обязательные в обоих режимах, повторяются отдельно для каждого суффикса:
 
@@ -102,15 +130,66 @@ URL не выводятся в сообщениях об ошибках и жу�
 `RESCUER_MANIFEST_<N>` указывает на локальный доверенный манифест деплоя
 конкретной сети. Значения по умолчанию у него нет.
 
+## Экономическая политика сети
+
+При стандартных global budgets network defaults равны:
+
+| Поле | Значение по умолчанию |
+|---|---:|
+| `NETWORK_MAX_TRANSACTION_COST_WEI_<N>` | `8000000000000000` |
+| `NETWORK_HOURLY_BUDGET_WEI_<N>` | `15000000000000000` |
+| `NETWORK_DAILY_BUDGET_WEI_<N>` | `25000000000000000` |
+| `NETWORK_CUMULATIVE_BUDGET_WEI_<N>` | `40000000000000000` |
+| `NETWORK_SPONSOR_MIN_BALANCE_WEI_<N>` | `20000000000000000` |
+| `TOKEN_GAS_LIMIT_<N>` | `300000` |
+| `NATIVE_GAS_LIMIT_<N>` | `100000` |
+| `NATIVE_MIN_NET_VALUE_WEI_<N>` | `1000000000000000` |
+| `UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_<N>` | `2000000000000000` |
+
+Не заданные network budget defaults автоматически уменьшаются до
+соответствующего явно уменьшенного global cap. Network emergency reserve,
+наоборот, автоматически повышается до явно увеличенного
+`SPONSOR_MIN_BALANCE_WEI`. Явно заданные network budgets не могут превышать
+global budgets, а явно заданный network reserve не может быть ниже global
+reserve. Network budgets сохраняют порядок transaction, hour, day, cumulative.
+
+Fee, tip и overhead намеренно различаются между сетями:
+
+| Сеть | `MAX_FEE_PER_GAS_WEI_<N>` | `MAX_PRIORITY_FEE_PER_GAS_WEI_<N>` | `CHAIN_OVERHEAD_MAX_WEI_<N>` | Live paid actions |
+|---|---:|---:|---:|---|
+| `base` | `20000000000` | `2000000000` | `500000000000000` | Заблокированы: дополнительный fee не имеет transaction cap |
+| `ethereum` | `25000000000` | `3000000000` | `0` | Разрешены |
+| `arbitrum` | `3000000000` | `100000000` | `1100000000000000` | Заблокированы: дополнительный fee не имеет transaction cap |
+| `optimism` | `4000000000` | `50000000` | `1200000000000000` | Заблокированы: дополнительный fee не имеет transaction cap |
+| `polygon` | `25000000000` | `20000000000` | `0` | Разрешены |
+| `ink` | `5000000000` | `100000000` | `700000000000000` | Заблокированы: дополнительный fee не имеет transaction cap |
+| `scroll` | `5000000000` | `500000000` | `1500000000000000` | Заблокированы: дополнительный fee не имеет transaction cap |
+| `linea` | `5000000000` | `500000000` | `1800000000000000` | Заблокированы: дополнительный fee не имеет transaction cap |
+| `metis` | `10000000000` | `1000000000` | `800000000000000` | Заблокированы: дополнительный fee не имеет transaction cap |
+| `bnb` | `10000000000` | `2000000000` | `0` | Разрешены |
+
+Для каждой сети priority fee не превышает max fee. Обе верхние оценки
+`TOKEN_GAS_LIMIT_<N> * MAX_FEE_PER_GAS_WEI_<N> + CHAIN_OVERHEAD_MAX_WEI_<N>`
+и
+`NATIVE_GAS_LIMIT_<N> * MAX_FEE_PER_GAS_WEI_<N> + CHAIN_OVERHEAD_MAX_WEI_<N>`
+обязаны помещаться в `NETWORK_MAX_TRANSACTION_COST_WEI_<N>`. Нарушение любого
+инварианта останавливает запуск.
+
+Статическая оценка overhead резервируется для анализа конфигурации, но не может
+гарантировать emergency reserve, если protocol списывает дополнительный fee без
+поля максимума в signed transaction. Поэтому live startup таких сетей
+останавливается независимо от выбранного `CHAIN_OVERHEAD_MAX_WEI_<N>`; dry-run и
+read-only monitoring остаются доступны.
+
 ## Политика токенов
 
 `TOKEN_MODE_<N>` необязателен и по умолчанию равен `known-only`:
 
 | Режим | Семантика |
 |---|---|
-| `known-only` | Безопасный режим по умолчанию: разрешены только известные системе токены. |
-| `allowlist` | Разрешены только адреса из обязательного `TOKEN_ALLOWLIST_<N>`. |
-| `all` | Явное согласие обрабатывать неизвестные токены; само по себе не разрешает эксплуатацию в рабочей среде. |
+| `known-only` | Безопасный режим по умолчанию: разрешены и считаются доверенными только известные системе токены. |
+| `allowlist` | Watcher разрешает только адреса из обязательного `TOKEN_ALLOWLIST_<N>`; доверенным остаётся только пересечение списка с известными токенами. |
+| `all` | Только явное согласие обрабатывать неизвестные токены; при запуске демон выдаёт предупреждение оператору. |
 
 `TOKEN_ALLOWLIST_<N>` задаётся списком адресов через запятую и допустим только
 при `TOKEN_MODE_<N>=allowlist`:
@@ -120,6 +199,25 @@ TOKEN_MODE_<N>=allowlist
 TOKEN_ALLOWLIST_<N>=0xYOUR_TOKEN_ADDRESS_1,0xYOUR_TOKEN_ADDRESS_2
 ```
 
+Allowlisted unknown address остаётся разрешённым для watcher, но не становится
+доверенным токеном и не получает известные metadata. Неизвестный токен без
+доверенной оценки стоимости никогда не получает доверенный результат. Любая
+платная попытка для него дополнительно ограничена
+`UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_<N>`, независимо от режимов `allowlist`
+и `all`.
+
+Для каждого trusted token, допускаемого к live-операции, оператор задаёт
+`TOKEN_VALUE_RULES_<N>`:
+
+```dotenv
+TOKEN_VALUE_RULES_<N>=0xTOKEN:1000000:1000000000000000
+```
+
+В примере операция допустима только при raw balance не меньше `1000000` и при
+максимальной стоимости gas не больше `1000000000000000` wei. Отсутствующее или
+повторяющееся правило, адрес вне trusted-набора и превышение network cap
+блокируют создание live coordinator до первой подписи.
+
 ## Порядок безопасного запуска
 
 В live-режиме запуск выполняется строго в таком порядке:
@@ -127,12 +225,17 @@ TOKEN_ALLOWLIST_<N>=0xYOUR_TOKEN_ADDRESS_1,0xYOUR_TOKEN_ADDRESS_2
 1. Локально проверяются типы, обязательные поля, адреса, сети и политики.
 2. Загружается доверенный манифест каждой включённой сети.
 3. Два независимых HTTP-провайдера чтения должны согласовать финализированный блок и результат аттестации runtime.
-4. Открывается и проверяется persistent state каждой сети; повреждение,
+4. Открываются и проверяются persistent state каждой сети и единый global budget ledger; повреждение,
    несовпадение привязки или занятая блокировка останавливают запуск.
-5. Только после согласования и проверки state создаются подписывающие компоненты
+5. До создания signer атомарно восстанавливаются reservations и budget metrics.
+6. Только после согласования и проверки state создаются подписывающие компоненты
    source и sponsor, а их адреса сверяются с `SOURCE_ADDRESS` и
    `SPONSOR_ADDRESS` до первой подписи.
-6. Для отправки используется отдельный RPC.
+7. Для отправки используется отдельный RPC.
+
+При `EMERGENCY_STOP=true` приватные ключи не требуются и не разбираются,
+signer и RPC отправки не создаются. Watcher, finalized reads, receipt
+reconciliation и локальная diagnostics-служба продолжают работать.
 
 Любая ошибка или расхождение завершает запуск до подписания. При запуске
 сетевого поколения watcher отдельно открывает runtime finalized quorum,

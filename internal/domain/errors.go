@@ -8,6 +8,7 @@ const (
 	ErrorConfiguration ErrorClass = iota + 1
 	ErrorRPCTransient
 	ErrorRPCInvalidResponse
+	ErrorBudget
 	ErrorSigning
 	ErrorBroadcast
 	ErrorPostcondition

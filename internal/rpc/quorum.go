@@ -42,6 +42,7 @@ type BlockRef struct {
 	Number     uint64
 	Hash       common.Hash
 	ParentHash common.Hash
+	Timestamp  uint64
 }
 
 type ProviderIdentity struct {
@@ -215,7 +216,7 @@ func blockRefFromHeader(header *types.Header, expected *uint64) (BlockRef, error
 	if expected != nil && number != *expected {
 		return BlockRef{}, ErrMalformedResponse
 	}
-	return BlockRef{Number: number, Hash: header.Hash(), ParentHash: header.ParentHash}, nil
+	return BlockRef{Number: number, Hash: header.Hash(), ParentHash: header.ParentHash, Timestamp: header.Time}, nil
 }
 
 func (reader *QuorumReader) FilterLogs(ctx context.Context, query ethereum.FilterQuery) ([]types.Log, error) {

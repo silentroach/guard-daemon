@@ -650,7 +650,7 @@ func testHeader(number uint64, marker byte) *types.Header {
 }
 
 func refForHeader(header *types.Header) BlockRef {
-	return BlockRef{Number: header.Number.Uint64(), Hash: header.Hash(), ParentHash: header.ParentHash}
+	return BlockRef{Number: header.Number.Uint64(), Hash: header.Hash(), ParentHash: header.ParentHash, Timestamp: header.Time}
 }
 
 func finalizedHeaderPlan(finalized uint64, exact map[uint64]*types.Header) func(context.Context, *big.Int) (*types.Header, error) {

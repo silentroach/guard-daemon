@@ -62,6 +62,36 @@ func TestPublicConfigurationDocumentsOnlySupportedFields(t *testing.T) {
 	if _, exists := assignments["RPC_BROADCAST_HTTP_BASE"]; exists {
 		t.Fatal(".env.example не должен включать live broadcast RPC по умолчанию")
 	}
+	for field, want := range map[string]string{
+		"MAX_TRANSACTION_COST_WEI":                    defaultMaxTransactionCostWei,
+		"HOURLY_BUDGET_WEI":                           defaultHourlyBudgetWei,
+		"DAILY_BUDGET_WEI":                            defaultDailyBudgetWei,
+		"CUMULATIVE_BUDGET_WEI":                       defaultCumulativeBudgetWei,
+		"SPONSOR_MIN_BALANCE_WEI":                     defaultSponsorMinimumBalanceWei,
+		"RATE_LIMIT_PER_MINUTE":                       defaultRateLimitPerMinute,
+		"ABUSE_WINDOW":                                defaultAbuseWindow,
+		"MAX_NEW_UNKNOWN_TOKENS_PER_WINDOW":           defaultMaxNewUnknownTokensPerWindow,
+		"MAX_ATTEMPTS_PER_TOKEN_WINDOW":               defaultMaxAttemptsPerTokenWindow,
+		"MAX_ATTEMPTS_PER_SOURCE_EVENT":               defaultMaxAttemptsPerSourceEvent,
+		"EMERGENCY_STOP":                              defaultEmergencyStop,
+		"ALERT_COOLDOWN":                              defaultAlertCooldown,
+		"NETWORK_MAX_TRANSACTION_COST_WEI_BASE":       defaultNetworkMaxTransactionCostWei,
+		"NETWORK_HOURLY_BUDGET_WEI_BASE":              defaultNetworkHourlyBudgetWei,
+		"NETWORK_DAILY_BUDGET_WEI_BASE":               defaultNetworkDailyBudgetWei,
+		"NETWORK_CUMULATIVE_BUDGET_WEI_BASE":          defaultNetworkCumulativeBudgetWei,
+		"NETWORK_SPONSOR_MIN_BALANCE_WEI_BASE":        defaultNetworkSponsorMinimumBalanceWei,
+		"TOKEN_GAS_LIMIT_BASE":                        defaultTokenGasLimit,
+		"NATIVE_GAS_LIMIT_BASE":                       defaultNativeGasLimit,
+		"NATIVE_MIN_NET_VALUE_WEI_BASE":               defaultNativeMinimumNetValueWei,
+		"UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE": defaultUnknownTokenMaxTransactionCostWei,
+		"MAX_FEE_PER_GAS_WEI_BASE":                    "20000000000",
+		"MAX_PRIORITY_FEE_PER_GAS_WEI_BASE":           "2000000000",
+		"CHAIN_OVERHEAD_MAX_WEI_BASE":                 "500000000000000",
+	} {
+		if assignments[field] != want {
+			t.Errorf(".env.example: %s=%q, нужно %q", field, assignments[field], want)
+		}
+	}
 
 	documentation, err := os.ReadFile(filepath.Join(root, "docs", "configuration.md"))
 	if err != nil {
@@ -76,6 +106,43 @@ func TestPublicConfigurationDocumentsOnlySupportedFields(t *testing.T) {
 	for _, template := range EnvironmentFieldTemplates() {
 		if !strings.Contains(text, "`"+template+"`") {
 			t.Errorf("docs/configuration.md не документирует шаблон %s", template)
+		}
+	}
+}
+
+func TestEconomicAndTokenTrustDocumentationParity(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	paths := []string{
+		filepath.Join(root, ".env.example"),
+		filepath.Join(root, "docs", "configuration.md"),
+	}
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(contents)
+		if strings.Contains(text, "пока только разбираются") || strings.Contains(text, "относится к Task 08") {
+			t.Errorf("%s содержит устаревшее phantom-описание Task 08", path)
+		}
+	}
+
+	documentation, err := os.ReadFile(filepath.Join(root, "docs", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(documentation)
+	for _, statement := range []string{
+		"Allowlisted unknown address остаётся разрешённым для watcher, но не становится",
+		"Неизвестный токен без",
+		"доверенной оценки стоимости никогда не получает доверенный результат",
+		"дополнительно ограничена",
+		"UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_<N>",
+		"при запуске демон выдаёт предупреждение оператору",
+		"TOKEN_VALUE_RULES_<N>",
+	} {
+		if !strings.Contains(text, statement) {
+			t.Errorf("docs/configuration.md не фиксирует token trust policy: %q", statement)
 		}
 	}
 }

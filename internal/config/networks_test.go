@@ -129,20 +129,28 @@ func TestTokenModes(t *testing.T) {
 		mode        string
 		allowlist   string
 		wantTokens  int
+		wantTrusted int
 		wantUnknown bool
 		wantError   string
 		check       func(*testing.T, Network)
 	}{
-		{name: "known-only по умолчанию", wantTokens: 7},
-		{name: "allowlist", mode: "allowlist", allowlist: knownAddress + "," + unknownAddress, wantTokens: 2, check: func(t *testing.T, network Network) {
+		{name: "known-only по умолчанию", wantTokens: 7, wantTrusted: 7},
+		{name: "allowlist", mode: "allowlist", allowlist: knownAddress + "," + unknownAddress, wantTokens: 2, wantTrusted: 1, check: func(t *testing.T, network Network) {
 			if network.Tokens[0].Symbol != "USDC" || network.Tokens[0].Decimals != 6 {
 				t.Fatal("allowlist потерял metadata известного токена")
 			}
 			if network.Tokens[1].Symbol != "" || network.Tokens[1].Decimals != 0 || network.Tokens[1].Address != common.HexToAddress(unknownAddress) {
 				t.Fatal("неизвестный allowlisted токен получил недостоверную metadata")
 			}
+			if network.TrustedTokens[0] != common.HexToAddress(knownAddress) {
+				t.Fatal("пересечение allowlist с известными токенами потеряло trust")
+			}
+			domainNetwork := network.Domain(common.Address{})
+			if len(domainNetwork.Tokens) != 2 || domainNetwork.Tokens[1].Address != common.HexToAddress(unknownAddress) {
+				t.Fatal("watcher allowlist потерял разрешённый неизвестный адрес")
+			}
 		}},
-		{name: "all", mode: "all", wantTokens: 7, wantUnknown: true},
+		{name: "all", mode: "all", wantTokens: 7, wantTrusted: 7, wantUnknown: true},
 		{name: "allowlist вне режима", mode: "known-only", allowlist: unknownAddress, wantError: "TOKEN_ALLOWLIST_BASE"},
 		{name: "пустой allowlist", mode: "allowlist", wantError: "TOKEN_ALLOWLIST_BASE"},
 		{name: "повтор в allowlist", mode: "allowlist", allowlist: unknownAddress + "," + unknownAddress, wantError: "TOKEN_ALLOWLIST_BASE"},
@@ -168,13 +176,32 @@ func TestTokenModes(t *testing.T) {
 				t.Fatal(err)
 			}
 			network := runtime.Networks[0]
-			if len(network.Tokens) != test.wantTokens || network.AllowUnknownTokens != test.wantUnknown {
-				t.Fatalf("политика токенов: count=%d allowUnknown=%t", len(network.Tokens), network.AllowUnknownTokens)
+			if len(network.Tokens) != test.wantTokens || len(network.TrustedTokens) != test.wantTrusted || network.AllowUnknownTokens != test.wantUnknown {
+				t.Fatalf("политика токенов: count=%d trusted=%d allowUnknown=%t", len(network.Tokens), len(network.TrustedTokens), network.AllowUnknownTokens)
 			}
 			if test.check != nil {
 				test.check(t, network)
 			}
 		})
+	}
+}
+
+func TestUnknownAllowlistedTokenIsAllowedButNotTrusted(t *testing.T) {
+	known := common.HexToAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
+	unknown := common.HexToAddress(testAddress(99))
+	values := validEnvironment()
+	values["TOKEN_MODE_BASE"] = "allowlist"
+	values["TOKEN_ALLOWLIST_BASE"] = known.Hex() + "," + unknown.Hex()
+	runtimeConfig, err := LoadFrom(mapLookup(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	network := runtimeConfig.Networks[0]
+	if len(network.Tokens) != 2 || network.Tokens[1].Address != unknown {
+		t.Fatal("allowlist не сохранил unknown address для watcher")
+	}
+	if len(network.TrustedTokens) != 1 || network.TrustedTokens[0] != known {
+		t.Fatalf("trusted intersection = %v, нужен только известный токен", network.TrustedTokens)
 	}
 }
 

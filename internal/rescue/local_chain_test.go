@@ -161,7 +161,7 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPrivateKeyTransactionSigner() error = %v", err)
 	}
-	coordinator, err := NewCoordinator(Config{
+	coordinatorConfig := withTestEconomicPolicy(t, Config{
 		Network: domain.Network{
 			Name:       "deterministic-local-chain",
 			ChainID:    localChainID,
@@ -182,7 +182,8 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 		MaxAttempts:     1,
 		RetryDelay:      time.Second,
 		ReceiptTimeout:  time.Second,
-	}, authorizer, transactioner, testClock, observability.Discard{})
+	}, testClock)
+	coordinator, err := NewCoordinator(coordinatorConfig, authorizer, transactioner, testClock, observability.Discard{})
 	if err != nil {
 		t.Fatalf("NewCoordinator() error = %v", err)
 	}
@@ -643,7 +644,7 @@ func localChainCoordinator(t *testing.T, sourceKey, sponsorKey *ecdsa.PrivateKey
 	if err != nil {
 		t.Fatalf("NewPrivateKeyTransactionSigner() error = %v", err)
 	}
-	coordinator, err := NewCoordinator(Config{
+	coordinatorConfig := withTestEconomicPolicy(t, Config{
 		Network: domain.Network{
 			Name:       "deterministic-local-chain",
 			ChainID:    localChainID,
@@ -664,7 +665,8 @@ func localChainCoordinator(t *testing.T, sourceKey, sponsorKey *ecdsa.PrivateKey
 		MaxAttempts:     1,
 		RetryDelay:      time.Second,
 		ReceiptTimeout:  time.Second,
-	}, authorizer, transactioner, testClock, observability.Discard{})
+	}, testClock)
+	coordinator, err := NewCoordinator(coordinatorConfig, authorizer, transactioner, testClock, observability.Discard{})
 	if err != nil {
 		t.Fatalf("NewCoordinator() error = %v", err)
 	}
@@ -764,6 +766,10 @@ func (reader *localChainPrimary) HeaderByNumber(ctx context.Context, number *big
 
 func (reader *localChainPrimary) SuggestGasPrice(ctx context.Context) (*big.Int, error) {
 	return reader.client.SuggestGasPrice(ctx)
+}
+
+func (reader *localChainPrimary) EstimateGas(ctx context.Context, call ethereum.CallMsg) (uint64, error) {
+	return reader.client.EstimateGas(ctx, call)
 }
 
 type localChainBroadcaster struct {

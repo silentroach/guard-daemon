@@ -121,7 +121,22 @@ func rejectUnsupportedNames(names []string) error {
 
 func reservedEnvironmentName(name string) bool {
 	for _, prefix := range []string{
+		"ABUSE_",
+		"ALERT_",
+		"CHAIN_OVERHEAD_",
 		"CLAIM_",
+		"CUMULATIVE_",
+		"DAILY_",
+		"EMERGENCY_",
+		"HOURLY_",
+		"MAX_ATTEMPTS_",
+		"MAX_FEE_",
+		"MAX_NEW_UNKNOWN_",
+		"MAX_PRIORITY_",
+		"MAX_TRANSACTION_",
+		"NATIVE_",
+		"NETWORK_",
+		"RATE_LIMIT_",
 		"RESCUER_",
 		"RPC_BROADCAST_",
 		"RPC_READ_",
@@ -130,6 +145,7 @@ func reservedEnvironmentName(name string) bool {
 		"STATE_",
 		"TOKEN_",
 		"TOKENS_",
+		"UNKNOWN_TOKEN_",
 		"WATCH_",
 	} {
 		if strings.HasPrefix(name, prefix) {

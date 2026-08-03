@@ -243,7 +243,23 @@ func TestLoadRejectsAlternativeDotEnvGrammarBeforeParsingValues(t *testing.T) {
 }
 
 func TestLoadFromMapRejectsReservedUnknownFields(t *testing.T) {
-	for _, field := range []string{"CLAIM_ARBITRARY", "RPC_URL_UNKNOWN", "RESCUER_UNKNOWN", "RPC_READ_3_HTTP_BASE", "STATE_DIRECTOR", "TOKEN_MODE_UNKNOWN", "WATCH_LOOKBACK_BLOCK"} {
+	for _, field := range []string{
+		"ABUSE_WINDOWS",
+		"ALERT_COOLDOWNS",
+		"CHAIN_OVERHEAD_MAX_WEI_BAES",
+		"CLAIM_ARBITRARY",
+		"EMERGENCY_STOPS",
+		"MAX_ATTEMPTS_PER_SOURCE_EVENTS",
+		"MAX_FEE_PER_GAS_WEI_BAES",
+		"NETWORK_HOURLY_BUDGET_WEI_BAES",
+		"RPC_URL_UNKNOWN",
+		"RESCUER_UNKNOWN",
+		"RPC_READ_3_HTTP_BASE",
+		"STATE_DIRECTOR",
+		"TOKEN_MODE_UNKNOWN",
+		"UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BAES",
+		"WATCH_LOOKBACK_BLOCK",
+	} {
 		t.Run(field, func(t *testing.T) {
 			values := validEnvironment()
 			values[field] = "test-only-unsupported"
