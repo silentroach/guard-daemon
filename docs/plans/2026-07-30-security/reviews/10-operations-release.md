@@ -7,18 +7,21 @@
 ## Проверенный снимок
 
 - Base commit: `c14b723d145c96e31f3afd12d02a1d3ea3888bd6`.
+- Проверенный implementation commit:
+  `2071b4423a35e715b70c2e3708c237b1807315b3`.
 - Проверенные пути: весь implementation/test/documentation diff Task 10,
   включая CLI/config, deployment tooling, release metadata, systemd packaging,
   operations/migration/release runbooks и связанные CI gates.
 - SHA-256 digest diff проверенных production/test/doc файлов:
-  `4bfadce34f7dd1c0ec1e8fe92633f813a1f8e9f89e3c6740c6acd71e1d1b6960`.
+  `d4abe733e6d302be3a8411e991705f8814d9b12d818b2dff7e4b1f727f8a7ec9`.
 - Из digest исключены только этот отчёт, task-файл Task 10 и task index.
 - Digest построен при `LC_ALL=C` из `--no-ext-diff --binary --full-index`
-  tracked diff от base и отсортированных SHA-256 содержимого untracked files;
-  включены 32 tracked и 26 untracked paths.
+  tracked diff от base; включены 58 tracked paths, untracked implementation
+  files отсутствуют.
 - Ревьюеры не участвовали в реализации финальных изменений: `да`.
-- Первичные passes требовали исправлений; два финальных независимых closure pass
-  не обнаружили открытых Critical, High, Medium или Low findings.
+- Первичные passes и exact-commit проверки требовали исправлений; два финальных
+  независимых closure pass на implementation commit не обнаружили открытых
+  Critical, High, Medium или Low findings.
 
 ## Проверенные инварианты
 
@@ -55,11 +58,19 @@
 | REV-10-012 | Low | operations/deployment runbooks | Negative grep/find checks и npm symlink audit могли завершаться fail-open или ложно отклонять valid tooling | Явно проверять exit status, исключить symlink mode и проверить containment каждого target | ЗАКРЫТО |
 | REV-10-013 | Low | release/process documentation | Rehearsal ошибочно описывался как полностью no-sign/no-send | Точно указать local test-key signing и broadcast только в одноразовый Anvil | ЗАКРЫТО |
 | REV-10-014 | Low | `internal/watcher/service_test.go` | Fake block и logs публиковались раздельно, создавая flaky gap test | Публиковать block+logs под одним lock; regression прошёл `-count=100` | ЗАКРЫТО |
+| REV-10-015 | Medium | `scripts/build-release-candidate.sh` | Неверный разбор `go version`, совпадающие npm config paths и read-only Go cache блокировали exact build | Исправить parsing, разделить npm config paths и возвращать write bit перед cleanup | ЗАКРЫТО |
+| REV-10-016 | Medium | `scripts/build-release-candidate.sh`, `docs/release/**` | Случайный путь Go module cache попадал в assembly metadata и менял binary между clean builds | Эксклюзивный стабильный cache path, `-s -w` и документированный canonical recipe | ЗАКРЫТО |
+| REV-10-017 | High | `scripts/build-release-candidate.sh`, `test/ci/compare-artifacts.sh` | Унаследованные npm config и Node hooks позволяли пропустить verifier или выполнить посторонний код одинаково в обеих сборках | `env -i` allowlist, отсутствующие fixed config paths и hostile outer-env regression | ЗАКРЫТО |
+| REV-10-018 | High | `scripts/build-release-candidate.sh`, `test/ci/compare-artifacts.sh` | `GOFIPS140`, `GOCACHEPROG`, `GOWORK` и другие Go inputs могли менять candidate и давать common-mode reproducibility pass | Полный Go subprocess allowlist с canonical values и различающиеся hostile environments | ЗАКРЫТО |
+| REV-10-019 | Medium | `scripts/build-release-candidate.sh` | Race между target absence check и `mv` мог сообщить успех для чужого каталога | Сравнивать device/inode staging и опубликованного каталога до success | ЗАКРЫТО |
+| REV-10-020 | Low | `test/ci/compare-artifacts.sh` | Ошибка `strings` в process substitution не передавалась циклу и давала fail-open проверку удалённого permit surface | Сначала сохранить output с явной проверкой exit status | ЗАКРЫТО |
+| REV-10-021 | Medium | `scripts/build-release-candidate.sh`, `test/ci/compare-artifacts.sh` | Exported shell function `env` могла перехватить `env -i` до очистки окружения | Проверенный абсолютный `/usr/bin/env` и adversarial exported-function regression | ЗАКРЫТО |
 
 ## Проверка исправлений
 
 - Два независимых финальных closure pass завершились решением `ПРОЙДЕНО` для
-  текущего implementation/test/doc diff.
+  implementation/test/doc diff commit
+  `2071b4423a35e715b70c2e3708c237b1807315b3`.
 - `nix develop -c make format-check` — PASS: gofmt, Prettier, Forge format,
   actionlint и ShellCheck.
 - `nix develop -c make go-ci` — PASS: module verification, build, все Go tests,
@@ -76,8 +87,23 @@
 - Isolated `npm ci --ignore-scripts` и `artifacts:verify` для deployment tooling — PASS.
 - Watcher gap regression `-count=100`, Bash syntax operator blocks и `git diff
   --check` — PASS.
-- `make reproducibility-check` не запускался: текущий Task 10 diff ещё не является
-  immutable commit, а builder намеренно отклоняет такой вход.
+- `nix develop -c make reproducibility-check` — PASS на exact implementation
+  commit: два clean checkout, конфликтующие hostile Go/npm/Node/Python
+  environments, exported `env` function, побайтовое сравнение всех candidate
+  files, metadata verification и два gitleaks scan.
+- Redacted evidence без локальных путей:
+
+```text
+Commit снимка: 2071b4423a35e715b70c2e3708c237b1807315b3
+7afb79969d3d3b180004239d0352593c9f6b89f00e8ee160824f326f3de106b9  LICENSE
+96c6c0d358e44980814b40553358c53ce5231b7c2ce4ef9bf99add3b9a96a4af  RescuerV2.json
+56edfe77ac1cc1511bf76c1cca62813eb68d6ac1aa91db1ae8fc7b71a15f9d3e  guard-daemon-linux-amd64
+9d56c5ad2bc40bea402e7b17f41889d91f4e3170cafbc089ffde44d875cbf1fd  guard-daemon-source.tar
+4eb8cd6c923a9063b558eeedf0a3e001a832f8cf71b353c577d53e551dbcdf16  guard-daemon.cdx.json
+e41b5b6c0ac9cc51a0741a2f708a2289004799ab0257bb71535f47a437fecdd7  guard-daemon.intoto.jsonl
+b9576e1a51266b1a268f84fc8fba6d9a81f51c8ecc97a95495c6f5356c020d58  release-candidate.json
+a16dec6b9a809d9768815dda2e831e792bccdb10d8d583431716f94fb83bbc98  rescuer-manifest.schema.json
+```
 
 ## Остаточные риски
 
@@ -91,7 +117,8 @@ Critical и High residual risks не приняты.
 
 | Проверка | Владелец | Срок | Статус |
 |---|---|---|---|
-| Создать immutable Task 10 commit и выполнить две clean exact-commit сборки с побайтовым сравнением candidate | Координирующий агент и оператор | До `DONE` Task 10 | ОЖИДАЕТСЯ |
+| Выполнить локальную adversarial exact-commit проверку двух clean checkout с побайтовым сравнением candidate | Координирующий агент | До `DONE` Task 10 | ВЫПОЛНЕНО на `2071b4423a35e715b70c2e3708c237b1807315b3` |
+| Повторить candidate build в двух новых независимых clone с native pinned tools без Nix как обязательного условия | Оператор выпуска | До `DONE` Task 10 | ОЖИДАЕТСЯ |
 | Выполнить на целевом Linux/systemd install/start/health/stop/backup/restore/update/reboot/rollback, `systemd-analyze verify` и core-dump policy | Оператор эксплуатации | До `DONE` Task 10 | ОЖИДАЕТСЯ |
 | Подтвердить GitHub ruleset, required checks и Dependabot | Оператор репозитория | До Task 11 | ОЖИДАЕТСЯ |
 | Аутентифицировать и подписать candidate допустимой keyless identity либо оператором вне агента | Оператор выпуска | После решения Task 11 | НЕ ВЫПОЛНЯЛОСЬ |
@@ -100,8 +127,8 @@ Mainnet deployment, tag, push и GitHub Release не выполнялись.
 
 ## Решение
 
-`ЧЕРНОВИК`: repository implementation и независимый code/doc closure review
-пройдены без открытых findings, но критерии Task 10 требуют immutable commit,
-exact-commit reproducibility и реальную Linux/systemd rehearsal. До получения
-этих evidence Task 10 остаётся `IN PROGRESS`, а отчёт нельзя перевести в
-`ПРОЙДЕНО`.
+`ЧЕРНОВИК`: repository implementation, независимый code/doc closure review и
+локальная adversarial exact-commit reproducibility пройдены без открытых
+findings. Критерии Task 10 дополнительно требуют две независимые native-clone
+сборки и реальную Linux/systemd rehearsal. До получения этих evidence Task 10
+остаётся `IN PROGRESS`, а отчёт нельзя перевести в `ПРОЙДЕНО`.
