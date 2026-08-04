@@ -145,6 +145,7 @@ candidate_tmp=""
 cleanup() {
   cleanup_status=$?
   if [[ -n "$snapshot" && -d "$snapshot" ]]; then
+    chmod -R u+w -- "$snapshot/.release-cache/go-mod" 2>/dev/null || true
     rm -rf -- "$snapshot"
   fi
   if [[ -n "$candidate_tmp" && -d "$candidate_tmp" ]]; then
