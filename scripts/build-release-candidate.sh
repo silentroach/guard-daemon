@@ -309,7 +309,6 @@ forbidden_paths=(
   "$repo_root"
   "$snapshot"
   "$output_root"
-  "$go_module_cache"
   "$go_root"
   /nix/store/
 )

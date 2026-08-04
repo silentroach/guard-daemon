@@ -59,9 +59,10 @@ allowlist. Поэтому exported shell function `env`, локальные `GOF
 Для release build требуется upstream distribution Go 1.26.5. Совпадающей строки
 версии недостаточно: patched toolchain, который встраивает локальные пути
 пакетного менеджера, не является каноническим. Builder завершает сборку с
-ошибкой, если binary содержит checkout, output, cache, `GOROOT` или
-`/nix/store/`. Nix разрешён для остальных локальных gates, но Nix-patched Go
-нельзя использовать как компилятор официального candidate.
+ошибкой, если binary содержит checkout, output, `GOROOT` или `/nix/store/`.
+Документированный fixed `GOMODCACHE` является каноническим build parameter, а
+не host-specific path. Nix разрешён для остальных локальных gates, но
+Nix-patched Go нельзя использовать как компилятор официального candidate.
 
 ## Архив исходного кода
 
