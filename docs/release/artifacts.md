@@ -38,12 +38,14 @@ CGO_ENABLED=0
 -mod=readonly
 -trimpath
 -buildvcs=false
--ldflags="-buildid= -X guard-daemon/internal/buildinfo.ReleaseCommit=<commit>"
+-ldflags="-s -w -buildid= -X guard-daemon/internal/buildinfo.ReleaseCommit=<commit>"
 ```
 
 Другие OS, архитектура или режим CGO не являются официальной целевой платформой
 и требуют нового явно спроектированного профиля. Генератор не встраивает время,
 имя машины, пользователя, путь checkout или значения окружения.
+Отладочные секции и таблица символов исключены флагами `-w -s`: они не нужны
+runtime-процессу и не входят в канонический release artifact.
 
 ## Архив исходного кода
 

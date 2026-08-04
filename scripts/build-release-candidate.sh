@@ -142,10 +142,14 @@ fi
 
 snapshot=""
 candidate_tmp=""
+go_module_cache=""
 cleanup() {
   cleanup_status=$?
+  if [[ -n "$go_module_cache" && -d "$go_module_cache" ]]; then
+    chmod -R u+w -- "$go_module_cache" 2>/dev/null || true
+    rm -rf -- "$go_module_cache"
+  fi
   if [[ -n "$snapshot" && -d "$snapshot" ]]; then
-    chmod -R u+w -- "$snapshot/.release-cache/go-mod" 2>/dev/null || true
     rm -rf -- "$snapshot"
   fi
   if [[ -n "$candidate_tmp" && -d "$candidate_tmp" ]]; then
@@ -195,8 +199,12 @@ cmp "$repo_root/scripts/build-release-candidate.sh" \
 
 npm_cache="$snapshot/.release-cache/npm"
 go_build_cache="$snapshot/.release-cache/go-build"
-go_module_cache="$snapshot/.release-cache/go-mod"
-mkdir -p -- "$npm_cache" "$go_build_cache" "$go_module_cache"
+go_module_cache_path=/var/tmp/guard-daemon-release-go-mod-v1
+if ! mkdir -m 0700 -- "$go_module_cache_path" 2>/dev/null; then
+  fail "изолированный Go module cache занят или оставлен предыдущей сборкой: $go_module_cache_path"
+fi
+go_module_cache="$go_module_cache_path"
+mkdir -p -- "$npm_cache" "$go_build_cache"
 
 (
   cd "$snapshot"
@@ -225,7 +233,7 @@ go_graph="$candidate_tmp/.go-graph.txt"
       -trimpath \
       -buildvcs=false \
       -mod=readonly \
-      -ldflags="-buildid= -X guard-daemon/internal/buildinfo.ReleaseCommit=${release_commit}" \
+      -ldflags="-s -w -buildid= -X guard-daemon/internal/buildinfo.ReleaseCommit=${release_commit}" \
       -o "$candidate_tmp/guard-daemon-linux-amd64" \
       ./cmd/guard-daemon
 )
