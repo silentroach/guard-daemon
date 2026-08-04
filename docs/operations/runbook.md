@@ -74,9 +74,12 @@ case "$TRUSTED_RELEASE_COMMIT" in *[!0-9a-f]*) exit 1 ;; esac
 test "${#TRUSTED_SHA256SUMS_SHA256}" -eq 64
 case "$TRUSTED_SHA256SUMS_SHA256" in *[!0-9a-f]*) exit 1 ;; esac
 case "$ACTIVATE_RELEASE" in true|false) ;; *) exit 1 ;; esac
-export npm_config_globalconfig=/var/empty/guard-daemon-npm-globalconfig
-export npm_config_registry=https://registry.npmjs.org/
-export npm_config_userconfig=/var/empty/guard-daemon-npm-userconfig
+NPM_GLOBAL_CONFIG=/var/empty/guard-daemon-npm-globalconfig
+NPM_USER_CONFIG=/var/empty/guard-daemon-npm-userconfig
+for NPM_CONFIG_PATH in "$NPM_GLOBAL_CONFIG" "$NPM_USER_CONFIG"; do
+  test ! -e "$NPM_CONFIG_PATH"
+  test ! -L "$NPM_CONFIG_PATH"
+done
 RELEASE_SOURCE="$(CDPATH='' cd -- "$RELEASE_SOURCE" && pwd -P)" || exit 1
 
 GUARD_ROOT=/usr/lib/guard-daemon
@@ -154,9 +157,9 @@ for SYSTEM_TOOL in "$NODE_BINARY" "$NPM_BINARY" "$PYTHON_BINARY"; do
 done
 test ! -L "$NODE_BINARY"
 test -f "$NODE_BINARY"
-test "$("$NODE_BINARY" --version)" = 'v24.18.1'
-test "$(PATH=/usr/bin:/bin "$NPM_BINARY" --version)" = '11.16.0'
-test "$("$PYTHON_BINARY" --version)" = 'Python 3.14.6'
+test "$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC "$NODE_BINARY" --version)" = 'v24.18.1'
+test "$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC npm_config_globalconfig="$NPM_GLOBAL_CONFIG" npm_config_registry=https://registry.npmjs.org/ npm_config_userconfig="$NPM_USER_CONFIG" "$NPM_BINARY" --version)" = '11.16.0'
+test "$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC "$PYTHON_BINARY" --version)" = 'Python 3.14.6'
 "$PYTHON_BINARY" -I -B "$TOOLING_STAGING/scripts/release_metadata.py" verify --directory "$CANDIDATE_STAGING"
 RELEASE_ID="$("$PYTHON_BINARY" -I -B -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["releaseCommit"])' "$CANDIDATE_STAGING/release-candidate.json")"
 RELEASE_TREE="$("$PYTHON_BINARY" -I -B -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["releaseTree"])' "$CANDIDATE_STAGING/release-candidate.json")"
@@ -168,8 +171,8 @@ case "$RELEASE_TREE" in *[!0-9a-f]*) exit 1 ;; esac
 
 (
   cd "$TOOLING_STAGING"
-  PATH=/usr/bin:/bin NODE_OPTIONS='' npm_config_cache="$NPM_CACHE" "$NPM_BINARY" ci --ignore-scripts --no-audit --no-fund
-  PATH=/usr/bin:/bin NODE_OPTIONS='' npm_config_cache="$NPM_CACHE" "$NPM_BINARY" run artifacts:verify
+  env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC NODE_OPTIONS='' npm_config_cache="$NPM_CACHE" npm_config_globalconfig="$NPM_GLOBAL_CONFIG" npm_config_registry=https://registry.npmjs.org/ npm_config_userconfig="$NPM_USER_CONFIG" "$NPM_BINARY" ci --ignore-scripts --no-audit --no-fund
+  env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC NODE_OPTIONS='' npm_config_cache="$NPM_CACHE" npm_config_globalconfig="$NPM_GLOBAL_CONFIG" npm_config_registry=https://registry.npmjs.org/ npm_config_userconfig="$NPM_USER_CONFIG" "$NPM_BINARY" run artifacts:verify
 )
 chown -R root:root "$TOOLING_STAGING"
 chmod -R go-w "$TOOLING_STAGING"

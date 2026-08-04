@@ -11,9 +11,6 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_NOSYSTEM=1
 export GOPROXY=https://proxy.golang.org,direct
 export GOSUMDB=sum.golang.org
-export npm_config_globalconfig=/var/empty/guard-daemon-npm-globalconfig
-export npm_config_registry=https://registry.npmjs.org/
-export npm_config_userconfig=/var/empty/guard-daemon-npm-userconfig
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES
 unset GIT_ATTR_SOURCE
 unset GIT_COMMON_DIR
@@ -36,6 +33,8 @@ readonly EXPECTED_GO_VERSION="go1.26.5"
 readonly EXPECTED_NODE_VERSION="v24.18.1"
 readonly EXPECTED_NPM_VERSION="11.16.0"
 readonly EXPECTED_PYTHON_VERSION="Python 3.14.6"
+readonly NPM_GLOBAL_CONFIG="/var/empty/guard-daemon-npm-globalconfig"
+readonly NPM_USER_CONFIG="/var/empty/guard-daemon-npm-userconfig"
 
 fail() {
   printf 'Ошибка сборки кандидата: %s\n' "$1" >&2
@@ -88,6 +87,14 @@ require_no_hidden_index_flags() {
   done <<<"$index_entries"
 }
 
+require_no_npm_config_files() {
+  local config_path
+  for config_path in "$NPM_GLOBAL_CONFIG" "$NPM_USER_CONFIG"; do
+    [[ ! -e "$config_path" && ! -L "$config_path" ]] || \
+      fail "изолированный npm config path должен отсутствовать: $config_path"
+  done
+}
+
 require_no_repository_attributes
 
 release_commit="${RELEASE_COMMIT:-}"
@@ -109,19 +116,34 @@ worktree_status="$(git -C "$repo_root" status --porcelain=v1 --untracked-files=a
 release_tree="$(git -C "$repo_root" show -s --format=%T "$release_commit")"
 [[ "$release_tree" =~ ^[0-9a-f]{40}$ ]] || fail "release tree имеет неканонический идентификатор"
 
-command -v go >/dev/null 2>&1 || fail "go не найден"
-command -v node >/dev/null 2>&1 || fail "node не найден"
-command -v npm >/dev/null 2>&1 || fail "npm не найден"
-command -v python3 >/dev/null 2>&1 || fail "python3 не найден"
+go_binary="$(command -v go)" || fail "go не найден"
+node_binary="$(command -v node)" || fail "node не найден"
+npm_binary="$(command -v npm)" || fail "npm не найден"
+python_binary="$(command -v python3)" || fail "python3 не найден"
 command -v tar >/dev/null 2>&1 || fail "tar не найден"
 command -v cmp >/dev/null 2>&1 || fail "cmp не найден"
 
-go_version_output="$(go version)"
+require_no_npm_config_files
+go_version_output="$(
+  env -i LC_ALL=C PATH="$PATH" TZ=UTC \
+    GOENV=off GOEXPERIMENT='' GOFIPS140=off GOFLAGS='' GOTOOLCHAIN=local \
+    "$go_binary" version
+)"
 read -r _ _ go_version _ <<<"$go_version_output"
 require_version "Go" "$EXPECTED_GO_VERSION" "$go_version"
-require_version "Node.js" "$EXPECTED_NODE_VERSION" "$(node --version)"
-require_version "npm" "$EXPECTED_NPM_VERSION" "$(npm --version)"
-require_version "Python" "$EXPECTED_PYTHON_VERSION" "$(python3 --version)"
+require_version "Node.js" "$EXPECTED_NODE_VERSION" "$(
+  env -i LC_ALL=C PATH="$PATH" TZ=UTC "$node_binary" --version
+)"
+require_version "npm" "$EXPECTED_NPM_VERSION" "$(
+  env -i LC_ALL=C PATH="$PATH" TZ=UTC \
+    npm_config_globalconfig="$NPM_GLOBAL_CONFIG" \
+    npm_config_registry=https://registry.npmjs.org/ \
+    npm_config_userconfig="$NPM_USER_CONFIG" \
+    "$npm_binary" --version
+)"
+require_version "Python" "$EXPECTED_PYTHON_VERSION" "$(
+  env -i LC_ALL=C PATH="$PATH" TZ=UTC "$python_binary" --version
+)"
 
 output_setting="${RELEASE_OUTPUT_ROOT:-dist/release}"
 if [[ "$output_setting" == /* ]]; then
@@ -204,32 +226,65 @@ if ! mkdir -m 0700 -- "$go_module_cache_path" 2>/dev/null; then
   fail "изолированный Go module cache занят или оставлен предыдущей сборкой: $go_module_cache_path"
 fi
 go_module_cache="$go_module_cache_path"
-mkdir -p -- "$npm_cache" "$go_build_cache"
+isolated_home="$snapshot/.release-home"
+mkdir -p -- "$npm_cache" "$go_build_cache" "$isolated_home"
+
+require_no_npm_config_files
+npm_environment=(
+  env -i
+  HOME="$isolated_home"
+  LC_ALL=C
+  PATH="$PATH"
+  TZ=UTC
+  NODE_OPTIONS=
+  npm_config_cache="$npm_cache"
+  npm_config_globalconfig="$NPM_GLOBAL_CONFIG"
+  npm_config_registry=https://registry.npmjs.org/
+  npm_config_userconfig="$NPM_USER_CONFIG"
+)
 
 (
   cd "$snapshot"
-  NODE_OPTIONS='' npm_config_cache="$npm_cache" \
-    npm --no-audit --no-fund --ignore-scripts ci
-  NODE_OPTIONS='' npm_config_cache="$npm_cache" npm run artifacts:verify
+  "${npm_environment[@]}" "$npm_binary" --no-audit --no-fund --ignore-scripts ci
+  "${npm_environment[@]}" "$npm_binary" run artifacts:verify
 )
 
 go_modules="$candidate_tmp/.go-modules.json"
 go_graph="$candidate_tmp/.go-graph.txt"
+go_environment=(
+  env -i
+  HOME="$isolated_home"
+  LC_ALL=C
+  PATH="$PATH"
+  TZ=UTC
+  GOCACHE="$go_build_cache"
+  GOMODCACHE="$go_module_cache"
+  GOENV=off
+  GOEXPERIMENT=
+  GOFIPS140=off
+  GOFLAGS=
+  "GOPROXY=https://proxy.golang.org,direct"
+  GOSUMDB=sum.golang.org
+  GOTOOLCHAIN=local
+  GOWORK=off
+  GIT_ATTR_NOSYSTEM=1
+  GIT_CONFIG_COUNT=0
+  GIT_CONFIG_GLOBAL=/dev/null
+  GIT_CONFIG_NOSYSTEM=1
+  GIT_NO_LAZY_FETCH=1
+  GIT_NO_REPLACE_OBJECTS=1
+  GIT_TERMINAL_PROMPT=0
+)
 (
   cd "$snapshot"
-  GOCACHE="$go_build_cache" GOMODCACHE="$go_module_cache" \
-    GOENV=off GOFLAGS='' GOTOOLCHAIN=local go mod download
-  GOCACHE="$go_build_cache" GOMODCACHE="$go_module_cache" \
-    GOENV=off GOFLAGS='' GOTOOLCHAIN=local go mod verify
-  GOCACHE="$go_build_cache" GOMODCACHE="$go_module_cache" \
-    GOENV=off GOFLAGS='' GOTOOLCHAIN=local \
-    go list -mod=readonly -m -json all >"$go_modules"
-  GOCACHE="$go_build_cache" GOMODCACHE="$go_module_cache" \
-    GOENV=off GOFLAGS='' GOTOOLCHAIN=local go mod graph >"$go_graph"
-  GOCACHE="$go_build_cache" GOMODCACHE="$go_module_cache" \
-    GOENV=off GOEXPERIMENT='' GOFLAGS='' GOTOOLCHAIN=local \
+  "${go_environment[@]}" "$go_binary" mod download
+  "${go_environment[@]}" "$go_binary" mod verify
+  "${go_environment[@]}" "$go_binary" list \
+    -mod=readonly -m -json all >"$go_modules"
+  "${go_environment[@]}" "$go_binary" mod graph >"$go_graph"
+  "${go_environment[@]}" \
     GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 \
-    go build \
+    "$go_binary" build \
       -trimpath \
       -buildvcs=false \
       -mod=readonly \
@@ -251,18 +306,18 @@ chmod 0644 \
 
 metadata="$snapshot/scripts/release_metadata.py"
 run_metadata() {
-  env \
-    -u PYTHONBREAKPOINT \
-    -u PYTHONHASHSEED \
-    -u PYTHONHOME \
-    -u PYTHONINSPECT \
-    -u PYTHONPATH \
-    -u PYTHONPYCACHEPREFIX \
-    -u PYTHONSAFEPATH \
-    -u PYTHONSTARTUP \
-    -u PYTHONUSERBASE \
-    -u PYTHONWARNINGS \
-    python3 -I -B "$metadata" "$@"
+  env -i HOME="$isolated_home" LC_ALL=C PATH="$PATH" TZ=UTC \
+    "$python_binary" -I -B "$metadata" "$@"
+}
+
+directory_identity() {
+  env -i LC_ALL=C PATH="$PATH" TZ=UTC \
+    "$python_binary" -I -B -c \
+    'import os, stat, sys
+value = os.lstat(sys.argv[1])
+if not stat.S_ISDIR(value.st_mode):
+    raise SystemExit(1)
+print(f"{value.st_dev}:{value.st_ino}")' "$1"
 }
 
 run_metadata sbom \
@@ -289,7 +344,15 @@ run_metadata checksums \
   --output "$candidate_tmp/SHA256SUMS"
 run_metadata verify --directory "$candidate_tmp"
 
+candidate_identity="$(directory_identity "$candidate_tmp")" || \
+  fail "не удалось зафиксировать identity staging-каталога кандидата"
 [[ ! -e "$target" && ! -L "$target" ]] || fail "каталог кандидата появился до публикации результата"
-mv -- "$candidate_tmp" "$target"
+if ! mv -- "$candidate_tmp" "$target"; then
+  fail "не удалось опубликовать каталог кандидата"
+fi
+published_identity="$(directory_identity "$target")" || \
+  fail "опубликованный путь кандидата не является обычным каталогом"
+[[ "$published_identity" == "$candidate_identity" ]] || \
+  fail "опубликованный путь не совпадает со staging-каталогом кандидата"
 candidate_tmp=""
 printf '%s\n' "$target"

@@ -106,8 +106,16 @@ first_root="${temporary_directory}/first"
 second_root="${temporary_directory}/second"
 mkdir -p "${first_root}" "${second_root}"
 
+GOCACHEPROG=/usr/bin/false \
+GOFIPS140=latest \
+GOWORK=/dev/null \
+NODE_OPTIONS=--require=/guard-daemon-forbidden-node-hook \
+NPM_CONFIG_SCRIPT_SHELL=/usr/bin/false \
+PYTHONHOME=/guard-daemon-forbidden-python-home \
 RELEASE_COMMIT="${commit}" RELEASE_OUTPUT_ROOT="${first_root}" \
   bash "${root}/scripts/build-release-candidate.sh"
+GOFIPS140=off \
+npm_config_script_shell=/usr/bin/false \
 RELEASE_COMMIT="${commit}" RELEASE_OUTPUT_ROOT="${second_root}" \
   bash "${root}/scripts/build-release-candidate.sh"
 
@@ -136,12 +144,16 @@ gitleaks dir --no-banner --redact --max-archive-depth=1 \
 gitleaks dir --no-banner --redact --max-archive-depth=1 \
   --config="${root}/.gitleaks.toml" "${second}"
 
+binary_strings="${temporary_directory}/binary.strings"
+if ! strings "${first}/guard-daemon-linux-amd64" >"${binary_strings}"; then
+  fail "не удалось проверить строки исполняемого файла"
+fi
 while IFS= read -r binary_string; do
   if [[ "${binary_string}" =~ (PermitSweeper|permitAndTransfer|permitAndSweep) ]]; then
     printf 'Удалённый путь permit найден в исполняемом файле кандидата.\n' >&2
     exit 1
   fi
-done < <(strings "${first}/guard-daemon-linux-amd64")
+done <"${binary_strings}"
 
 printf 'Commit снимка: %s\n' "${commit}"
 while IFS= read -r checksum; do
