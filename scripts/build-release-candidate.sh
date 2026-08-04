@@ -33,6 +33,7 @@ readonly EXPECTED_GO_VERSION="go1.26.5"
 readonly EXPECTED_NODE_VERSION="v24.18.1"
 readonly EXPECTED_NPM_VERSION="11.16.0"
 readonly EXPECTED_PYTHON_VERSION="Python 3.14.6"
+readonly ENV_BINARY="/usr/bin/env"
 readonly NPM_GLOBAL_CONFIG="/var/empty/guard-daemon-npm-globalconfig"
 readonly NPM_USER_CONFIG="/var/empty/guard-daemon-npm-userconfig"
 
@@ -124,25 +125,27 @@ command -v tar >/dev/null 2>&1 || fail "tar не найден"
 command -v cmp >/dev/null 2>&1 || fail "cmp не найден"
 
 require_no_npm_config_files
+[[ -f "$ENV_BINARY" && ! -L "$ENV_BINARY" && -x "$ENV_BINARY" ]] || \
+  fail "требуется обычный executable $ENV_BINARY"
 go_version_output="$(
-  env -i LC_ALL=C PATH="$PATH" TZ=UTC \
+  "$ENV_BINARY" -i LC_ALL=C PATH="$PATH" TZ=UTC \
     GOENV=off GOEXPERIMENT='' GOFIPS140=off GOFLAGS='' GOTOOLCHAIN=local \
     "$go_binary" version
 )"
 read -r _ _ go_version _ <<<"$go_version_output"
 require_version "Go" "$EXPECTED_GO_VERSION" "$go_version"
 require_version "Node.js" "$EXPECTED_NODE_VERSION" "$(
-  env -i LC_ALL=C PATH="$PATH" TZ=UTC "$node_binary" --version
+  "$ENV_BINARY" -i LC_ALL=C PATH="$PATH" TZ=UTC "$node_binary" --version
 )"
 require_version "npm" "$EXPECTED_NPM_VERSION" "$(
-  env -i LC_ALL=C PATH="$PATH" TZ=UTC \
+  "$ENV_BINARY" -i LC_ALL=C PATH="$PATH" TZ=UTC \
     npm_config_globalconfig="$NPM_GLOBAL_CONFIG" \
     npm_config_registry=https://registry.npmjs.org/ \
     npm_config_userconfig="$NPM_USER_CONFIG" \
     "$npm_binary" --version
 )"
 require_version "Python" "$EXPECTED_PYTHON_VERSION" "$(
-  env -i LC_ALL=C PATH="$PATH" TZ=UTC "$python_binary" --version
+  "$ENV_BINARY" -i LC_ALL=C PATH="$PATH" TZ=UTC "$python_binary" --version
 )"
 
 output_setting="${RELEASE_OUTPUT_ROOT:-dist/release}"
@@ -231,7 +234,7 @@ mkdir -p -- "$npm_cache" "$go_build_cache" "$isolated_home"
 
 require_no_npm_config_files
 npm_environment=(
-  env -i
+  "$ENV_BINARY" -i
   HOME="$isolated_home"
   LC_ALL=C
   PATH="$PATH"
@@ -252,7 +255,7 @@ npm_environment=(
 go_modules="$candidate_tmp/.go-modules.json"
 go_graph="$candidate_tmp/.go-graph.txt"
 go_environment=(
-  env -i
+  "$ENV_BINARY" -i
   HOME="$isolated_home"
   LC_ALL=C
   PATH="$PATH"
@@ -306,12 +309,12 @@ chmod 0644 \
 
 metadata="$snapshot/scripts/release_metadata.py"
 run_metadata() {
-  env -i HOME="$isolated_home" LC_ALL=C PATH="$PATH" TZ=UTC \
+  "$ENV_BINARY" -i HOME="$isolated_home" LC_ALL=C PATH="$PATH" TZ=UTC \
     "$python_binary" -I -B "$metadata" "$@"
 }
 
 directory_identity() {
-  env -i LC_ALL=C PATH="$PATH" TZ=UTC \
+  "$ENV_BINARY" -i LC_ALL=C PATH="$PATH" TZ=UTC \
     "$python_binary" -I -B -c \
     'import os, stat, sys
 value = os.lstat(sys.argv[1])

@@ -106,6 +106,15 @@ first_root="${temporary_directory}/first"
 second_root="${temporary_directory}/second"
 mkdir -p "${first_root}" "${second_root}"
 
+# Invoked indirectly after export by the builder child.
+# shellcheck disable=SC2329
+env() {
+  if [[ "${1:-}" == "-i" ]]; then
+    shift
+  fi
+  /usr/bin/env "$@"
+}
+export -f env
 GOCACHEPROG=/usr/bin/false \
 GOFIPS140=latest \
 GOWORK=/dev/null \
@@ -114,6 +123,7 @@ NPM_CONFIG_SCRIPT_SHELL=/usr/bin/false \
 PYTHONHOME=/guard-daemon-forbidden-python-home \
 RELEASE_COMMIT="${commit}" RELEASE_OUTPUT_ROOT="${first_root}" \
   bash "${root}/scripts/build-release-candidate.sh"
+unset -f env
 GOFIPS140=off \
 npm_config_script_shell=/usr/bin/false \
 RELEASE_COMMIT="${commit}" RELEASE_OUTPUT_ROOT="${second_root}" \

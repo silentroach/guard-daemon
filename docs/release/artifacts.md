@@ -49,9 +49,10 @@ GOMODCACHE=/var/tmp/guard-daemon-release-go-mod-v1
 имя машины, пользователя, путь checkout или значения окружения.
 Отладочные секции и таблица символов исключены флагами `-w -s`: они не нужны
 runtime-процессу и не входят в канонический release artifact.
-Go, npm и Python запускаются через пустое окружение с явным allowlist. Поэтому
-локальные `GOFIPS140`, `GOCACHEPROG`, `GOWORK`, `NODE_OPTIONS`, `npm_config_*` и
-`PYTHON*` не могут изменить candidate. Фиксированный `GOMODCACHE` создаётся
+Go, npm и Python запускаются через абсолютный `/usr/bin/env -i` и явный
+allowlist. Поэтому exported shell function `env`, локальные `GOFIPS140`,
+`GOCACHEPROG`, `GOWORK`, `NODE_OPTIONS`, `npm_config_*` и `PYTHON*` не могут
+изменить candidate. Фиксированный `GOMODCACHE` создаётся
 эксклюзивно с mode `0700`, проверяется через `go mod verify` и удаляется после
 сборки; стабильный абсолютный путь исключает module-cache paths из различий
 между бинарными файлами.

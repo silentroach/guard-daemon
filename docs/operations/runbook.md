@@ -157,9 +157,9 @@ for SYSTEM_TOOL in "$NODE_BINARY" "$NPM_BINARY" "$PYTHON_BINARY"; do
 done
 test ! -L "$NODE_BINARY"
 test -f "$NODE_BINARY"
-test "$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC "$NODE_BINARY" --version)" = 'v24.18.1'
-test "$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC npm_config_globalconfig="$NPM_GLOBAL_CONFIG" npm_config_registry=https://registry.npmjs.org/ npm_config_userconfig="$NPM_USER_CONFIG" "$NPM_BINARY" --version)" = '11.16.0'
-test "$(env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC "$PYTHON_BINARY" --version)" = 'Python 3.14.6'
+test "$(/usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC "$NODE_BINARY" --version)" = 'v24.18.1'
+test "$(/usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC npm_config_globalconfig="$NPM_GLOBAL_CONFIG" npm_config_registry=https://registry.npmjs.org/ npm_config_userconfig="$NPM_USER_CONFIG" "$NPM_BINARY" --version)" = '11.16.0'
+test "$(/usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC "$PYTHON_BINARY" --version)" = 'Python 3.14.6'
 "$PYTHON_BINARY" -I -B "$TOOLING_STAGING/scripts/release_metadata.py" verify --directory "$CANDIDATE_STAGING"
 RELEASE_ID="$("$PYTHON_BINARY" -I -B -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["releaseCommit"])' "$CANDIDATE_STAGING/release-candidate.json")"
 RELEASE_TREE="$("$PYTHON_BINARY" -I -B -c 'import json, pathlib, sys; print(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["releaseTree"])' "$CANDIDATE_STAGING/release-candidate.json")"
@@ -171,8 +171,8 @@ case "$RELEASE_TREE" in *[!0-9a-f]*) exit 1 ;; esac
 
 (
   cd "$TOOLING_STAGING"
-  env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC NODE_OPTIONS='' npm_config_cache="$NPM_CACHE" npm_config_globalconfig="$NPM_GLOBAL_CONFIG" npm_config_registry=https://registry.npmjs.org/ npm_config_userconfig="$NPM_USER_CONFIG" "$NPM_BINARY" ci --ignore-scripts --no-audit --no-fund
-  env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC NODE_OPTIONS='' npm_config_cache="$NPM_CACHE" npm_config_globalconfig="$NPM_GLOBAL_CONFIG" npm_config_registry=https://registry.npmjs.org/ npm_config_userconfig="$NPM_USER_CONFIG" "$NPM_BINARY" run artifacts:verify
+  /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC NODE_OPTIONS='' npm_config_cache="$NPM_CACHE" npm_config_globalconfig="$NPM_GLOBAL_CONFIG" npm_config_registry=https://registry.npmjs.org/ npm_config_userconfig="$NPM_USER_CONFIG" "$NPM_BINARY" ci --ignore-scripts --no-audit --no-fund
+  /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 TZ=UTC NODE_OPTIONS='' npm_config_cache="$NPM_CACHE" npm_config_globalconfig="$NPM_GLOBAL_CONFIG" npm_config_registry=https://registry.npmjs.org/ npm_config_userconfig="$NPM_USER_CONFIG" "$NPM_BINARY" run artifacts:verify
 )
 chown -R root:root "$TOOLING_STAGING"
 chmod -R go-w "$TOOLING_STAGING"
