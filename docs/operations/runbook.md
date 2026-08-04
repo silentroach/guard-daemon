@@ -419,6 +419,53 @@ curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock 
 аварийной остановки платных действий. Не настраивайте цикл перезапуска по коду
 `/healthz`; сначала разберите поле `status` и активные предупреждения.
 
+## Проверка после перезагрузки
+
+Unit намеренно не содержит `Restart=`. Недоступный RPC, несовпадающая
+аттестация или повреждённое состояние должны оставить службу в `failed`, а не
+создать бесконечный цикл запуска. `network-online.target` подтверждает только
+готовность сетевого стека и не гарантирует доступность внешних RPC.
+
+После каждой перезагрузки проверьте выпуск, автозапуск и фактическое состояние:
+
+```bash
+set -euo pipefail
+test "$(systemctl is-enabled guard-daemon.service)" = 'enabled'
+test -x /usr/lib/guard-daemon/current/guard-daemon
+readlink -f /usr/lib/guard-daemon/current
+ACTIVE_STATE=''
+ACTIVE_STATE="$(systemctl is-active guard-daemon.service 2>/dev/null)" || true
+case "$ACTIVE_STATE" in
+  active) ;;
+  failed)
+    systemctl status guard-daemon.service --no-pager || true
+    journalctl --unit guard-daemon.service --boot --no-pager
+    exit 1
+    ;;
+  *) exit 1 ;;
+esac
+curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+```
+
+Состояние `failed` после раннего старта не разрешает автоматический повтор.
+Сначала независимо подтвердите доступность обоих провайдеров на общем
+финализированном блоке, соответствие manifest и отсутствие повреждения state.
+Только после установления причины и восстановления зависимости выполните один
+контролируемый запуск и снова проверьте health:
+
+```bash
+set -euo pipefail
+test "$(systemctl is-enabled guard-daemon.service)" = 'enabled'
+test "$(systemctl show guard-daemon.service --property=MainPID --value)" = '0'
+systemctl reset-failed guard-daemon.service
+systemctl start guard-daemon.service
+systemctl is-active guard-daemon.service
+curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+```
+
+Повторный отказ требует расследования; не запускайте команду в цикле и не
+ослабляйте quorum, аттестацию, restore marker или ограничения unit.
+
 ## Штатная остановка
 
 ```bash
