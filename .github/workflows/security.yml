@@ -147,6 +147,7 @@ jobs:
       - name: Статически проверить unit systemd
         run: |
           set -euo pipefail
+          sudo systemd-sysusers --dry-run packaging/systemd/guard-daemon.sysusers
           id -u guard-daemon >/dev/null 2>&1 || sudo useradd --system --home-dir /var/lib/guard-daemon --shell /usr/sbin/nologin guard-daemon
           sudo install -d -o root -g root -m 0755 /usr/lib/guard-daemon/releases/ci-placeholder/artifacts/contracts
           sudo install -o root -g root -m 0755 /bin/true /usr/lib/guard-daemon/releases/ci-placeholder/guard-daemon

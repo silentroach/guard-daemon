@@ -1,1 +1,1 @@
-u! guard-daemon - "Системный пользователь guard-daemon" /var/lib/guard-daemon -
+u guard-daemon - "Системный пользователь guard-daemon" /var/lib/guard-daemon -
