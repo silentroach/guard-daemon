@@ -260,6 +260,7 @@ var environmentFieldTemplates = []string{
 	"RPC_READ_2_TRUST_DOMAIN_<N>",
 	"RPC_BROADCAST_HTTP_<N>",
 	"RESCUER_MANIFEST_<N>",
+	"RESCUER_RELEASE_COMMIT_<N>",
 	"TOKEN_MODE_<N>",
 	"TOKEN_ALLOWLIST_<N>",
 	"TOKEN_GAS_LIMIT_<N>",

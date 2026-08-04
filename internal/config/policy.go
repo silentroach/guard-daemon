@@ -89,6 +89,15 @@ func loadArtifactTrust(lookup func(string) (string, bool)) (ArtifactTrust, error
 	}, nil
 }
 
+func lowercaseHex(value string) bool {
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func loadRuntimePolicy(lookup func(string) (string, bool)) (RuntimePolicy, error) {
 	maxCost, err := loadPositiveDecimal(lookup, "MAX_TRANSACTION_COST_WEI", defaultMaxTransactionCostWei)
 	if err != nil {

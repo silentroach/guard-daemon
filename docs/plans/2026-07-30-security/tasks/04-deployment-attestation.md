@@ -2,7 +2,7 @@
 
 Статус: `DONE`
 
-Starting commit: `80eeff6d77abf12f0b47bb88a9dab0014c1c816f`.
+Начальный commit: `80eeff6d77abf12f0b47bb88a9dab0014c1c816f`.
 
 Реализация, проверки и независимое ревью завершены. Отчёт:
 [`reviews/04-deployment-attestation.md`](../reviews/04-deployment-attestation.md).
@@ -30,7 +30,7 @@ Mainnet deployment не входит в scope и запрещён агентам
 3. Перед deployment сверять фактический chain ID с expected chain ID.
 4. Проверять constructor arguments, deployed runtime, destination, sponsor/operator и artifact provenance.
 5. Генерировать machine-readable manifest: chain ID, contract role, address, transaction hash для публичного official deployment, block, compiler/settings, source commit, artifact hash, runtime hash и immutable values.
-6. Operator-specific manifests с адресами не коммитятся автоматически. Repository defaults остаются пустыми либо с reviewed official manifests.
+6. Операторские manifests с адресами не коммитятся автоматически. Значения по умолчанию репозитория остаются пустыми либо содержат проверенные официальные manifests.
 7. `.env.example` не содержит непроверенных legacy addresses.
 8. Обновлять operator config атомарно только после успешной проверки critical contract.
 9. Любой critical network failure даёт non-zero exit status. Успех вспомогательного contract не маскирует failure Rescuer.

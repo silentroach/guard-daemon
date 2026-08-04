@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"guard-daemon/internal/buildinfo"
+
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -98,6 +100,50 @@ func TestLoadFromRejectsIncompleteOrDependentProviders(t *testing.T) {
 			test.configure(values)
 			_, err := LoadFrom(mapLookup(values))
 			assertErrorField(t, err, test.wantField, values)
+		})
+	}
+}
+
+func TestReleaseR2ConfigKeepsExplicitR1ManifestIdentity(t *testing.T) {
+	previous := buildinfo.ReleaseCommit
+	buildinfo.ReleaseCommit = strings.Repeat("2", 40)
+	t.Cleanup(func() { buildinfo.ReleaseCommit = previous })
+
+	tests := []struct {
+		name      string
+		commit    string
+		set       bool
+		wantKind  string
+		wantValue string
+	}{
+		{name: "закреплённое дерево по умолчанию", wantKind: pinnedArtifactSourceKind, wantValue: pinnedArtifactSourceValue},
+		{name: "официальный commit R1", commit: strings.Repeat("1", 40), set: true, wantKind: "git-commit", wantValue: strings.Repeat("1", 40)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := validEnvironment()
+			if test.set {
+				values["RESCUER_RELEASE_COMMIT_BASE"] = test.commit
+			}
+			runtimeConfig, err := LoadFromMap(values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			network := runtimeConfig.Networks[0]
+			if network.ManifestSourceKind != test.wantKind || network.ManifestSourceValue != test.wantValue {
+				t.Fatalf("manifest provenance = %q %q", network.ManifestSourceKind, network.ManifestSourceValue)
+			}
+		})
+	}
+}
+
+func TestManifestReleaseCommitFailsClosed(t *testing.T) {
+	for _, commit := range []string{"", "main", strings.Repeat("A", 40), strings.Repeat("a", 39), "0x" + strings.Repeat("a", 40)} {
+		t.Run(commit, func(t *testing.T) {
+			values := validEnvironment()
+			values["RESCUER_RELEASE_COMMIT_BASE"] = commit
+			_, err := LoadFromMap(values)
+			assertErrorField(t, err, "RESCUER_RELEASE_COMMIT_BASE", values)
 		})
 	}
 }

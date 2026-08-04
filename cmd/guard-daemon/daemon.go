@@ -41,6 +41,7 @@ const (
 	leaseReleaseTimeout  = 5 * time.Second
 	rescueReceiptTimeout = 60 * time.Second
 	rescueMaxAttempts    = uint32(3)
+	restoreMarkerPath    = "/var/lib/guard-daemon-operator/live-disabled-after-restore"
 )
 
 const (
@@ -160,6 +161,7 @@ type daemonDependencies struct {
 	openBudget         func(config.Runtime, []preparedNetwork) (budget.Ledger, error)
 	openAdmission      func(config.Runtime, rescue.AdmissionConfig) (*rescue.AdmissionController, error)
 	alertStatePath     func(config.Runtime) (string, error)
+	lstatRestoreMarker func(string) (os.FileInfo, error)
 }
 
 type daemon struct {
@@ -295,6 +297,7 @@ func newProductionDependencies(observer observability.Observer, mode config.Mode
 		alertStatePath: func(runtimeConfig config.Runtime) (string, error) {
 			return store.CanonicalAlertPath(runtimeConfig.SponsorAddress)
 		},
+		lstatRestoreMarker: os.Lstat,
 	}
 	if mode.IsLive() {
 		dependencies.dialSubmission = dialSubmissionClient
@@ -442,18 +445,22 @@ func loadConfiguredManifest(runtimeConfig config.Runtime, network config.Network
 	}
 	defer artifactFile.Close()
 
-	return contracts.LoadTrustedManifest(manifestFile, artifactFile, contracts.ManifestExpectations{
+	return contracts.LoadTrustedManifest(manifestFile, artifactFile, configuredManifestExpectations(runtimeConfig, network))
+}
+
+func configuredManifestExpectations(runtimeConfig config.Runtime, network config.Network) contracts.ManifestExpectations {
+	return contracts.ManifestExpectations{
 		ChainID:        strconv.FormatInt(int64(network.ChainID), 10),
 		ContractRole:   "rescuer",
 		Destination:    runtimeConfig.Destination,
 		Sponsor:        runtimeConfig.SponsorAddress,
 		ArtifactSHA256: runtimeConfig.Artifact.SHA256,
 		SourceProvenance: contracts.SourceProvenance{
-			Kind:  runtimeConfig.Artifact.SourceKind,
-			Value: runtimeConfig.Artifact.SourceValue,
+			Kind:  network.ManifestSourceKind,
+			Value: network.ManifestSourceValue,
 		},
 		CompilerVersion: runtimeConfig.Artifact.CompilerVersion,
-	})
+	}
 }
 
 func attestConfiguredNetwork(ctx context.Context, network config.Network, manifest contracts.DeploymentManifest, readTimeout time.Duration) error {
@@ -548,6 +555,9 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 	dependencies, err := dependencies.withDefaults(runtimeConfig.Mode)
 	if err != nil {
 		return nil, processError("daemon.dependencies", domain.ErrorConfiguration, errorStartupInvalid, false, err)
+	}
+	if err := rejectRestoredSigningState(runtimeConfig, dependencies.lstatRestoreMarker); err != nil {
+		return nil, processError("daemon.restore_marker", domain.ErrorConfiguration, errorStartupInvalid, false, err)
 	}
 	if _, err := runtimeBudgetPolicy(runtimeConfig); err != nil {
 		return nil, processError("daemon.budget_policy", domain.ErrorConfiguration, errorStartupInvalid, false, err)
@@ -850,7 +860,24 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 	return process, nil
 }
 
+func rejectRestoredSigningState(runtimeConfig config.Runtime, lstat func(string) (os.FileInfo, error)) error {
+	if !runtimeConfig.Mode.IsLive() || runtimeConfig.Policy.EmergencyStop {
+		return nil
+	}
+	_, err := lstat(restoreMarkerPath)
+	if err == nil {
+		return errors.New("состояние было восстановлено из резервной копии")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return errors.New("не удалось безопасно проверить marker восстановленного состояния")
+}
+
 func (dependencies daemonDependencies) withDefaults(mode config.Mode) (daemonDependencies, error) {
+	if dependencies.lstatRestoreMarker == nil {
+		dependencies.lstatRestoreMarker = os.Lstat
+	}
 	if dependencies.serviceClock == nil || dependencies.observer == nil || dependencies.dial == nil || dependencies.loadManifest == nil || dependencies.openStore == nil || dependencies.openQuorum == nil || dependencies.alertStatePath == nil {
 		return daemonDependencies{}, errors.New("не заданы обязательные зависимости процесса")
 	}

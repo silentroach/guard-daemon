@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"guard-daemon/internal/buildinfo"
 	"guard-daemon/internal/clock"
 	"guard-daemon/internal/config"
 	"guard-daemon/internal/contracts"
@@ -38,6 +41,10 @@ func TestDryRunStartupHasNoProductionSigningOrBroadcastGraph(t *testing.T) {
 	dependencies := daemonDependencies{
 		serviceClock: clock.Real{},
 		observer:     observability.Discard{},
+		lstatRestoreMarker: func(string) (os.FileInfo, error) {
+			t.Fatal("dry-run проверяет restore marker")
+			return nil, nil
+		},
 		dial: func(context.Context, string, uint64) (generationClient, error) {
 			networkCalls.Add(1)
 			return nil, errors.New("неожиданный network access")
@@ -87,6 +94,9 @@ func TestLiveProductionDependenciesUseStoreProcessFence(t *testing.T) {
 	if production.acquireFence == nil || reflect.ValueOf(production.acquireFence).Pointer() != reflect.ValueOf(store.AcquireProcessFence).Pointer() {
 		t.Fatal("live production dependencies do not use store.AcquireProcessFence")
 	}
+	if production.lstatRestoreMarker == nil || reflect.ValueOf(production.lstatRestoreMarker).Pointer() != reflect.ValueOf(os.Lstat).Pointer() {
+		t.Fatal("live production dependencies do not use os.Lstat for the fixed restore marker")
+	}
 }
 
 func TestDaemonPassesAcquiredFenceToCoordinator(t *testing.T) {
@@ -111,6 +121,10 @@ func TestEmergencyStopBuildsReadOnlyLiveGraphWithoutPrivateSigners(t *testing.T)
 	runtimeConfig := testRuntime(t, []domain.Network{testNetwork("stopped-network", 404)})
 	runtimeConfig.Policy.EmergencyStop = true
 	dependencies := startupDependencies(t)
+	dependencies.lstatRestoreMarker = func(string) (os.FileInfo, error) {
+		t.Fatal("emergency stop проверяет restore marker")
+		return nil, nil
+	}
 	var signerCalls atomic.Int32
 	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
 		signerCalls.Add(1)
@@ -125,6 +139,70 @@ func TestEmergencyStopBuildsReadOnlyLiveGraphWithoutPrivateSigners(t *testing.T)
 	}
 	if err := process.shutdown(nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRestoreMarkerOfAnyTypeBlocksSignerConstruction(t *testing.T) {
+	tests := []struct {
+		name   string
+		create func(string) error
+	}{
+		{name: "обычный файл", create: func(path string) error { return os.WriteFile(path, nil, 0o444) }},
+		{name: "каталог", create: func(path string) error { return os.Mkdir(path, 0o755) }},
+		{name: "dangling symlink", create: func(path string) error { return os.Symlink("missing-target", path) }},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtimeConfig := testRuntime(t, []domain.Network{testNetwork("restored-state", domain.NetworkID(405+index))})
+			marker := filepath.Join(t.TempDir(), "live-disabled-after-restore")
+			if err := test.create(marker); err != nil {
+				t.Fatal(err)
+			}
+			dependencies := startupDependencies(t)
+			dependencies.lstatRestoreMarker = func(path string) (os.FileInfo, error) {
+				if path != restoreMarkerPath {
+					t.Fatalf("restore marker path = %q, нужен %q", path, restoreMarkerPath)
+				}
+				return os.Lstat(marker)
+			}
+			var signerCalls atomic.Int32
+			dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
+				signerCalls.Add(1)
+				return testPrivateKeySigners(t)
+			}
+
+			_, err := newDaemon(context.Background(), runtimeConfig, dependencies)
+			if err == nil || !strings.Contains(startupOperatorMessage(err), "восстановленное состояние") {
+				t.Fatalf("restore marker error = %v", err)
+			}
+			if signerCalls.Load() != 0 {
+				t.Fatalf("restore marker allowed signer construction: %d", signerCalls.Load())
+			}
+		})
+	}
+}
+
+func TestRestoreMarkerLstatFailureFailsClosed(t *testing.T) {
+	runtimeConfig := testRuntime(t, []domain.Network{testNetwork("unreadable-restore-marker", 406)})
+	dependencies := startupDependencies(t)
+	var signerCalls atomic.Int32
+	dependencies.lstatRestoreMarker = func(path string) (os.FileInfo, error) {
+		if path != restoreMarkerPath {
+			t.Fatalf("restore marker path = %q, нужен %q", path, restoreMarkerPath)
+		}
+		return nil, &os.PathError{Op: "lstat", Path: path, Err: os.ErrPermission}
+	}
+	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
+		signerCalls.Add(1)
+		return testPrivateKeySigners(t)
+	}
+
+	_, err := newDaemon(context.Background(), runtimeConfig, dependencies)
+	if err == nil || !strings.Contains(startupOperatorMessage(err), "восстановленное состояние") {
+		t.Fatalf("lstat failure was not fail-closed: %v", err)
+	}
+	if signerCalls.Load() != 0 {
+		t.Fatalf("lstat failure allowed signer construction: %d", signerCalls.Load())
 	}
 }
 
@@ -487,6 +565,22 @@ func TestConfiguredAttestationUsesBothHTTPOverridesAndProviderIdentity(t *testin
 		if client.closed.Load() != 1 {
 			t.Fatalf("attestation client %d close count = %d", index, client.closed.Load())
 		}
+	}
+}
+
+func TestReleaseR2KeepsExplicitR1ManifestIdentity(t *testing.T) {
+	const releaseR1 = "1111111111111111111111111111111111111111"
+	const releaseR2 = "2222222222222222222222222222222222222222"
+	previous := buildinfo.ReleaseCommit
+	buildinfo.ReleaseCommit = releaseR2
+	t.Cleanup(func() { buildinfo.ReleaseCommit = previous })
+
+	runtimeConfig := testRuntime(t, []domain.Network{testNetwork("release-update", 903)})
+	runtimeConfig.Networks[0].ManifestSourceKind = "git-commit"
+	runtimeConfig.Networks[0].ManifestSourceValue = releaseR1
+	expectations := configuredManifestExpectations(runtimeConfig, runtimeConfig.Networks[0])
+	if expectations.SourceProvenance.Kind != "git-commit" || expectations.SourceProvenance.Value != releaseR1 {
+		t.Fatalf("R2 заменил ожидаемую identity manifest R1: %#v", expectations.SourceProvenance)
 	}
 }
 

@@ -572,23 +572,13 @@ def validate_repository(root: Path, base_sha: str | None) -> list[str]:
         issues.append(str(error))
 
     public_count = 0
-    task10_path = root / "docs/plans/2026-07-30-security/tasks/10-operations-release.md"
-    task10 = task10_path.read_text("utf-8") if task10_path.is_file() else ""
     for path in all_paths:
         file_path = root / path
         if path.endswith(".md") and file_path.is_file():
             public_count += 1
             text = file_path.read_text("utf-8", errors="replace")
             first_line = text.splitlines()[0] if text.splitlines() else ""
-            if path == "README.md" and not CYRILLIC.search(first_line):
-                assigned = re.search(r"Статус: `(PENDING|IN PROGRESS)`", task10) and (
-                    "Полный перевод и переработка `README.md`" in task10
-                )
-                if not assigned:
-                    issues.append("README.md: исключение допустимо только до Task 10")
-                else:
-                    print("README.md временно разрешён до полной миграции Task 10.")
-            elif not first_line.startswith("# ") or not CYRILLIC.search(first_line):
+            if not first_line.startswith("# ") or not CYRILLIC.search(first_line):
                 issues.append(f"{path}: первый заголовок должен быть русскоязычным")
         elif path in {".env.example", "guard-daemon-HELP_RU.txt"} and file_path.is_file():
             public_count += 1

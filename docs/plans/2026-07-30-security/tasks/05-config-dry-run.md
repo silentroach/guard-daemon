@@ -4,7 +4,7 @@
 
 Исходный commit: `86f7d7d`.
 
-Implementation, `make go-ci`, secret scan и независимое review завершены.
+Реализация, `make go-ci`, проверка секретов и независимое ревью завершены.
 Отчёт: [`../reviews/05-config-dry-run.md`](../reviews/05-config-dry-run.md), digest
 проверенного diff:
 `39eec1a4f8d183228b5fe83b341235521e2d7c20da4f09844f18686dce7c2f8f`.

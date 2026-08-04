@@ -85,9 +85,10 @@ Critical findings отсутствовали. После финального cl
 |---|---|---|---|---|
 | Нет | — | Нет в рамках задачи | — | — |
 
-Persistent queue/checkpoint, checkpoint-aware tombstone GC, backfill/reorg,
-durable retry outcomes, nonce lease, RPC quorum, dry run и global budget остаются
-явным scope Tasks 04-08 и не считаются закрытыми этим отчётом.
+Постоянные очередь и checkpoint, очистка tombstone с учётом checkpoint,
+backfill/reorg, сохраняемые результаты повторов, nonce lease, RPC quorum, dry run
+и общий budget остаются явными границами Tasks 04-08 и не считаются закрытыми
+этим отчётом.
 
 ## Решение
 

@@ -1,8 +1,11 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	"guard-daemon/internal/buildinfo"
 )
 
 func TestPolicyDefaultsAndOverrides(t *testing.T) {
@@ -152,5 +155,19 @@ func TestArtifactTrustIsPinned(t *testing.T) {
 	}
 	if runtime.Artifact != want {
 		t.Fatalf("artifact trust = %#v", runtime.Artifact)
+	}
+}
+
+func TestArtifactTrustIgnoresEmbeddedBinaryCommit(t *testing.T) {
+	previous := buildinfo.ReleaseCommit
+	buildinfo.ReleaseCommit = strings.Repeat("b", 40)
+	t.Cleanup(func() { buildinfo.ReleaseCommit = previous })
+
+	runtimeConfig, err := LoadFrom(mapLookup(validEnvironment()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeConfig.Artifact.SourceKind != pinnedArtifactSourceKind || runtimeConfig.Artifact.SourceValue != pinnedArtifactSourceValue {
+		t.Fatalf("artifact trust зависит от binary identity: %#v", runtimeConfig.Artifact)
 	}
 }

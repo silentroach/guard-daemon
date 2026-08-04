@@ -4,8 +4,8 @@
 
 Исходный commit: `2613a55`.
 
-Implementation, adversarial tests, repository security gates и независимое
-review завершены. Отчёт:
+Реализация, атакующие тесты, проверки безопасности репозитория и независимое
+ревью завершены. Отчёт:
 [`../reviews/09-security-validation.md`](../reviews/09-security-validation.md),
 digest проверенного diff:
 `f0c0e09963b45001c23b95a54791776e8a460b7df411efacbd2b763f03a53c0e`.

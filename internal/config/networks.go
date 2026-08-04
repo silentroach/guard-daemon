@@ -31,15 +31,17 @@ func (provider ReadProvider) Format(state fmt.State, _ rune) {
 
 // Network содержит настройки только явно включённой сети.
 type Network struct {
-	Name               string
-	ChainID            domain.NetworkID
-	ReadProviders      []ReadProvider
-	BroadcastHTTP      string
-	ManifestPath       string
-	Tokens             []domain.Token
-	TrustedTokens      []common.Address
-	AllowUnknownTokens bool
-	EconomicPolicy     EconomicPolicy
+	Name                string
+	ChainID             domain.NetworkID
+	ReadProviders       []ReadProvider
+	BroadcastHTTP       string
+	ManifestPath        string
+	ManifestSourceKind  string
+	ManifestSourceValue string
+	Tokens              []domain.Token
+	TrustedTokens       []common.Address
+	AllowUnknownTokens  bool
+	EconomicPolicy      EconomicPolicy
 }
 
 // Format исключает RPC URL и путь manifest из случайного вывода.
@@ -266,6 +268,10 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 	if err != nil {
 		return Network{}, err
 	}
+	manifestSourceKind, manifestSourceValue, err := loadManifestSourceProvenance(lookup, suffix)
+	if err != nil {
+		return Network{}, err
+	}
 	tokens, trustedTokens, allowUnknown, err := loadTokenPolicy(lookup, suffix, definition.tokens)
 	if err != nil {
 		return Network{}, err
@@ -276,16 +282,30 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 	}
 
 	return Network{
-		Name:               definition.name,
-		ChainID:            definition.chainID,
-		ReadProviders:      providers,
-		BroadcastHTTP:      broadcast,
-		ManifestPath:       manifest,
-		Tokens:             tokens,
-		TrustedTokens:      trustedTokens,
-		AllowUnknownTokens: allowUnknown,
-		EconomicPolicy:     economicPolicy,
+		Name:                definition.name,
+		ChainID:             definition.chainID,
+		ReadProviders:       providers,
+		BroadcastHTTP:       broadcast,
+		ManifestPath:        manifest,
+		ManifestSourceKind:  manifestSourceKind,
+		ManifestSourceValue: manifestSourceValue,
+		Tokens:              tokens,
+		TrustedTokens:       trustedTokens,
+		AllowUnknownTokens:  allowUnknown,
+		EconomicPolicy:      economicPolicy,
 	}, nil
+}
+
+func loadManifestSourceProvenance(lookup func(string) (string, bool), suffix string) (string, string, error) {
+	name := "RESCUER_RELEASE_COMMIT_" + suffix
+	commit, ok := lookup(name)
+	if !ok {
+		return pinnedArtifactSourceKind, pinnedArtifactSourceValue, nil
+	}
+	if len(commit) != 40 || !lowercaseHex(commit) {
+		return "", "", fmt.Errorf("переменная %s должна содержать полный commit из 40 шестнадцатеричных символов в нижнем регистре", name)
+	}
+	return "git-commit", commit, nil
 }
 
 func validateEndpoint(name, value string, websocket bool) (string, error) {

@@ -97,9 +97,8 @@ func TestSubscriptionDisconnectBackfillsGapWithoutDuplicates(t *testing.T) {
 
 	// Повтор subscription уже canonical candidate безопасно coalesce-ится.
 	logs.send(firstLog)
-	finalized.addBlock(11, testHash(0x0b), testHash(0x0a))
 	gapLog := matchingLog(codec, source, token.Address, 11, testHash(0x0b), 2)
-	finalized.setLogs(11, []types.Log{gapLog})
+	finalized.addBlockWithLogs(11, testHash(0x0b), testHash(0x0a), []types.Log{gapLog})
 	logs.subscription.fail(errors.New("disconnect"))
 	if err := receive(t, runResult); err == nil {
 		t.Fatal("disconnect не завершил поколение")
@@ -359,6 +358,16 @@ func (reader *fakeFinalized) addBlock(number uint64, hash, parent common.Hash) {
 	reader.mu.Lock()
 	defer reader.mu.Unlock()
 	reader.blocks[number] = rpc.BlockRef{Number: number, Hash: hash, ParentHash: parent}
+	if number > reader.latest || len(reader.blocks) == 1 {
+		reader.latest = number
+	}
+}
+
+func (reader *fakeFinalized) addBlockWithLogs(number uint64, hash, parent common.Hash, logs []types.Log) {
+	reader.mu.Lock()
+	defer reader.mu.Unlock()
+	reader.blocks[number] = rpc.BlockRef{Number: number, Hash: hash, ParentHash: parent}
+	reader.logs[number] = append([]types.Log(nil), logs...)
 	if number > reader.latest || len(reader.blocks) == 1 {
 		reader.latest = number
 	}

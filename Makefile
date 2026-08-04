@@ -1,4 +1,4 @@
-.PHONY: adversarial-test artifacts-verify audit build check ci-policy contracts-build contracts-lint contracts-static contracts-test deployment-check format format-check fuzz-test go-ci lint mod-verify node-ci race reproducibility-check secret-scan security-validation test typecheck vet vuln workflow-lint
+.PHONY: adversarial-test artifacts-verify audit build check ci-policy contracts-build contracts-lint contracts-static contracts-test deployment-check documentation-check format format-check fuzz-test go-ci lint mod-verify node-ci operations-check operations-rehearsal race release-candidate reproducibility-check secret-scan security-validation test typecheck vet vuln workflow-lint
 
 format:
 	gofmt -w $$(git ls-files '*.go')
@@ -19,6 +19,20 @@ ci-policy:
 	python3 -B -m unittest discover -s test/ci -p 'test_*.py'
 	bash test/ci/repository-policy.sh
 
+documentation-check:
+	python3 -B -m unittest discover -s test/ci -p 'test_documentation.py'
+	go test -mod=readonly ./internal/config
+
+operations-check:
+	python3 -B -m unittest discover -s test/ci -p 'test_operations.py'
+	python3 -B -m unittest discover -s test/ci -p 'test_release_metadata.py'
+	bash -n scripts/build-release-candidate.sh
+
+operations-rehearsal:
+	go test -mod=readonly ./cmd/guard-daemon ./internal/config ./test/integration/policy \
+		-run 'Test(CLI|Diagnostics|DryRun|EmergencyStop|DaemonGracefulShutdown)'
+	npm run deploy:test
+
 adversarial-test:
 	bash test/ci/adversarial-go.sh
 
@@ -27,6 +41,9 @@ fuzz-test:
 
 reproducibility-check:
 	bash test/ci/compare-artifacts.sh
+
+release-candidate:
+	RELEASE_COMMIT="$(RELEASE_COMMIT)" bash scripts/build-release-candidate.sh
 
 mod-verify:
 	go mod verify
@@ -95,4 +112,4 @@ node-ci: typecheck lint contracts-build contracts-test contracts-lint deployment
 
 check: format-check go-ci node-ci vuln audit secret-scan
 
-security-validation: check contracts-static adversarial-test fuzz-test ci-policy reproducibility-check
+security-validation: check contracts-static adversarial-test fuzz-test ci-policy documentation-check operations-check operations-rehearsal reproducibility-check

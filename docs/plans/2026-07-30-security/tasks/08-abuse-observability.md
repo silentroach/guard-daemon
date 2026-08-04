@@ -4,7 +4,7 @@
 
 Исходный commit: `5a611cb`.
 
-Implementation, abuse/load tests и независимое review завершены.
+Реализация, тесты злоупотребления и нагрузки и независимое ревью завершены.
 Отчёт: [`../reviews/08-abuse-observability.md`](../reviews/08-abuse-observability.md),
 digest проверенного diff:
 `b3686ec031b4ba88a40f20d79ac26340938f015f4baf34bdf6ee20cd6ede6077`.

@@ -144,6 +144,22 @@ jobs:
         run: python -B -m unittest discover -s test/ci -p 'test_*.py'
       - name: Проверить политику репозитория
         run: bash test/ci/repository-policy.sh
+      - name: Статически проверить unit systemd
+        run: |
+          set -euo pipefail
+          id -u guard-daemon >/dev/null 2>&1 || sudo useradd --system --home-dir /var/lib/guard-daemon --shell /usr/sbin/nologin guard-daemon
+          sudo install -d -o root -g root -m 0755 /usr/lib/guard-daemon/releases/ci-placeholder/artifacts/contracts
+          sudo install -o root -g root -m 0755 /bin/true /usr/lib/guard-daemon/releases/ci-placeholder/guard-daemon
+          sudo install -o root -g root -m 0644 /dev/null /usr/lib/guard-daemon/releases/ci-placeholder/artifacts/contracts/RescuerV2.json
+          sudo ln -s releases/ci-placeholder /usr/lib/guard-daemon/current
+          sudo install -o root -g root -m 0644 packaging/systemd/guard-daemon.state.env /usr/lib/guard-daemon/guard-daemon.state.env
+          sudo install -d -o root -g guard-daemon -m 0750 /etc/guard-daemon
+          sudo install -o root -g guard-daemon -m 0640 /dev/null /etc/guard-daemon/guard-daemon.env
+          sudo install -d -o guard-daemon -g guard-daemon -m 0700 /var/lib/guard-daemon /var/tmp/guard-daemon-leases-v1
+          sudo install -d -o root -g root -m 0755 /var/lib/guard-daemon-operator
+          sudo install -d -o root -g root -m 0700 /var/lib/guard-daemon-operator/deployment-recovery
+          sudo install -d -o root -g root -m 0700 /var/lib/guard-daemon-operator/deployment-manifests
+          systemd-analyze verify packaging/systemd/guard-daemon.service
 
   reproducible-artifacts:
     name: Воспроизводимые артефакты
@@ -167,6 +183,15 @@ jobs:
           cache: npm
       - name: Установить npm
         run: npm install --global "npm@${NPM_VERSION}"
+      - name: Установить Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Установить gitleaks
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin"
+          GOBIN="${RUNNER_TEMP}/bin" go install "github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
       - name: Сравнить две чистые сборки
         run: bash test/ci/compare-artifacts.sh
 

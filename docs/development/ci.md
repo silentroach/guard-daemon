@@ -1,15 +1,42 @@
 # Обязательные проверки разработки
 
-GitHub Actions не устанавливает и не вызывает Nix. CI на `ubuntu-24.04`
-настраивает Go `1.26.5`, Node.js `24.18.1` и npm `11.16.0` через официальные
-setup actions, закреплённые полными commit SHA. `actionlint`, ShellCheck,
-`govulncheck`, `gitleaks`, Foundry `1.7.1` и Slither `0.11.6` также
-устанавливаются по точным версиям; архив ShellCheck проверяется по SHA-256.
-Foundry устанавливается напрямую из release archive после проверки SHA-256,
-без `foundryup`. Статический анализ использует Python `3.14.6`, полный
-hash-locked набор Python wheels и отдельный checksummed `solc 0.8.36`.
-Контрактные тесты используют Prague EVM и усиленный профиль `ci`: 10 000
-прогонов каждого fuzz-теста и 1 000 invariant-прогонов глубиной 256 вызовов.
+GitHub Actions не устанавливает и не вызывает Nix. CI работает на
+`ubuntu-24.04`. Текущие точные версии основных инструментов:
+
+- Go `1.26.5`;
+- Node.js `24.18.1`;
+- npm `11.16.0`;
+- Python `3.14.6`;
+- actionlint `1.7.12`;
+- ShellCheck `0.11.0`;
+- govulncheck `1.1.4`;
+- gitleaks `8.30.1`;
+- Foundry `1.7.1`;
+- Slither `0.11.6` и crytic-compile `0.4.2`;
+- solc `0.8.36`, commit `8a079791`;
+- PyYAML `6.0.3` для repository policy.
+
+Node.js-инструменты также закреплены в `package-lock.json`: TypeScript `6.0.3`,
+tsx `4.23.1`, ESLint `10.8.0`, typescript-eslint `8.65.0` и Prettier `3.9.6`.
+
+Официальные actions закреплены одновременно версией и полным commit SHA:
+
+- `actions/checkout` `v7.0.1`:
+  `3d3c42e5aac5ba805825da76410c181273ba90b1`;
+- `actions/setup-go` `v7.0.0`:
+  `b7ad1dad31e06c5925ef5d2fc7ad053ef454303e`;
+- `actions/setup-node` `v7.0.0`:
+  `820762786026740c76f36085b0efc47a31fe5020`;
+- `actions/setup-python` `v7.0.0`:
+  `5fda3b95a4ea91299a34e894583c3862153e4b97`;
+- `actions/dependency-review-action` `v4.9.0`:
+  `2031cfc080254a8a887f58cffee85186f0e49e48`.
+
+Архивы ShellCheck, Foundry и отдельный solc проверяются по закреплённым SHA-256.
+Foundry устанавливается напрямую из release archive без `foundryup`.
+Python-зависимости устанавливаются только из hash-locked wheels. Контрактные
+тесты используют Prague EVM и усиленный профиль `ci`: 10 000 прогонов каждого
+fuzz-теста и 1 000 invariant-прогонов глубиной 256 вызовов.
 
 Локально разрешено войти в необязательное окружение `nix develop`, но все
 приведённые ниже команды являются обычными repository commands и не зависят от
@@ -65,6 +92,32 @@ make fuzz-test
 make ci-policy
 make reproducibility-check
 ```
+
+## Проверки эксплуатации и выпуска
+
+Интерфейс репозитория включает следующие цели:
+
+```sh
+make documentation-check
+make operations-check
+make operations-rehearsal
+make release-candidate RELEASE_COMMIT=<40hex>
+```
+
+`documentation-check` проверяет ссылки, русский язык и соответствие
+документации schema. `operations-check` проверяет эксплуатационную
+политику, сгенерированные метаданные, схемы и контрольные суммы.
+`operations-rehearsal` выполняет только локальный сценарий без
+отправки транзакций в публичную сеть. `release-candidate`
+принимает только полный immutable commit и создаёт детерминированный
+`linux/amd64`, `CGO_ENABLED=0` каталог по процедуре
+[../release/process.md](../release/process.md).
+
+Workflow воспроизводимости дважды создаёт release candidate из точного commit,
+сравнивает результаты и сканирует оба каталога и вложенные tar-файлы на секреты.
+Workflows имеют только `contents: read`, не получают OIDC token и не подписывают артефакты. До Task 11 кандидат не
+разрешён к публикации; tag, `push`, GitHub Release и mainnet-действия этими
+целями не выполняются.
 
 Исправление форматирования Go, TypeScript и Solidity:
 

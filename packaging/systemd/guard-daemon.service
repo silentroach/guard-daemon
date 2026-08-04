@@ -1,0 +1,33 @@
+[Unit]
+Description=Наблюдение и ограниченное спасение активов EIP-7702
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=guard-daemon
+Group=guard-daemon
+WorkingDirectory=/usr/lib/guard-daemon/current
+EnvironmentFile=/etc/guard-daemon/guard-daemon.env
+EnvironmentFile=/usr/lib/guard-daemon/guard-daemon.state.env
+ExecStart=/usr/lib/guard-daemon/current/guard-daemon
+StateDirectory=guard-daemon
+StateDirectoryMode=0700
+UMask=0077
+
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=yes
+PrivateTmp=no
+ReadOnlyPaths=/var/lib/guard-daemon-operator
+InaccessiblePaths=/var/lib/guard-daemon-operator/deployment-recovery /var/lib/guard-daemon-operator/deployment-manifests
+ReadWritePaths=/var/lib/guard-daemon /var/tmp/guard-daemon-leases-v1
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0
+TimeoutStopSec=120s
+
+[Install]
+WantedBy=multi-user.target

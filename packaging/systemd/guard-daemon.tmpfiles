@@ -1,0 +1,8 @@
+d /etc/guard-daemon 0750 root guard-daemon -
+d /etc/guard-daemon/manifests 0750 root guard-daemon -
+f /etc/guard-daemon/guard-daemon.env 0640 root guard-daemon -
+d /var/lib/guard-daemon 0700 guard-daemon guard-daemon -
+d /var/lib/guard-daemon-operator 0755 root root -
+d /var/lib/guard-daemon-operator/deployment-recovery 0700 root root -
+d /var/lib/guard-daemon-operator/deployment-manifests 0700 root root -
+d /var/tmp/guard-daemon-leases-v1 0700 guard-daemon guard-daemon -
