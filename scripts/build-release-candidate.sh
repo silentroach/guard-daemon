@@ -117,7 +117,7 @@ command -v tar >/dev/null 2>&1 || fail "tar не найден"
 command -v cmp >/dev/null 2>&1 || fail "cmp не найден"
 
 go_version_output="$(go version)"
-read -r _ go_version _ <<<"$go_version_output"
+read -r _ _ go_version _ <<<"$go_version_output"
 require_version "Go" "$EXPECTED_GO_VERSION" "$go_version"
 require_version "Node.js" "$EXPECTED_NODE_VERSION" "$(node --version)"
 require_version "npm" "$EXPECTED_NPM_VERSION" "$(npm --version)"
