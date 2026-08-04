@@ -121,6 +121,7 @@ go_binary="$(command -v go)" || fail "go не найден"
 node_binary="$(command -v node)" || fail "node не найден"
 npm_binary="$(command -v npm)" || fail "npm не найден"
 python_binary="$(command -v python3)" || fail "python3 не найден"
+strings_binary="$(command -v strings)" || fail "strings не найден"
 command -v tar >/dev/null 2>&1 || fail "tar не найден"
 command -v cmp >/dev/null 2>&1 || fail "cmp не найден"
 
@@ -278,6 +279,9 @@ go_environment=(
   GIT_NO_REPLACE_OBJECTS=1
   GIT_TERMINAL_PROMPT=0
 )
+go_root="$("${go_environment[@]}" "$go_binary" env GOROOT)"
+[[ "$go_root" == /* && -d "$go_root" && ! -L "$go_root" ]] || \
+  fail "GOROOT должен быть обычным абсолютным каталогом"
 (
   cd "$snapshot"
   "${go_environment[@]}" "$go_binary" mod download
@@ -296,6 +300,27 @@ go_environment=(
       ./cmd/guard-daemon
 )
 chmod 0755 "$candidate_tmp/guard-daemon-linux-amd64"
+
+binary_strings="$candidate_tmp/.binary-strings"
+if ! "$strings_binary" "$candidate_tmp/guard-daemon-linux-amd64" >"$binary_strings"; then
+  fail "не удалось проверить строки исполняемого файла"
+fi
+forbidden_paths=(
+  "$repo_root"
+  "$snapshot"
+  "$output_root"
+  "$go_module_cache"
+  "$go_root"
+  /nix/store/
+)
+while IFS= read -r binary_string; do
+  for forbidden_path in "${forbidden_paths[@]}"; do
+    if [[ "$binary_string" == *"$forbidden_path"* ]]; then
+      fail "исполняемый файл содержит локальный build/toolchain path: $forbidden_path"
+    fi
+  done
+done <"$binary_strings"
+rm -- "$binary_strings"
 
 cp -- "$snapshot/LICENSE" "$candidate_tmp/LICENSE"
 cp -- "$snapshot/artifacts/contracts/RescuerV2.json" "$candidate_tmp/RescuerV2.json"
