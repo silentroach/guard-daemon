@@ -74,9 +74,9 @@ case "$TRUSTED_RELEASE_COMMIT" in *[!0-9a-f]*) exit 1 ;; esac
 test "${#TRUSTED_SHA256SUMS_SHA256}" -eq 64
 case "$TRUSTED_SHA256SUMS_SHA256" in *[!0-9a-f]*) exit 1 ;; esac
 case "$ACTIVATE_RELEASE" in true|false) ;; *) exit 1 ;; esac
-export npm_config_globalconfig=/dev/null
+export npm_config_globalconfig=/var/empty/guard-daemon-npm-globalconfig
 export npm_config_registry=https://registry.npmjs.org/
-export npm_config_userconfig=/dev/null
+export npm_config_userconfig=/var/empty/guard-daemon-npm-userconfig
 RELEASE_SOURCE="$(CDPATH='' cd -- "$RELEASE_SOURCE" && pwd -P)" || exit 1
 
 GUARD_ROOT=/usr/lib/guard-daemon

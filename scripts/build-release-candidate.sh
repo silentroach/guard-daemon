@@ -11,9 +11,9 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_NOSYSTEM=1
 export GOPROXY=https://proxy.golang.org,direct
 export GOSUMDB=sum.golang.org
-export npm_config_globalconfig=/dev/null
+export npm_config_globalconfig=/var/empty/guard-daemon-npm-globalconfig
 export npm_config_registry=https://registry.npmjs.org/
-export npm_config_userconfig=/dev/null
+export npm_config_userconfig=/var/empty/guard-daemon-npm-userconfig
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES
 unset GIT_ATTR_SOURCE
 unset GIT_COMMON_DIR
