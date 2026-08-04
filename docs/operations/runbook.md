@@ -4,6 +4,9 @@
 изменение `/etc`, переключение выпуска и управление службой требуют прав `root`.
 Сам демон запускается отдельным непривилегированным пользователем
 `guard-daemon`; запуск демона от `root` не поддерживается.
+До чтения конфигурации Linux binary сам устанавливает hard/soft
+`RLIMIT_CORE=0` и `PR_SET_DUMPABLE=0`; unit независимо задаёт `LimitCORE=0`.
+Отказ этой защиты останавливает startup до чтения ключей.
 
 `source` считается скомпрометированным всегда. Демон не восстанавливает
 секретность ключа, не гарантирует победу в гонке и не делает прежний EOA
@@ -23,6 +26,8 @@
 /usr/lib/guard-daemon/deployment/<release-commit>/node_modules/
 /usr/lib/guard-daemon/current -> releases/<release-commit>
 /usr/lib/guard-daemon/guard-daemon.state.env
+/usr/lib/guard-daemon/check-systemd-health.sh
+/usr/lib/guard-daemon/verify-systemd-account.sh
 /etc/guard-daemon/guard-daemon.env
 /etc/guard-daemon/manifests/
 /var/lib/guard-daemon/
@@ -141,6 +146,8 @@ for SOURCE_PATH in \
   packaging/systemd/guard-daemon.tmpfiles \
   scripts/deployRescuerV2.ts \
   scripts/deployment.ts \
+  scripts/check-systemd-health.sh \
+  scripts/verify-systemd-account.sh \
   scripts/release_metadata.py; do
   test -f "$TOOLING_STAGING/$SOURCE_PATH"
   test ! -L "$TOOLING_STAGING/$SOURCE_PATH"
@@ -224,7 +231,11 @@ if test "$ACTIVATE_RELEASE" = true; then
   install -D -o root -g root -m 0644 "$TOOLING_TARGET/packaging/systemd/guard-daemon.sysusers" /usr/lib/sysusers.d/guard-daemon.conf
   install -D -o root -g root -m 0644 "$TOOLING_TARGET/packaging/systemd/guard-daemon.tmpfiles" /usr/lib/tmpfiles.d/guard-daemon.conf
   install -D -o root -g root -m 0644 "$TOOLING_TARGET/packaging/systemd/guard-daemon.state.env" /usr/lib/guard-daemon/guard-daemon.state.env
+  install -D -o root -g root -m 0644 "$TOOLING_TARGET/scripts/check-systemd-health.sh" /usr/lib/guard-daemon/check-systemd-health.sh
+  install -D -o root -g root -m 0644 "$TOOLING_TARGET/scripts/verify-systemd-account.sh" /usr/lib/guard-daemon/verify-systemd-account.sh
   systemd-sysusers /usr/lib/sysusers.d/guard-daemon.conf
+  /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+    /usr/lib/guard-daemon/verify-systemd-account.sh
   systemd-tmpfiles --create /usr/lib/tmpfiles.d/guard-daemon.conf
   ln -s "releases/$RELEASE_ID" /usr/lib/guard-daemon/current.new
   mv -Tn /usr/lib/guard-daemon/current.new /usr/lib/guard-daemon/current
@@ -268,8 +279,12 @@ release, а действующие unit и `current` не меняются.
 ```bash
 set -euo pipefail
 systemd-analyze verify /usr/lib/systemd/system/guard-daemon.service
+/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+  /usr/lib/guard-daemon/verify-systemd-account.sh
 test "$(stat -c '%U:%G %a' /etc/guard-daemon/guard-daemon.env)" = 'root:guard-daemon 640'
 test "$(stat -c '%U:%G %a' /usr/lib/guard-daemon/guard-daemon.state.env)" = 'root:root 644'
+test "$(stat -c '%U:%G %a' /usr/lib/guard-daemon/check-systemd-health.sh)" = 'root:root 644'
+test "$(stat -c '%U:%G %a' /usr/lib/guard-daemon/verify-systemd-account.sh)" = 'root:root 644'
 test "$(cat /usr/lib/guard-daemon/guard-daemon.state.env)" = 'STATE_DIRECTORY=/var/lib/guard-daemon'
 test "$(stat -c '%U:%G %a' /var/lib/guard-daemon)" = 'guard-daemon:guard-daemon 700'
 test "$(stat -c '%U:%G %a' /var/lib/guard-daemon-operator)" = 'root:root 755'
@@ -323,7 +338,9 @@ test -x /usr/lib/guard-daemon/current/guard-daemon
 test -r /usr/lib/guard-daemon/current/artifacts/contracts/RescuerV2.json
 systemctl start guard-daemon.service
 systemctl is-active guard-daemon.service
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
+/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+  "$HEALTH_CHECK" 200 healthy_idle
 ```
 
 Сразу после запуска допустим `503` с `degraded_rpc`, пока все сетевые поколения
@@ -362,7 +379,9 @@ test -x /usr/lib/guard-daemon/current/guard-daemon
 test -r /usr/lib/guard-daemon/current/artifacts/contracts/RescuerV2.json
 systemctl start guard-daemon.service
 systemctl is-active guard-daemon.service
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
+/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+  "$HEALTH_CHECK" 503 stopped paid_actions_stopped
 ```
 
 Ожидаются активная служба, HTTP `503`, состояние `stopped` и предупреждение
@@ -372,13 +391,20 @@ curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock 
 
 ## Рабочий запуск
 
-Только после сохранения результатов аварийной аттестации остановите службу. В
-защищённом файле окружения установите `EMERGENCY_STOP=false`, добавьте оба ключа
-и не меняйте остальные проверенные поля. Ограничьте баланс горячего `sponsor`
-утверждённым объёмом, затем запустите службу заново:
+Только после сохранения результатов аварийной аттестации постоянно запретите
+автозапуск и остановите службу. В защищённом файле окружения установите
+`EMERGENCY_STOP=false`, добавьте оба ключа и не меняйте остальные проверенные
+поля. Mask устанавливается до остановки, поэтому reboot во время изменения
+конфигурации не запустит частично подготовленный live-процесс. Ограничьте баланс
+горячего `sponsor` утверждённым объёмом, затем запустите службу вручную:
 
 ```bash
 set -euo pipefail
+systemctl disable guard-daemon.service
+systemctl mask guard-daemon.service
+MASKED_STATE=''
+MASKED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
+test "$MASKED_STATE" = 'masked'
 systemctl stop guard-daemon.service
 test "$(systemctl show guard-daemon.service --property=MainPID --value)" = '0'
 test "$(systemctl show guard-daemon.service --property=ActiveState --value)" = 'inactive'
@@ -396,9 +422,17 @@ test -x /usr/lib/guard-daemon/current/guard-daemon
 test -r /usr/lib/guard-daemon/current/artifacts/contracts/RescuerV2.json
 test ! -e /var/lib/guard-daemon-operator/live-disabled-after-restore
 test ! -L /var/lib/guard-daemon-operator/live-disabled-after-restore
+systemctl unmask guard-daemon.service
+DISABLED_STATE=''
+DISABLED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
+test "$DISABLED_STATE" = 'disabled'
 systemctl start guard-daemon.service
 systemctl is-active guard-daemon.service
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
+/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+  "$HEALTH_CHECK" 200 healthy_idle
+systemctl enable guard-daemon.service
+test "$(systemctl is-enabled guard-daemon.service)" = 'enabled'
 ```
 
 Live startup повторно проверяет аттестацию, состояние и блокировки до создания
@@ -409,7 +443,15 @@ signer, затем сверяет адреса подписывающих рол
 ```bash
 set -euo pipefail
 systemctl is-active guard-daemon.service
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
+if grep -q '^DRY_RUN=false$' /etc/guard-daemon/guard-daemon.env && \
+  grep -q '^EMERGENCY_STOP=true$' /etc/guard-daemon/guard-daemon.env; then
+  /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+    "$HEALTH_CHECK" 503 stopped paid_actions_stopped
+else
+  /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+    "$HEALTH_CHECK" 200 healthy_idle
+fi
 curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock http://localhost/metrics
 ```
 
@@ -431,8 +473,11 @@ Unit намеренно не содержит `Restart=`. Недоступный
 ```bash
 set -euo pipefail
 test "$(systemctl is-enabled guard-daemon.service)" = 'enabled'
+EXPECTED_RELEASE_ID='<проверенный-полный-40hex-commit-выпуска>'
+test "${#EXPECTED_RELEASE_ID}" -eq 40
+case "$EXPECTED_RELEASE_ID" in *[!0-9a-f]*) exit 1 ;; esac
 test -x /usr/lib/guard-daemon/current/guard-daemon
-readlink -f /usr/lib/guard-daemon/current
+test "$(readlink -f /usr/lib/guard-daemon/current)" = "/usr/lib/guard-daemon/releases/$EXPECTED_RELEASE_ID"
 ACTIVE_STATE=''
 ACTIVE_STATE="$(systemctl is-active guard-daemon.service 2>/dev/null)" || true
 case "$ACTIVE_STATE" in
@@ -444,7 +489,15 @@ case "$ACTIVE_STATE" in
     ;;
   *) exit 1 ;;
 esac
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
+if grep -q '^DRY_RUN=false$' /etc/guard-daemon/guard-daemon.env && \
+  grep -q '^EMERGENCY_STOP=true$' /etc/guard-daemon/guard-daemon.env; then
+  /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+    "$HEALTH_CHECK" 503 stopped paid_actions_stopped
+else
+  /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+    "$HEALTH_CHECK" 200 healthy_idle
+fi
 ```
 
 Состояние `failed` после раннего старта не разрешает автоматический повтор.
@@ -460,7 +513,15 @@ test "$(systemctl show guard-daemon.service --property=MainPID --value)" = '0'
 systemctl reset-failed guard-daemon.service
 systemctl start guard-daemon.service
 systemctl is-active guard-daemon.service
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
+if grep -q '^DRY_RUN=false$' /etc/guard-daemon/guard-daemon.env && \
+  grep -q '^EMERGENCY_STOP=true$' /etc/guard-daemon/guard-daemon.env; then
+  /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+    "$HEALTH_CHECK" 503 stopped paid_actions_stopped
+else
+  /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+    "$HEALTH_CHECK" 200 healthy_idle
+fi
 ```
 
 Повторный отказ требует расследования; не запускайте команду в цикле и не
@@ -486,11 +547,16 @@ systemctl show guard-daemon.service --property=ActiveState --property=SubState -
 ## Аварийная остановка платных действий
 
 Эта процедура сохраняет наблюдение, но запрещает новые подписи и отправку.
-Порядок обязателен: сначала остановить процесс, затем убрать ключи, затем
-запустить аварийный режим.
+Порядок обязателен: сначала постоянно запретить автозапуск, затем остановить
+процесс, убрать ключи и только после этого вручную запустить аварийный режим.
 
 ```bash
 set -euo pipefail
+systemctl disable guard-daemon.service
+systemctl mask guard-daemon.service
+MASKED_STATE=''
+MASKED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
+test "$MASKED_STATE" = 'masked'
 systemctl stop guard-daemon.service
 test "$(systemctl show guard-daemon.service --property=MainPID --value)" = '0'
 test "$(systemctl show guard-daemon.service --property=ActiveState --value)" = 'inactive'
@@ -504,10 +570,17 @@ test "$MATCH_STATUS" -eq 1
 test "$(cat /usr/lib/guard-daemon/guard-daemon.state.env)" = 'STATE_DIRECTORY=/var/lib/guard-daemon'
 test -x /usr/lib/guard-daemon/current/guard-daemon
 test -r /usr/lib/guard-daemon/current/artifacts/contracts/RescuerV2.json
+systemctl unmask guard-daemon.service
+DISABLED_STATE=''
+DISABLED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
+test "$DISABLED_STATE" = 'disabled'
 systemctl start guard-daemon.service
 systemctl is-active guard-daemon.service
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock http://localhost/metrics
+HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
+/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+  "$HEALTH_CHECK" 503 stopped paid_actions_stopped
+systemctl enable guard-daemon.service
+test "$(systemctl is-enabled guard-daemon.service)" = 'enabled'
 ```
 
 Перед `start` удалите из файла обе строки приватных ключей и установите ровно
@@ -539,9 +612,6 @@ curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock 
 ```bash
 set -euo pipefail
 test "$(systemctl is-enabled guard-daemon.service)" = 'enabled'
-systemctl stop guard-daemon.service
-test "$(systemctl show guard-daemon.service --property=MainPID --value)" = '0'
-test "$(systemctl show guard-daemon.service --property=ActiveState --value)" = 'inactive'
 systemctl disable guard-daemon.service
 DISABLED_STATE=''
 DISABLED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
@@ -550,6 +620,9 @@ systemctl mask guard-daemon.service
 MASKED_STATE=''
 MASKED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
 test "$MASKED_STATE" = 'masked'
+systemctl stop guard-daemon.service
+test "$(systemctl show guard-daemon.service --property=MainPID --value)" = '0'
+test "$(systemctl show guard-daemon.service --property=ActiveState --value)" = 'inactive'
 sudoedit /etc/guard-daemon/guard-daemon.env
 test "$(grep -c '^DRY_RUN=false$' /etc/guard-daemon/guard-daemon.env)" -eq 1
 test "$(grep -c '^EMERGENCY_STOP=true$' /etc/guard-daemon/guard-daemon.env)" -eq 1
@@ -592,7 +665,11 @@ install -D -o root -g root -m 0644 "$TOOLING_TARGET/packaging/systemd/guard-daem
 install -D -o root -g root -m 0644 "$TOOLING_TARGET/packaging/systemd/guard-daemon.sysusers" /usr/lib/sysusers.d/guard-daemon.conf
 install -D -o root -g root -m 0644 "$TOOLING_TARGET/packaging/systemd/guard-daemon.tmpfiles" /usr/lib/tmpfiles.d/guard-daemon.conf
 install -D -o root -g root -m 0644 "$TOOLING_TARGET/packaging/systemd/guard-daemon.state.env" /usr/lib/guard-daemon/guard-daemon.state.env
+install -D -o root -g root -m 0644 "$TOOLING_TARGET/scripts/check-systemd-health.sh" /usr/lib/guard-daemon/check-systemd-health.sh
+install -D -o root -g root -m 0644 "$TOOLING_TARGET/scripts/verify-systemd-account.sh" /usr/lib/guard-daemon/verify-systemd-account.sh
 systemd-sysusers /usr/lib/sysusers.d/guard-daemon.conf
+/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+  /usr/lib/guard-daemon/verify-systemd-account.sh
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/guard-daemon.conf
 test "$(cat /usr/lib/guard-daemon/guard-daemon.state.env)" = 'STATE_DIRECTORY=/var/lib/guard-daemon'
 test ! -e /usr/lib/guard-daemon/current.new
@@ -607,7 +684,9 @@ DISABLED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || tru
 test "$DISABLED_STATE" = 'disabled'
 systemctl start guard-daemon.service
 systemctl is-active guard-daemon.service
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
+/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+  "$HEALTH_CHECK" 503 stopped paid_actions_stopped
 ```
 
 5. Подтвердите активную службу, ожидаемый `503/stopped`, активное предупреждение
@@ -653,14 +732,19 @@ marker нет.
 
 Следующая процедура снимок не восстанавливает: она переключает только двоичный
 файл поверх наиболее нового, никогда не восстановленного состояния после
-доказанной совместимости. Сначала служба останавливается, затем оператор удаляет
-ключи и включает аварийный режим:
+доказанной совместимости. Сначала автозапуск постоянно блокируется и служба
+останавливается, затем оператор удаляет ключи и включает аварийный режим:
 
 ```bash
 set -euo pipefail
 RELEASE_ID='<полный-40hex-release-commit-прежнего-выпуска>'
 test "${#RELEASE_ID}" -eq 40
 case "$RELEASE_ID" in *[!0-9a-f]*) exit 1 ;; esac
+systemctl disable guard-daemon.service
+systemctl mask guard-daemon.service
+MASKED_STATE=''
+MASKED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
+test "$MASKED_STATE" = 'masked'
 systemctl stop guard-daemon.service
 test "$(systemctl show guard-daemon.service --property=MainPID --value)" = '0'
 test "$(systemctl show guard-daemon.service --property=ActiveState --value)" = 'inactive'
@@ -679,9 +763,17 @@ ln -sfn "releases/$RELEASE_ID" /usr/lib/guard-daemon/current.new
 mv -Tf /usr/lib/guard-daemon/current.new /usr/lib/guard-daemon/current
 systemctl daemon-reload
 test "$(readlink -f /usr/lib/guard-daemon/current)" = "/usr/lib/guard-daemon/releases/$RELEASE_ID"
+systemctl unmask guard-daemon.service
+DISABLED_STATE=''
+DISABLED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
+test "$DISABLED_STATE" = 'disabled'
 systemctl start guard-daemon.service
 systemctl is-active guard-daemon.service
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
+/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+  "$HEALTH_CHECK" 503 stopped paid_actions_stopped
+systemctl enable guard-daemon.service
+test "$(systemctl is-enabled guard-daemon.service)" = 'enabled'
 ```
 
 Подтвердите `503/stopped` и чтение показателей. Дальнейший рабочий запуск

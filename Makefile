@@ -40,10 +40,12 @@ fuzz-test:
 	bash test/ci/go-fuzz.sh
 
 reproducibility-check:
-	bash test/ci/compare-artifacts.sh
+	/usr/bin/env -i PATH="$$PATH" GITHUB_SHA="$${GITHUB_SHA:-}" RUNNER_TEMP="$${RUNNER_TEMP:-}" \
+		/bin/bash --noprofile --norc test/ci/compare-artifacts.sh
 
 release-candidate:
-	RELEASE_COMMIT="$(RELEASE_COMMIT)" bash scripts/build-release-candidate.sh
+	/usr/bin/env -i PATH="$$PATH" RELEASE_COMMIT="$(RELEASE_COMMIT)" \
+		/bin/bash --noprofile --norc scripts/build-release-candidate.sh
 
 mod-verify:
 	go mod verify

@@ -85,7 +85,7 @@ class OperationsPolicyTests(unittest.TestCase):
         runbook = (ROOT / "docs/operations/runbook.md").read_text(encoding="utf-8")
         backup = (ROOT / "docs/operations/backup-restore.md").read_text(encoding="utf-8")
         for statement in (
-            "сначала остановить процесс, затем убрать ключи",
+            "сначала постоянно запретить автозапуск, затем остановить",
             "DRY_RUN=false",
             "EMERGENCY_STOP=true",
             "503/stopped",
@@ -194,9 +194,11 @@ class OperationsPolicyTests(unittest.TestCase):
             edit = section.index("sudoedit /etc/guard-daemon/guard-daemon.env")
             start = section.index("systemctl start guard-daemon.service")
             with self.subTest(heading=heading):
+                self.assertLess(section.index("systemctl mask guard-daemon.service"), stop)
                 self.assertLess(stop, stopped_pid)
                 self.assertLess(stopped_pid, edit)
                 self.assertLess(edit, start)
+                self.assertLess(start, section.index("HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh"))
                 if heading in ("## Обновление", "## Откат"):
                     self.assertLess(section.index("readlink -f"), start)
                 if heading == "## Обновление":
@@ -212,6 +214,7 @@ class OperationsPolicyTests(unittest.TestCase):
         snapshot_commands = snapshot_commands_match.group(1)
         self.assertIn("--directory=/var/lib --exclude='guard-daemon/diagnostics.sock' guard-daemon", snapshot_commands)
         self.assertNotIn("guard-daemon-operator", snapshot_commands)
+        self.assertLess(snapshot.index("systemctl mask guard-daemon.service"), snapshot.index("systemctl stop"))
         self.assertLess(snapshot.index("systemctl stop guard-daemon.service"), snapshot.index("--property=MainPID --value"))
         self.assertLess(snapshot.index("--property=MainPID --value"), snapshot.index("tar --create"))
 
@@ -230,8 +233,10 @@ class OperationsPolicyTests(unittest.TestCase):
         quarantine = restore.index("mv -T -- /var/lib/guard-daemon")
         extract = restore.index("tar --extract")
         start = restore.index("systemctl start guard-daemon.service")
+        self.assertLess(restore.index("systemctl mask guard-daemon.service"), stop)
         self.assertLess(stop, stopped_pid)
         self.assertLess(stopped_pid, edit)
+        self.assertLess(restore.index("TRUSTED_ARCHIVE_SHA256='<"), checksum)
         self.assertLess(edit, checksum)
         self.assertLess(checksum, archive_list)
         self.assertLess(archive_list, marker)
@@ -241,6 +246,9 @@ class OperationsPolicyTests(unittest.TestCase):
         self.assertLess(directory_fsync, quarantine)
         self.assertLess(quarantine, extract)
         self.assertLess(extract, start)
+        health_check = restore.index("HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh")
+        self.assertLess(start, health_check)
+        self.assertLess(health_check, restore.index("systemctl enable"))
         self.assertNotIn("systemctl start", restore[:extract])
 
     def test_systemd_ci_uses_package_env_and_release_layout_without_starting(self) -> None:
@@ -254,25 +262,20 @@ class OperationsPolicyTests(unittest.TestCase):
         )
         release_binary = "/usr/lib/guard-daemon/releases/ci-placeholder/guard-daemon"
         current_link = "sudo ln -s releases/ci-placeholder /usr/lib/guard-daemon/current"
-        operator_parent = "sudo install -d -o root -g root -m 0755 /var/lib/guard-daemon-operator"
-        recovery_registry = (
-            "sudo install -d -o root -g root -m 0700 "
-            "/var/lib/guard-daemon-operator/deployment-recovery"
-        )
-        manifest_staging = (
-            "sudo install -d -o root -g root -m 0700 "
-            "/var/lib/guard-daemon-operator/deployment-manifests"
-        )
+        sysusers = "sudo systemd-sysusers packaging/systemd/guard-daemon.sysusers"
+        account_check = "scripts/verify-systemd-account.sh"
+        tmpfiles = "sudo systemd-tmpfiles --create packaging/systemd/guard-daemon.tmpfiles"
         self.assertIn(state_install, step)
         self.assertIn(release_binary, step)
         self.assertIn(current_link, step)
-        self.assertIn(operator_parent, step)
-        self.assertIn(recovery_registry, step)
-        self.assertIn(manifest_staging, step)
+        self.assertIn(sysusers, step)
+        self.assertIn(account_check, step)
+        self.assertIn(tmpfiles, step)
         self.assertLess(step.index(release_binary), step.index(current_link))
-        self.assertLess(step.index(operator_parent), step.index(recovery_registry))
-        self.assertLess(step.index(operator_parent), step.index(manifest_staging))
+        self.assertLess(step.index(sysusers), step.index(account_check))
+        self.assertLess(step.index(account_check), step.index(tmpfiles))
         self.assertLess(step.index(state_install), step.index("systemd-analyze verify"))
+        self.assertNotIn("useradd", step)
         self.assertNotIn("systemctl start", step)
 
     def test_release_documents_match_generated_names(self) -> None:

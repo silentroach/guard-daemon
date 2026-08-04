@@ -147,19 +147,14 @@ jobs:
       - name: Статически проверить unit systemd
         run: |
           set -euo pipefail
-          sudo systemd-sysusers --dry-run packaging/systemd/guard-daemon.sysusers
-          id -u guard-daemon >/dev/null 2>&1 || sudo useradd --system --home-dir /var/lib/guard-daemon --shell /usr/sbin/nologin guard-daemon
+          sudo systemd-sysusers packaging/systemd/guard-daemon.sysusers
+          sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc scripts/verify-systemd-account.sh
+          sudo systemd-tmpfiles --create packaging/systemd/guard-daemon.tmpfiles
           sudo install -d -o root -g root -m 0755 /usr/lib/guard-daemon/releases/ci-placeholder/artifacts/contracts
           sudo install -o root -g root -m 0755 /bin/true /usr/lib/guard-daemon/releases/ci-placeholder/guard-daemon
           sudo install -o root -g root -m 0644 /dev/null /usr/lib/guard-daemon/releases/ci-placeholder/artifacts/contracts/RescuerV2.json
           sudo ln -s releases/ci-placeholder /usr/lib/guard-daemon/current
           sudo install -o root -g root -m 0644 packaging/systemd/guard-daemon.state.env /usr/lib/guard-daemon/guard-daemon.state.env
-          sudo install -d -o root -g guard-daemon -m 0750 /etc/guard-daemon
-          sudo install -o root -g guard-daemon -m 0640 /dev/null /etc/guard-daemon/guard-daemon.env
-          sudo install -d -o guard-daemon -g guard-daemon -m 0700 /var/lib/guard-daemon /var/tmp/guard-daemon-leases-v1
-          sudo install -d -o root -g root -m 0755 /var/lib/guard-daemon-operator
-          sudo install -d -o root -g root -m 0700 /var/lib/guard-daemon-operator/deployment-recovery
-          sudo install -d -o root -g root -m 0700 /var/lib/guard-daemon-operator/deployment-manifests
           systemd-analyze verify packaging/systemd/guard-daemon.service
 
   reproducible-artifacts:
@@ -194,7 +189,7 @@ jobs:
           GOBIN="${RUNNER_TEMP}/bin" go install "github.com/zricethezav/gitleaks/v8@${GITLEAKS_VERSION}"
           echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
       - name: Сравнить две чистые сборки
-        run: bash test/ci/compare-artifacts.sh
+        run: make reproducibility-check
 
   solidity-static:
     name: Статический анализ Solidity

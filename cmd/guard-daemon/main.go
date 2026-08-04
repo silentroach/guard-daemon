@@ -42,6 +42,11 @@ func runCLI(args []string, stdout, stderr io.Writer, start func() int) int {
 }
 
 func runProcess() int {
+	if err := disableProcessDumps(); err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка запуска: не удалось запретить core dump процесса.")
+		return 1
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

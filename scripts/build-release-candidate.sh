@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+if [[ -n "${BASH_ENV:-}" || -n "${ENV:-}" || -n "$(builtin declare -F)" ]]; then
+  builtin printf 'Ошибка сборки кандидата: shell должен быть запущен через clean environment.\n' >&2
+  builtin exit 1
+fi
+
 set -euo pipefail
 
 export LC_ALL=C

@@ -65,6 +65,12 @@ allowlist. Поэтому exported shell function `env`, локальные `GOF
 результат, а sibling prefix не считается путём внутри каталога. Неоднозначные
 single-component roots вроде `/go` запрещены до сканирования. Допустим системный
 package-managed symlink `/usr/bin/strings`; shell lookup не участвует.
+Поддерживаемый entrypoint `make release-candidate` до запуска builder создаёт
+новый shell через абсолютные `/usr/bin/env -i` и
+`/bin/bash --noprofile --norc`. Builder дополнительно отклоняет уже
+импортированные shell functions, `BASH_ENV` и `ENV`, поэтому exported `git` или
+startup hook не может подменить проверку commit и source archive до внутреннего
+очищенного subprocess.
 Документированный fixed `GOMODCACHE` является каноническим build parameter, а
 не host-specific path. Nix разрешён для остальных локальных gates, но
 Nix-patched Go нельзя использовать как компилятор официального candidate.

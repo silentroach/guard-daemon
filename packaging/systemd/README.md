@@ -8,6 +8,8 @@
 | `guard-daemon.sysusers` | `/usr/lib/sysusers.d/guard-daemon.conf` |
 | `guard-daemon.tmpfiles` | `/usr/lib/tmpfiles.d/guard-daemon.conf` |
 | `guard-daemon.state.env` | `/usr/lib/guard-daemon/guard-daemon.state.env` |
+| `scripts/check-systemd-health.sh` | `/usr/lib/guard-daemon/check-systemd-health.sh` |
+| `scripts/verify-systemd-account.sh` | `/usr/lib/guard-daemon/verify-systemd-account.sh` |
 
 Пакет должен установить выпуск в
 `/usr/lib/guard-daemon/releases/<идентификатор>` с владельцем `root:root` и
@@ -18,11 +20,15 @@
 
 ## Учётная запись и каталоги
 
-`systemd-sysusers` создаёт постоянную полностью заблокированную
-непривилегированную учётную запись `guard-daemon`. Это не `DynamicUser`: UID
-назначается при установке и сохраняется в базе пользователей хоста. Числовой UID
-нельзя фиксировать в правилах упаковки; политика исходящих соединений получает
-его через `id -u guard-daemon`.
+`systemd-sysusers` создаёт постоянную заблокированную непривилегированную
+учётную запись `guard-daemon`. Это не `DynamicUser`: UID назначается при
+установке и сохраняется в базе пользователей хоста. Числовой UID нельзя
+фиксировать в правилах упаковки; политика исходящих соединений получает его
+через `id -u guard-daemon`. Поскольку `systemd-sysusers` не изменяет уже
+существующую одноимённую запись, установщик обязан после вызова выполнить
+`scripts/verify-systemd-account.sh` из аутентифицированного tooling и отклонить
+login-capable, unlocked, несистемную или включённую в дополнительные группы
+учётную запись.
 
 `systemd-tmpfiles` создаёт:
 
@@ -81,6 +87,13 @@ children недоступными процессу и не включает oper
 намеренно: приватный `/var/tmp` разрушил бы общую для хоста блокировку и позволил
 бы двум процессам считать себя единственным владельцем одной роли `sponsor`.
 
+`LimitCORE=0` является внешней границей unit. До чтения конфигурации и приватных
+ключей Linux binary дополнительно устанавливает собственные hard/soft
+`RLIMIT_CORE=0` и `PR_SET_DUMPABLE=0`; невозможность применить любую из этих
+политик блокирует startup. Поэтому pipe-based crash collector не получает core
+или окружение live-процесса даже когда глобальный `kernel.core_pattern` направлен
+в такой collector.
+
 Unit не использует `Type=notify`, `ExecReload`, `DynamicUser` или автоматический
 перезапуск. Конфигурация применяется только полной остановкой и новым запуском.
 Код `503` от `/healthz` не управляет systemd и не должен использоваться внешним
@@ -98,6 +111,8 @@ Unit не использует `Type=notify`, `ExecReload`, `DynamicUser` или
 ```bash
 set -euo pipefail
 systemd-sysusers /usr/lib/sysusers.d/guard-daemon.conf
+/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+  /usr/lib/guard-daemon/verify-systemd-account.sh
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/guard-daemon.conf
 systemctl daemon-reload
 ```

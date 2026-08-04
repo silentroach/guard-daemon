@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+if [[ -n "${BASH_ENV:-}" || -n "${ENV:-}" || -n "$(builtin declare -F)" ]]; then
+  builtin printf 'Ошибка проверки воспроизводимости: shell должен быть запущен через clean environment.\n' >&2
+  builtin exit 1
+fi
+
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
@@ -30,6 +35,18 @@ fail() {
   exit 1
 }
 
+run_builder() {
+  local checkout=$1
+  local output=$2
+
+  /usr/bin/env -i \
+    PATH="${PATH}" \
+    RELEASE_COMMIT="${commit}" \
+    RELEASE_OUTPUT_ROOT="${output}" \
+    /bin/bash --noprofile --norc \
+    "${checkout}/scripts/build-release-candidate.sh"
+}
+
 check_rejected_index_flag() {
   local set_option=$1
   local unset_option=$2
@@ -37,9 +54,9 @@ check_rejected_index_flag() {
   local error
 
   git -C "${index_flags_checkout}" update-index "${set_option}" -- "${flagged_path}"
-  if RELEASE_COMMIT="${commit}" \
-    RELEASE_OUTPUT_ROOT="${temporary_directory}/${flag_name}-output" \
-    bash "${index_flags_checkout}/scripts/build-release-candidate.sh" \
+  if run_builder \
+    "${index_flags_checkout}" \
+    "${temporary_directory}/${flag_name}-output" \
     >"${temporary_directory}/${flag_name}.stdout" \
     2>"${temporary_directory}/${flag_name}.stderr"; then
     fail "builder принял Git index flag ${flag_name}"
@@ -67,8 +84,9 @@ attributes_git_dir=$(git -C "${attributes_checkout}" rev-parse --absolute-git-di
 mkdir -p "${attributes_git_dir}/info"
 attributes_path="${attributes_git_dir}/info/attributes"
 printf '* export-ignore\n' >"${attributes_path}"
-if RELEASE_COMMIT="${commit}" RELEASE_OUTPUT_ROOT="${temporary_directory}/attributes-output" \
-  bash "${attributes_checkout}/scripts/build-release-candidate.sh" \
+if run_builder \
+  "${attributes_checkout}" \
+  "${temporary_directory}/attributes-output" \
   >"${temporary_directory}/attributes-file.stdout" \
   2>"${temporary_directory}/attributes-file.stderr"; then
   fail "builder принял локальный Git-файл info/attributes"
@@ -78,8 +96,9 @@ attributes_error=$(<"${temporary_directory}/attributes-file.stderr")
   fail "builder завершился не из-за локального Git-файла attributes"
 rm "${attributes_path}"
 ln -s /dev/null "${attributes_path}"
-if RELEASE_COMMIT="${commit}" RELEASE_OUTPUT_ROOT="${temporary_directory}/attributes-output" \
-  bash "${attributes_checkout}/scripts/build-release-candidate.sh" \
+if run_builder \
+  "${attributes_checkout}" \
+  "${temporary_directory}/attributes-output" \
   >"${temporary_directory}/attributes-symlink.stdout" \
   2>"${temporary_directory}/attributes-symlink.stderr"; then
   fail "builder принял символическую ссылку info/attributes"
@@ -121,20 +140,22 @@ strings() {
   return 1
 }
 export -f strings
+builtin eval 'git() { return 97; }'
+export -f git
+BASH_ENV=/guard-daemon-forbidden-bash-env \
 GOCACHEPROG=/usr/bin/false \
 GOFIPS140=latest \
 GOWORK=/dev/null \
 NODE_OPTIONS=--require=/guard-daemon-forbidden-node-hook \
 NPM_CONFIG_SCRIPT_SHELL=/usr/bin/false \
 PYTHONHOME=/guard-daemon-forbidden-python-home \
-RELEASE_COMMIT="${commit}" RELEASE_OUTPUT_ROOT="${first_root}" \
-  bash "${root}/scripts/build-release-candidate.sh"
+  run_builder "${root}" "${first_root}"
 unset -f env
 unset -f strings
+unset -f git
 GOFIPS140=off \
 npm_config_script_shell=/usr/bin/false \
-RELEASE_COMMIT="${commit}" RELEASE_OUTPUT_ROOT="${second_root}" \
-  bash "${root}/scripts/build-release-candidate.sh"
+  run_builder "${root}" "${second_root}"
 
 first="${first_root}/${commit}"
 second="${second_root}/${commit}"

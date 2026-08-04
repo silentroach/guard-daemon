@@ -32,6 +32,11 @@
 
 ```bash
 set -euo pipefail
+systemctl disable guard-daemon.service
+systemctl mask guard-daemon.service
+MASKED_STATE=''
+MASKED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
+test "$MASKED_STATE" = 'masked'
 systemctl stop guard-daemon.service
 test "$(systemctl show guard-daemon.service --property=MainPID --value)" = '0'
 test "$(systemctl show guard-daemon.service --property=ActiveState --value)" = 'inactive'
@@ -63,7 +68,10 @@ test "$MATCH_STATUS" -eq 1
 
 Не продолжайте, если `systemctl stop` завершился ошибкой, по истечении 120 секунд
 процесс был принудительно убит или `MainPID` не равен нулю. Такой каталог нельзя
-называть согласованным после остановки.
+называть согласованным после остановки. После создания snapshot служба остаётся
+disabled и masked; снимок сам по себе не разрешает возвращать прежний live
+процесс. Снимите mask только в соответствующей процедуре emergency startup,
+update или restore после проверки защищённой конфигурации.
 
 Команды сохраняют список рядом с архивом только на время проверки, проверяют
 его без вывода содержимого файлов и удаляют при выходе. Архив должен содержать
@@ -99,15 +107,22 @@ durable и атомарно создаёт root-owned marker
 контура; daemon с этим деревом не запускают. В canonical path сохраняют наиболее
 новое состояние.
 
-Сначала остановите службу и только после подтверждения `MainPID=0` измените
-конфигурацию: удалите обе строки приватных ключей, установите `DRY_RUN=false` и
-`EMERGENCY_STOP=true`, сохранив обязательные `RPC_BROADCAST_HTTP_<N>`. Следующая
-процедура выполняется целиком от `root`; любое несовпадение до извлечения
-оставляет текущее состояние на месте, а любой отказ после него оставляет службу
-остановленной:
+Сначала постоянно запретите автозапуск, остановите службу и только после
+подтверждения `MainPID=0` измените конфигурацию: удалите обе строки приватных
+ключей, установите `DRY_RUN=false` и `EMERGENCY_STOP=true`, сохранив обязательные
+`RPC_BROADCAST_HTTP_<N>`. Mask устанавливается до остановки, поэтому reboot в
+любой момент до безопасного emergency startup не вернёт прежнюю live
+конфигурацию. Следующая процедура выполняется целиком от `root`; любое
+несовпадение до извлечения оставляет текущее состояние на месте, а любой отказ
+после него оставляет службу остановленной:
 
 ```bash
 set -euo pipefail
+systemctl disable guard-daemon.service
+systemctl mask guard-daemon.service
+MASKED_STATE=''
+MASKED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
+test "$MASKED_STATE" = 'masked'
 systemctl stop guard-daemon.service
 test "$(systemctl show guard-daemon.service --property=MainPID --value)" = '0'
 test "$(systemctl show guard-daemon.service --property=ActiveState --value)" = 'inactive'
@@ -123,11 +138,16 @@ test "$MATCH_STATUS" -eq 1
 test "$(cat /usr/lib/guard-daemon/guard-daemon.state.env)" = 'STATE_DIRECTORY=/var/lib/guard-daemon'
 
 ARCHIVE='<путь-к-доверенному-снимку.tar>'
+TRUSTED_ARCHIVE_SHA256='<доверенный-64hex-sha256-выбранного-архива>'
 ARCHIVE_DIRECTORY="$(dirname "$ARCHIVE")"
 ARCHIVE_NAME="$(basename "$ARCHIVE")"
 test -f "$ARCHIVE"
 test -f "$ARCHIVE.sha256"
-(cd "$ARCHIVE_DIRECTORY" && sha256sum --check "$ARCHIVE_NAME.sha256")
+test "${#TRUSTED_ARCHIVE_SHA256}" -eq 64
+case "$TRUSTED_ARCHIVE_SHA256" in *[!0-9a-f]*) exit 1 ;; esac
+test "$(cat "$ARCHIVE.sha256")" = "$TRUSTED_ARCHIVE_SHA256  $ARCHIVE_NAME"
+printf '%s  %s\n' "$TRUSTED_ARCHIVE_SHA256" "$ARCHIVE_NAME" | \
+  (cd "$ARCHIVE_DIRECTORY" && sha256sum --check --strict -)
 
 umask 077
 ARCHIVE_LIST="$(mktemp /run/guard-daemon-restore-list.XXXXXX)"
@@ -202,9 +222,17 @@ test "$(stat -c '%U:%G %a' "$RESTORE_MARKER")" = 'root:root 444'
 test -x /usr/lib/guard-daemon/current/guard-daemon
 test -r /usr/lib/guard-daemon/current/artifacts/contracts/RescuerV2.json
 
+systemctl unmask guard-daemon.service
+DISABLED_STATE=''
+DISABLED_STATE="$(systemctl is-enabled guard-daemon.service 2>/dev/null)" || true
+test "$DISABLED_STATE" = 'disabled'
 systemctl start guard-daemon.service
 systemctl is-active guard-daemon.service
-curl --silent --show-error --unix-socket /var/lib/guard-daemon/diagnostics.sock --write-out '\nHTTP %{http_code}\n' http://localhost/healthz
+HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
+/usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
+  "$HEALTH_CHECK" 503 stopped paid_actions_stopped
+systemctl enable guard-daemon.service
+test "$(systemctl is-enabled guard-daemon.service)" = 'enabled'
 ```
 
 Ожидается активная служба и `503/stopped`. Такой первый запуск не создаёт
