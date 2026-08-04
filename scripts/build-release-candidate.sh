@@ -128,8 +128,8 @@ command -v cmp >/dev/null 2>&1 || fail "cmp не найден"
 require_no_npm_config_files
 [[ -f "$ENV_BINARY" && ! -L "$ENV_BINARY" && -x "$ENV_BINARY" ]] || \
   fail "требуется обычный executable $ENV_BINARY"
-[[ -f "$STRINGS_BINARY" && ! -L "$STRINGS_BINARY" && -x "$STRINGS_BINARY" ]] || \
-  fail "требуется обычный executable $STRINGS_BINARY"
+[[ -f "$STRINGS_BINARY" && -x "$STRINGS_BINARY" ]] || \
+  fail "требуется executable $STRINGS_BINARY"
 go_version_output="$(
   "$ENV_BINARY" -i LC_ALL=C PATH="$PATH" TZ=UTC \
     GOENV=off GOEXPERIMENT='' GOFIPS140=off GOFLAGS='' GOTOOLCHAIN=local \
@@ -307,19 +307,21 @@ binary_strings="$candidate_tmp/.binary-strings"
 if ! "$STRINGS_BINARY" "$candidate_tmp/guard-daemon-linux-amd64" >"$binary_strings"; then
   fail "не удалось проверить строки исполняемого файла"
 fi
-forbidden_paths=(
-  "${repo_root%/}/"
-  "${snapshot%/}/"
-  "${output_root%/}/"
-  "${go_root%/}/"
-  /nix/store/
+forbidden_directories=(
+  "${repo_root%/}"
+  "${snapshot%/}"
+  "${output_root%/}"
+  "${go_root%/}"
 )
 while IFS= read -r binary_string; do
-  for forbidden_path in "${forbidden_paths[@]}"; do
-    if [[ "$binary_string" == *"$forbidden_path"* ]]; then
-      fail "исполняемый файл содержит локальный build/toolchain path: $forbidden_path"
+  for forbidden_directory in "${forbidden_directories[@]}"; do
+    if [[ "$binary_string" == "$forbidden_directory" || \
+      "$binary_string" == *"$forbidden_directory/"* ]]; then
+      fail "исполняемый файл содержит локальный build/toolchain path: $forbidden_directory"
     fi
   done
+  [[ "$binary_string" != *"/nix/store/"* ]] || \
+    fail "исполняемый файл содержит локальный build/toolchain path: /nix/store/"
 done <"$binary_strings"
 rm -- "$binary_strings"
 

@@ -60,9 +60,10 @@ allowlist. Поэтому exported shell function `env`, локальные `GOF
 версии недостаточно: patched toolchain, который встраивает локальные пути
 пакетного менеджера, не является каноническим. Builder завершает сборку с
 ошибкой, если binary содержит checkout, output, `GOROOT` или `/nix/store/`.
-Проверка выполняется абсолютным `/usr/bin/strings` по полным directory prefixes,
-поэтому exported shell function не может скрыть результат, а короткое имя
-каталога не совпадает с частью module path.
+Проверка выполняется абсолютным `/usr/bin/strings` по exact directory values и
+полным `directory/` prefixes, поэтому exported shell function не может скрыть
+результат, а короткое имя каталога не совпадает с частью module path. Допустим
+системный package-managed symlink `/usr/bin/strings`; shell lookup не участвует.
 Документированный fixed `GOMODCACHE` является каноническим build parameter, а
 не host-specific path. Nix разрешён для остальных локальных gates, но
 Nix-patched Go нельзя использовать как компилятор официального candidate.

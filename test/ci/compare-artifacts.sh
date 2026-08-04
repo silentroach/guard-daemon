@@ -118,7 +118,7 @@ export -f env
 # Invoked indirectly after export by the builder child.
 # shellcheck disable=SC2329
 strings() {
-  return 0
+  return 1
 }
 export -f strings
 GOCACHEPROG=/usr/bin/false \
