@@ -115,6 +115,12 @@ env() {
   /usr/bin/env "$@"
 }
 export -f env
+# Invoked indirectly after export by the builder child.
+# shellcheck disable=SC2329
+strings() {
+  return 0
+}
+export -f strings
 GOCACHEPROG=/usr/bin/false \
 GOFIPS140=latest \
 GOWORK=/dev/null \
@@ -124,6 +130,7 @@ PYTHONHOME=/guard-daemon-forbidden-python-home \
 RELEASE_COMMIT="${commit}" RELEASE_OUTPUT_ROOT="${first_root}" \
   bash "${root}/scripts/build-release-candidate.sh"
 unset -f env
+unset -f strings
 GOFIPS140=off \
 npm_config_script_shell=/usr/bin/false \
 RELEASE_COMMIT="${commit}" RELEASE_OUTPUT_ROOT="${second_root}" \

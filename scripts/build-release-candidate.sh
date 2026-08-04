@@ -34,6 +34,7 @@ readonly EXPECTED_NODE_VERSION="v24.18.1"
 readonly EXPECTED_NPM_VERSION="11.16.0"
 readonly EXPECTED_PYTHON_VERSION="Python 3.14.6"
 readonly ENV_BINARY="/usr/bin/env"
+readonly STRINGS_BINARY="/usr/bin/strings"
 readonly NPM_GLOBAL_CONFIG="/var/empty/guard-daemon-npm-globalconfig"
 readonly NPM_USER_CONFIG="/var/empty/guard-daemon-npm-userconfig"
 
@@ -121,13 +122,14 @@ go_binary="$(command -v go)" || fail "go не найден"
 node_binary="$(command -v node)" || fail "node не найден"
 npm_binary="$(command -v npm)" || fail "npm не найден"
 python_binary="$(command -v python3)" || fail "python3 не найден"
-strings_binary="$(command -v strings)" || fail "strings не найден"
 command -v tar >/dev/null 2>&1 || fail "tar не найден"
 command -v cmp >/dev/null 2>&1 || fail "cmp не найден"
 
 require_no_npm_config_files
 [[ -f "$ENV_BINARY" && ! -L "$ENV_BINARY" && -x "$ENV_BINARY" ]] || \
   fail "требуется обычный executable $ENV_BINARY"
+[[ -f "$STRINGS_BINARY" && ! -L "$STRINGS_BINARY" && -x "$STRINGS_BINARY" ]] || \
+  fail "требуется обычный executable $STRINGS_BINARY"
 go_version_output="$(
   "$ENV_BINARY" -i LC_ALL=C PATH="$PATH" TZ=UTC \
     GOENV=off GOEXPERIMENT='' GOFIPS140=off GOFLAGS='' GOTOOLCHAIN=local \
@@ -302,14 +304,14 @@ go_root="$("${go_environment[@]}" "$go_binary" env GOROOT)"
 chmod 0755 "$candidate_tmp/guard-daemon-linux-amd64"
 
 binary_strings="$candidate_tmp/.binary-strings"
-if ! "$strings_binary" "$candidate_tmp/guard-daemon-linux-amd64" >"$binary_strings"; then
+if ! "$STRINGS_BINARY" "$candidate_tmp/guard-daemon-linux-amd64" >"$binary_strings"; then
   fail "не удалось проверить строки исполняемого файла"
 fi
 forbidden_paths=(
-  "$repo_root"
-  "$snapshot"
-  "$output_root"
-  "$go_root"
+  "${repo_root%/}/"
+  "${snapshot%/}/"
+  "${output_root%/}/"
+  "${go_root%/}/"
   /nix/store/
 )
 while IFS= read -r binary_string; do
