@@ -97,6 +97,12 @@ require_no_npm_config_files() {
   done
 }
 
+contains_directory_path() {
+  local value="$1"
+  local directory="$2"
+  [[ "$value" == *"$directory" || "$value" == *"$directory/"* ]]
+}
+
 require_no_repository_attributes
 
 release_commit="${RELEASE_COMMIT:-}"
@@ -315,8 +321,9 @@ forbidden_directories=(
 )
 while IFS= read -r binary_string; do
   for forbidden_directory in "${forbidden_directories[@]}"; do
-    if [[ "$binary_string" == "$forbidden_directory" || \
-      "$binary_string" == *"$forbidden_directory/"* ]]; then
+    [[ "$forbidden_directory" =~ ^/[^/]+/.+ ]] || \
+      fail "build/toolchain directory path слишком короткий: $forbidden_directory"
+    if contains_directory_path "$binary_string" "$forbidden_directory"; then
       fail "исполняемый файл содержит локальный build/toolchain path: $forbidden_directory"
     fi
   done
