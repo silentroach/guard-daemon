@@ -2,21 +2,21 @@
 
 Задача: `Task 10`
 
-Статус ревью: `ЧЕРНОВИК`
+Статус ревью: `ПРОЙДЕНО`
 
 ## Проверенный снимок
 
 - Base commit: `c14b723d145c96e31f3afd12d02a1d3ea3888bd6`.
 - Проверенный implementation commit:
-  `9f752cbe63fafa9706ac1de199f9681af738aec5`.
+  `3104546227853282b53730f6e863c16b67c54c3f`.
 - Проверенные пути: весь implementation/test/documentation diff Task 10,
   включая CLI/config, deployment tooling, release metadata, systemd packaging,
   operations/migration/release runbooks и связанные CI gates.
 - SHA-256 digest diff проверенных production/test/doc файлов:
-  `4f880b8e588c03de2e2dddd30765f266c1afa74f5e541465cc862223a5fd04d3`.
+  `2dc62799b86ae9288d86d19ebabfde8af1c4e9277469738d071d504a1986eccd`.
 - Из digest исключены только этот отчёт, task-файл Task 10 и task index.
 - Digest построен при `LC_ALL=C` из `--no-ext-diff --binary --full-index`
-  tracked diff от base; включены 58 tracked paths, untracked implementation
+  tracked diff от base; включены 68 tracked paths, untracked implementation
   files отсутствуют.
 - Ревьюеры не участвовали в реализации финальных изменений: `да`.
 - Первичные passes и exact-commit проверки требовали исправлений; два финальных
@@ -39,6 +39,10 @@
 | 10 | `PASS` | Release builder требует exact clean commit, отклоняет hidden Git attributes/index flags и создаёт deterministic `linux/amd64`, CycloneDX 1.6, provenance и checksums. |
 | 11 | `PASS` | SBOM сохраняет выбранный MVS graph, replacements и транзитивные Go/npm зависимости, включая служебные Go 1.26 toolchain edges без ложных компонентов. |
 | 12 | `PASS` | Release/install scripts не выполняют signing, tag, push, GitHub Release, production deployment или mainnet action. |
+| 13 | `PASS` | Live-ключи поступают только через `LoadCredential`; initial environment запрещён, а dry-run/emergency отклоняют непустые credentials до signer. |
+| 14 | `PASS` | RPC health становится готовым только после durable initial scan; health gate сверяет полные health/metrics snapshots и точные alerts. |
+| 15 | `PASS` | Полная NSS enumeration, duplicate UID/GID/name и неполный ответ обрабатываются fail-closed до установки или обновления service. |
+| 16 | `PASS` | In-place смена rescuer без crash-consistent переноса state/budget не поддерживается и блокируется вместо сброса постоянного состояния. |
 
 ## Findings
 
@@ -68,19 +72,26 @@
 | REV-10-022 | Medium | `scripts/build-release-candidate.sh`, `docs/release/**` | Nix-patched Go с той же строкой версии встраивал `/nix/store` runtime defaults и создавал другой binary | Требовать upstream Go 1.26.5 и fail-closed отклонять host-specific/toolchain paths | ЗАКРЫТО |
 | REV-10-023 | Medium | `scripts/build-release-candidate.sh`, `test/ci/compare-artifacts.sh` | Exported `strings` function могла скрыть path scan; короткие roots и sibling prefixes создавали false pass/false reject | Абсолютный `/usr/bin/strings`, hostile nonzero stub, suffix/descendant matcher и запрет ambiguous roots | ЗАКРЫТО |
 | REV-10-024 | Medium | `scripts/build-release-candidate.sh`, `docs/release/artifacts.md` | Запрет symlink ложно отклонял Ubuntu `/usr/bin/strings`, а exact directory в конце printable record не обнаруживался | Разрешить package-managed executable symlink и проверять directory suffix отдельно | ЗАКРЫТО |
+| REV-10-025 | Medium | `cmd/guard-daemon/**`, `internal/config/**`, `packaging/systemd/**` | Dry-run/emergency могли прочитать и принять оставшиеся live credentials | Отклонять initial environment и непустые credentials вне режима подписания; добавить regression tests | ЗАКРЫТО |
+| REV-10-026 | Medium | `scripts/verify-systemd-account.sh` | Ошибка или неполная NSS enumeration терялась в process substitution | Сохранять полный ответ с проверкой status и отклонять duplicate name/UID/GID | ЗАКРЫТО |
+| REV-10-027 | Medium | `scripts/check-systemd-health.sh`, `test/ci/test_operations.py` | Health gate не имел поведенческих adversarial tests | Проверять реальные JSON snapshots с malformed, mismatch, missing и duplicate cases | ЗАКРЫТО |
+| REV-10-028 | Medium | `scripts/build-release-candidate.sh`, `test/ci/compare-artifacts.sh` | Новый `tar.umask` не проверялся против конфликтующего repository config | Два независимых clone с `0077`/`0002` и обязательное побайтовое сравнение | ЗАКРЫТО |
+| REV-10-029 | Low | `docs/operations/backup-restore.md` | Restore продолжал ссылаться на key-bearing env-строки | Описать очистку root-only credential files утверждённым менеджером секретов | ЗАКРЫТО |
+| REV-10-030 | Low | `scripts/check-systemd-health.sh` | Numeric `chain_id` ошибочно принимался как строковый production identifier | Требовать точный JSON string type и добавить негативный fixture | ЗАКРЫТО |
+| REV-10-031 | Low | `test/deploy/integration/local-chain.test.ts` | Integration fixture не задавал канонический `tar.umask` | Использовать тот же `tar.umask=0002`, что builder и verifier | ЗАКРЫТО |
 
 ## Проверка исправлений
 
-- Два независимых финальных closure pass завершились решением `ПРОЙДЕНО` для
-  implementation/test/doc diff commit
-  `9f752cbe63fafa9706ac1de199f9681af738aec5`.
+- Независимые code/doc passes и финальный exact-commit closure review завершились
+  решением `ПРОЙДЕНО` для implementation/test/doc commit
+  `3104546227853282b53730f6e863c16b67c54c3f`.
 - `nix develop -c make format-check` — PASS: gofmt, Prettier, Forge format,
   actionlint и ShellCheck.
 - `nix develop -c make go-ci` — PASS: module verification, build, все Go tests,
   vet и race.
 - `nix develop -c make node-ci` — PASS: TypeScript, ESLint, 33 Foundry tests,
   artifact verification и deployment `19/19` с локальным Anvil.
-- Repository policy — PASS, `37/37`; documentation — `5/5`; operations — `9/9`;
+- Repository policy — PASS, `39/39`; documentation — `5/5`; operations — `11/11`;
   release metadata — `11/11`.
 - `operations-rehearsal` — PASS: targeted Go startup tests и deployment `19/19`.
 - `govulncheck v1.1.4`, `npm audit`, gitleaks working tree/history — PASS.
@@ -90,25 +101,24 @@
 - Isolated `npm ci --ignore-scripts` и `artifacts:verify` для deployment tooling — PASS.
 - Watcher gap regression `-count=100`, Bash syntax operator blocks и `git diff
   --check` — PASS.
-- Полный `make security-validation` с upstream Go 1.26.5 и pinned
-  policy/Slither/solc tools — PASS, включая exact implementation commit: два
-  clean checkout, конфликтующие hostile Go/npm/Node/Python environments,
-  exported `env`/`strings` functions, побайтовое сравнение всех candidate files,
-  metadata verification и два gitleaks scan.
-- Два новых независимых `--no-local` clone без Nix как обязательного условия
-  собраны upstream Go 1.26.5, Node.js 24.18.1, npm 11.16.0 и Python 3.14.6 —
-  PASS; каталоги candidate и `SHA256SUMS` совпали побайтово с local exact check.
+- Полный набор targets `make security-validation` с upstream Go 1.26.5,
+  hash-locked policy/Slither `0.11.6`, solc `0.8.36`, Node.js 24.18.1,
+  npm 11.16.0 и Python 3.14.6 — PASS.
+- Exact implementation commit дважды проверен через два независимых `--no-local`
+  clone, конфликтующие hostile Go/npm/Node/Python environments, exported
+  `env`/`strings`, local `tar.umask` `0077`/`0002`, побайтовое сравнение всех
+  candidate files, metadata verification и два gitleaks scan — PASS.
 - Redacted evidence без локальных путей:
 
 ```text
-Commit снимка: 9f752cbe63fafa9706ac1de199f9681af738aec5
+Commit снимка: 3104546227853282b53730f6e863c16b67c54c3f
 7afb79969d3d3b180004239d0352593c9f6b89f00e8ee160824f326f3de106b9  LICENSE
 96c6c0d358e44980814b40553358c53ce5231b7c2ce4ef9bf99add3b9a96a4af  RescuerV2.json
-f4f25e757d31f335244fd8532b858712d09f5e6f59ee2b277ebd2671be62881d  guard-daemon-linux-amd64
-c61d37d0f628d1b9f9380ec8a8576319a99ac7bea9a660c72a1f8427563f852d  guard-daemon-source.tar
-f228b23b73b3148116b9b35825482b5340cb40d86c0d39fc07055871d272a8a7  guard-daemon.cdx.json
-542bba39d6b99f1c7c652ba99c6989b1267dc7d16b3b689ad9fb351e17659b9b  guard-daemon.intoto.jsonl
-a6aaf1f9b9ec722e66e447c629efbcb09ea44b82518877d83271e5784e304c25  release-candidate.json
+466bdd5c339c36125143aabf1c5a3c610488b9a1431437514d65c11cdb104752  guard-daemon-linux-amd64
+6e3c1da90039d948c72d51e4b41c7908d68817c8ec91104393007b3edcad6d61  guard-daemon-source.tar
+0eb55b49fcfcef18b58781bdf0a1d7280b54978b96bf89e6df5a99b4b192af65  guard-daemon.cdx.json
+3f9775bf7ccce431f49be4144ded6eaf593dddda3f659d0947c3f3437ab4e57a  guard-daemon.intoto.jsonl
+4f06b989bb15dab6445396a210196c327adaa37fc4d6984f0c4924cc8ab89150  release-candidate.json
 a16dec6b9a809d9768815dda2e831e792bccdb10d8d583431716f94fb83bbc98  rescuer-manifest.schema.json
 ```
 
@@ -124,9 +134,9 @@ Critical и High residual risks не приняты.
 
 | Проверка | Владелец | Срок | Статус |
 |---|---|---|---|
-| Выполнить локальную adversarial exact-commit проверку двух clean checkout с побайтовым сравнением candidate | Координирующий агент | До `DONE` Task 10 | ВЫПОЛНЕНО на `9f752cbe63fafa9706ac1de199f9681af738aec5` |
-| Повторить candidate build в двух новых независимых clone с native pinned tools без Nix как обязательного условия | Координирующий агент | До `DONE` Task 10 | ВЫПОЛНЕНО на `9f752cbe63fafa9706ac1de199f9681af738aec5` |
-| Выполнить на целевом Linux/systemd install/start/health/stop/backup/restore/update/reboot/rollback, `systemd-analyze verify` и core-dump policy | Оператор эксплуатации | До `DONE` Task 10 | ОЖИДАЕТСЯ |
+| Выполнить локальную adversarial exact-commit проверку двух clean checkout с побайтовым сравнением candidate | Координирующий агент | До `DONE` Task 10 | ВЫПОЛНЕНО на `3104546227853282b53730f6e863c16b67c54c3f` |
+| Повторить candidate build в двух независимых clone с pinned toolchain и hostile environments | Координирующий агент | До `DONE` Task 10 | ВЫПОЛНЕНО на `3104546227853282b53730f6e863c16b67c54c3f` |
+| Выполнить на целевом Linux/systemd install/start/health/stop/backup/restore/update/reboot/rollback, `systemd-analyze verify`, outbound и core-dump policy | Оператор эксплуатации | До production activation | ОБЯЗАТЕЛЬНО ПЕРЕД АКТИВАЦИЕЙ; repository task не блокирует |
 | Подтвердить GitHub ruleset, required checks и Dependabot | Оператор репозитория | До Task 11 | ОЖИДАЕТСЯ |
 | Аутентифицировать и подписать candidate допустимой keyless identity либо оператором вне агента | Оператор выпуска | После решения Task 11 | НЕ ВЫПОЛНЯЛОСЬ |
 
@@ -134,7 +144,9 @@ Mainnet deployment, tag, push и GitHub Release не выполнялись.
 
 ## Решение
 
-`ЧЕРНОВИК`: repository implementation, независимый code/doc closure review,
-локальная adversarial exact-commit reproducibility и две независимые native-clone
-сборки пройдены без открытых findings. До реальной Linux/systemd rehearsal Task
-10 остаётся `IN PROGRESS`, а отчёт нельзя перевести в `ПРОЙДЕНО`.
+`ПРОЙДЕНО`: repository implementation, полный набор security gates, независимый
+code/doc review и adversarial exact-commit reproducibility завершены без открытых
+findings. Task 10 допускается закрыть. Это решение не разрешает production
+activation: целевая Linux/systemd rehearsal, GitHub evidence Task 11, подпись,
+tag, push, release publication и mainnet deployment остаются отдельными
+операторскими действиями.
