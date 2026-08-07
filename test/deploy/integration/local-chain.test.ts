@@ -87,6 +87,8 @@ const gitArchive = async (cwd: string, commit: string): Promise<Buffer> => {
     [
       "-c",
       "core.attributesFile=/dev/null",
+      "-c",
+      "tar.umask=0002",
       "archive",
       "--format=tar",
       `--prefix=guard-daemon-${commit}/`,

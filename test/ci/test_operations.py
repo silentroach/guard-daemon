@@ -1,12 +1,91 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def run_health_check(
+    health: object,
+    metrics: object,
+    expected_http: str,
+    expected_status: str,
+    expected_alert: str = "",
+) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryDirectory() as directory_name:
+        directory = Path(directory_name)
+        binary_directory = directory / "bin"
+        binary_directory.mkdir()
+        health_path = directory / "health.json"
+        metrics_path = directory / "metrics.json"
+        health_path.write_text(
+            health if isinstance(health, str) else json.dumps(health),
+            encoding="utf-8",
+        )
+        metrics_path.write_text(
+            metrics if isinstance(metrics, str) else json.dumps(metrics),
+            encoding="utf-8",
+        )
+        curl = binary_directory / "curl"
+        curl.write_text(
+            """#!/usr/bin/env bash
+set -euo pipefail
+output=''
+url=''
+while (($#)); do
+  case "$1" in
+    --output) output=$2; shift 2 ;;
+    --max-time|--unix-socket|--write-out) shift 2 ;;
+    --silent|--show-error) shift ;;
+    http://*) url=$1; shift ;;
+    *) exit 90 ;;
+  esac
+done
+case "$url" in
+  http://localhost/healthz) cp "$HEALTH_FIXTURE" "$output"; printf '%s' "$HEALTH_HTTP" ;;
+  http://localhost/metrics) cp "$METRICS_FIXTURE" "$output"; printf '%s' "$METRICS_HTTP" ;;
+  *) exit 91 ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        curl.chmod(0o755)
+        sleep = binary_directory / "sleep"
+        sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        sleep.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "HEALTH_FIXTURE": str(health_path),
+                "HEALTH_HTTP": expected_http,
+                "METRICS_FIXTURE": str(metrics_path),
+                "METRICS_HTTP": "200",
+                "PATH": f"{binary_directory}:{environment['PATH']}",
+                "TMPDIR": str(directory),
+            }
+        )
+        arguments = [
+            "bash",
+            str(ROOT / "scripts/check-systemd-health.sh"),
+            expected_http,
+            expected_status,
+        ]
+        if expected_alert:
+            arguments.append(expected_alert)
+        return subprocess.run(
+            arguments,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
 
 
 class OperationsPolicyTests(unittest.TestCase):
@@ -48,12 +127,26 @@ class OperationsPolicyTests(unittest.TestCase):
         read_write_paths = next(line for line in unit.splitlines() if line.startswith("ReadWritePaths="))
         self.assertNotIn("/var/lib/guard-daemon-operator", read_write_paths)
 
-    def test_systemd_state_directory_override_is_immutable_and_ordered(self) -> None:
+    def test_systemd_configuration_credentials_and_state_are_fixed(self) -> None:
         unit = (ROOT / "packaging/systemd/guard-daemon.service").read_text(encoding="utf-8")
-        operator_env = "EnvironmentFile=/etc/guard-daemon/guard-daemon.env"
+        public_config = "Environment=GUARD_DAEMON_CONFIG=/etc/guard-daemon/guard-daemon.env"
         state_env = "EnvironmentFile=/usr/lib/guard-daemon/guard-daemon.state.env"
-        environment_directives = [line for line in unit.splitlines() if line.startswith("Environment")]
-        self.assertEqual(environment_directives, [operator_env, state_env])
+        source_credential = (
+            "LoadCredential=source-private-key:/etc/guard-daemon/credentials/source-private-key"
+        )
+        sponsor_credential = (
+            "LoadCredential=sponsor-private-key:/etc/guard-daemon/credentials/sponsor-private-key"
+        )
+        configuration_directives = [
+            line
+            for line in unit.splitlines()
+            if line.startswith(("Environment", "LoadCredential"))
+        ]
+        self.assertEqual(
+            configuration_directives,
+            [public_config, state_env, source_credential, sponsor_credential],
+        )
+        self.assertNotIn("EnvironmentFile=/etc/guard-daemon/guard-daemon.env", unit)
         self.assertEqual(
             (ROOT / "packaging/systemd/guard-daemon.state.env").read_text(encoding="utf-8"),
             "STATE_DIRECTORY=/var/lib/guard-daemon\n",
@@ -79,7 +172,96 @@ class OperationsPolicyTests(unittest.TestCase):
         self.assertNotIn("d /var/lib/guard-daemon/deployment-recovery", tmpfiles)
         self.assertIn("d /var/tmp/guard-daemon-leases-v1 0700 guard-daemon guard-daemon -", tmpfiles)
         self.assertIn("f /etc/guard-daemon/guard-daemon.env 0640 root guard-daemon -", tmpfiles)
+        self.assertIn("d /etc/guard-daemon/credentials 0700 root root -", tmpfiles)
+        self.assertIn(
+            "f /etc/guard-daemon/credentials/source-private-key 0600 root root -", tmpfiles
+        )
+        self.assertIn(
+            "f /etc/guard-daemon/credentials/sponsor-private-key 0600 root root -", tmpfiles
+        )
         self.assertNotIn("live-disabled-after-restore", tmpfiles)
+
+    def test_systemd_health_gate_validates_complete_snapshots(self) -> None:
+        healthy_network = {
+            "status": "healthy_idle",
+            "rpc_degraded": False,
+            "budget_blocked": False,
+            "ambiguous_rescue": False,
+            "stopped": False,
+        }
+        stopped_network = {**healthy_network, "status": "stopped", "stopped": True}
+        healthy = {"status": "healthy_idle", "networks": {"1": healthy_network}}
+        healthy_metrics = {"networks": {"1": {}}, "alerts": [], "active_alerts": 0}
+        stopped = {"status": "stopped", "networks": {"1": stopped_network}}
+        stopped_metrics = {
+            "networks": {"1": {}},
+            "alerts": [{"chain_id": "1", "code": "paid_actions_stopped"}],
+            "active_alerts": 1,
+        }
+        cases = (
+            ("healthy", healthy, healthy_metrics, "200", "healthy_idle", "", True),
+            (
+                "stopped",
+                stopped,
+                stopped_metrics,
+                "503",
+                "stopped",
+                "paid_actions_stopped",
+                True,
+            ),
+            ("malformed health", "{", healthy_metrics, "200", "healthy_idle", "", False),
+            (
+                "different network sets",
+                healthy,
+                {**healthy_metrics, "networks": {"2": {}}},
+                "200",
+                "healthy_idle",
+                "",
+                False,
+            ),
+            (
+                "missing stopped alert",
+                stopped,
+                {"networks": {"1": {}}, "alerts": [], "active_alerts": 0},
+                "503",
+                "stopped",
+                "paid_actions_stopped",
+                False,
+            ),
+            (
+                "numeric alert chain",
+                stopped,
+                {
+                    "networks": {"1": {}},
+                    "alerts": [{"chain_id": 1, "code": "paid_actions_stopped"}],
+                    "active_alerts": 1,
+                },
+                "503",
+                "stopped",
+                "paid_actions_stopped",
+                False,
+            ),
+            (
+                "duplicate stopped alert",
+                stopped,
+                {
+                    "networks": {"1": {}},
+                    "alerts": [
+                        {"chain_id": "1", "code": "paid_actions_stopped"},
+                        {"chain_id": "1", "code": "paid_actions_stopped"},
+                    ],
+                    "active_alerts": 2,
+                },
+                "503",
+                "stopped",
+                "paid_actions_stopped",
+                False,
+            ),
+        )
+        for name, health, metrics, http, status, alert, accepted in cases:
+            with self.subTest(name=name):
+                result = run_health_check(health, metrics, http, status, alert)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
     def test_runbooks_keep_emergency_and_backup_fail_closed(self) -> None:
         runbook = (ROOT / "docs/operations/runbook.md").read_text(encoding="utf-8")
@@ -291,6 +473,57 @@ class OperationsPolicyTests(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertIn(f"`{name}`", artifacts)
+
+    def test_system_account_database_checks_fail_closed(self) -> None:
+        script = ROOT / "scripts/verify-systemd-account.sh"
+        valid = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"set -euo pipefail; source {script!s}; "
+                "validate_passwd_entries 'guard-daemon:x:500:500::/var/lib/guard-daemon:/usr/sbin/nologin' 500 500; "
+                "validate_group_entries 'guard-daemon:x:500:' 500",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(valid.returncode, 0, valid.stderr)
+        cases = (
+            (
+                "partial passwd enumeration",
+                'getent() { printf "%s\\n" "guard-daemon:x:500:500::/var/lib/guard-daemon:/usr/sbin/nologin"; return 42; }; read_identity_database passwd',
+            ),
+            (
+                "duplicate passwd name",
+                'validate_passwd_entries $\'guard-daemon:x:500:500::/var/lib/guard-daemon:/usr/sbin/nologin\\nguard-daemon:x:501:501::/var/lib/guard-daemon:/usr/sbin/nologin\' 500 500',
+            ),
+            (
+                "duplicate uid",
+                'validate_passwd_entries $\'guard-daemon:x:500:500::/var/lib/guard-daemon:/usr/sbin/nologin\\nother:x:500:600::/nonexistent:/usr/sbin/nologin\' 500 500',
+            ),
+            (
+                "partial group enumeration",
+                'getent() { printf "%s\\n" "guard-daemon:x:500:"; return 42; }; read_identity_database group',
+            ),
+            (
+                "duplicate gid",
+                "validate_group_entries $'guard-daemon:x:500:\\nother:x:500:' 500",
+            ),
+        )
+        for name, command in cases:
+            with self.subTest(name=name):
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        f"set -euo pipefail; source {script!s}; {command}",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout)
 
 
 if __name__ == "__main__":

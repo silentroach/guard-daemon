@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   stat,
   symlink,
@@ -75,6 +76,8 @@ const gitArchive = async (cwd: string, commit: string): Promise<Buffer> => {
     [
       "-c",
       "core.attributesFile=/dev/null",
+      "-c",
+      "tar.umask=0002",
       "archive",
       "--format=tar",
       `--prefix=guard-daemon-${commit}/`,
@@ -365,7 +368,10 @@ test("установленный production candidate не читает Git meta
         false,
       );
       assert.equal(installed.releaseCommit, candidate.releaseCommit);
-      assert.equal(installed.repositoryRoot, temporaryDirectory);
+      assert.equal(
+        installed.repositoryRoot,
+        await realpath(temporaryDirectory),
+      );
     } finally {
       process.chdir(previousDirectory);
     }

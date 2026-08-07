@@ -35,12 +35,51 @@ func (runtime Runtime) Format(state fmt.State, _ rune) {
 
 // Load загружает необязательный .env, сохраняя приоритет окружения процесса.
 func Load() (Runtime, error) {
-	dotenv, dotenvNames, err := readPublicDotEnv(".env")
+	return loadRuntime(nil, false)
+}
+
+// LoadWithSecrets загружает public config, принимая live-ключи только из
+// уже защищённого источника credentials.
+func LoadWithSecrets(secrets map[string]string) (Runtime, error) {
+	for _, name := range []string{"SOURCE_PRIVATE_KEY", "SPONSOR_PRIVATE_KEY"} {
+		if _, present := os.LookupEnv(name); present {
+			return Runtime{}, fmt.Errorf("переменная окружения %s запрещена; используйте systemd credentials", name)
+		}
+	}
+	runtime, err := loadRuntime(secrets, true)
+	if err != nil {
+		return Runtime{}, err
+	}
+	if runtime.Mode.IsDryRun() || runtime.Policy.EmergencyStop {
+		for _, name := range []string{"SOURCE_PRIVATE_KEY", "SPONSOR_PRIVATE_KEY"} {
+			if secrets[name] != "" {
+				return Runtime{}, fmt.Errorf("credential %s должен быть пуст в режиме без подписания", name)
+			}
+		}
+	}
+	return runtime, nil
+}
+
+func loadRuntime(secrets map[string]string, credentialsOnly bool) (Runtime, error) {
+	path := os.Getenv("GUARD_DAEMON_CONFIG")
+	if path == "" {
+		path = ".env"
+	}
+	dotenv, dotenvNames, err := readPublicDotEnv(path)
 	if err != nil {
 		return Runtime{}, err
 	}
 	names := append(dotenvNames, processEnvironmentNames()...)
+	for name, value := range secrets {
+		if value != "" {
+			names = append(names, name)
+		}
+	}
 	return loadFrom(func(name string) (string, bool) {
+		if credentialsOnly && (name == "SOURCE_PRIVATE_KEY" || name == "SPONSOR_PRIVATE_KEY") {
+			value, ok := secrets[name]
+			return value, ok && value != ""
+		}
 		if value, ok := os.LookupEnv(name); ok {
 			return value, true
 		}

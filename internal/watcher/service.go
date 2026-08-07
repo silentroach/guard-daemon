@@ -88,6 +88,7 @@ type Dependencies struct {
 	Generation     uint64
 	LookbackBlocks uint64
 	ReadTimeout    time.Duration
+	Ready          func() error
 }
 
 type Service struct {
@@ -105,6 +106,7 @@ type Service struct {
 	generation       uint64
 	lookbackBlocks   uint64
 	readTimeout      time.Duration
+	ready            func() error
 	knownTokens      map[common.Address]domain.Token
 	allowedTokens    map[common.Address]struct{}
 	allowUnknown     bool
@@ -149,6 +151,7 @@ func NewService(dependencies Dependencies) (*Service, error) {
 		generation:     dependencies.Generation,
 		lookbackBlocks: dependencies.LookbackBlocks,
 		readTimeout:    dependencies.ReadTimeout,
+		ready:          dependencies.Ready,
 		knownTokens:    knownTokens,
 		allowedTokens:  allowedTokens,
 		allowUnknown:   dependencies.Network.AllowUnknownTokens,
@@ -192,6 +195,11 @@ func (service *Service) Run(ctx context.Context) error {
 	}
 	if err := service.scan(ctx); err != nil {
 		return err
+	}
+	if service.ready != nil {
+		if err := service.ready(); err != nil {
+			return err
+		}
 	}
 
 	query := service.transferQuery()

@@ -8,8 +8,10 @@ Type=simple
 User=guard-daemon
 Group=guard-daemon
 WorkingDirectory=/usr/lib/guard-daemon/current
-EnvironmentFile=/etc/guard-daemon/guard-daemon.env
+Environment=GUARD_DAEMON_CONFIG=/etc/guard-daemon/guard-daemon.env
 EnvironmentFile=/usr/lib/guard-daemon/guard-daemon.state.env
+LoadCredential=source-private-key:/etc/guard-daemon/credentials/source-private-key
+LoadCredential=sponsor-private-key:/etc/guard-daemon/credentials/sponsor-private-key
 ExecStart=/usr/lib/guard-daemon/current/guard-daemon
 StateDirectory=guard-daemon
 StateDirectoryMode=0700

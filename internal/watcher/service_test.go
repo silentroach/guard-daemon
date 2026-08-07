@@ -74,6 +74,34 @@ func TestScanUsesBoundedLookbackAndRetriesFailedBlock(t *testing.T) {
 	}
 }
 
+func TestReadyRunsOnlyAfterInitialScan(t *testing.T) {
+	source := testAddress(0x19)
+	network := domain.Network{Name: "local", ChainID: 31337, AllowUnknownTokens: true}
+	finalized := newFakeFinalized()
+	finalized.addBlock(7, testHash(0x07), testHash(0x06))
+	handoff := openWatchStore(t, filepath.Join(t.TempDir(), "watcher.db"), source, network, 1)
+	defer handoff.Close()
+	service := newTestService(t, finalized, handoff, source, network, 1, &fakeContractCaller{}, newFakeLogSubscriber(), newFakeHeadSubscriber())
+	ready := make(chan struct{})
+	service.ready = func() error {
+		cursor, found, err := handoff.LoadScanCursor(context.Background(), network.ChainID)
+		if err != nil || !found || cursor.BlockNumber != 7 || cursor.BlockHash != testHash(0x07) {
+			return errors.New("ready вызван до durable initial scan")
+		}
+		close(ready)
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- service.Run(ctx) }()
+	receive(t, ready)
+	cancel()
+	if err := receive(t, result); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run после cancel = %v", err)
+	}
+}
+
 func TestSubscriptionDisconnectBackfillsGapWithoutDuplicates(t *testing.T) {
 	source := testAddress(0x21)
 	token := domain.Token{Address: testAddress(0x22), Symbol: "LOCAL", Decimals: 18}

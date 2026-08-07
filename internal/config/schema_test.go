@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -210,6 +211,82 @@ func TestLoadLiveAcceptsPrivateKeysOnlyFromProcessEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadWithSecretsUsesOnlySuppliedLiveKeys(t *testing.T) {
+	directory := t.TempDir()
+	values := validEnvironment()
+	values["DRY_RUN"] = "false"
+	values["RPC_BROADCAST_HTTP_BASE"] = "https://broadcast.invalid/rpc"
+	var dotenv strings.Builder
+	for name, value := range values {
+		fmt.Fprintf(&dotenv, "%s=%s\n", name, value)
+	}
+	path := filepath.Join(directory, "guard-daemon.env")
+	if err := os.WriteFile(path, []byte(dotenv.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GUARD_DAEMON_CONFIG", path)
+	unsetPrivateKeyEnvironment(t)
+	secrets := map[string]string{
+		"SOURCE_PRIVATE_KEY":  fmt.Sprintf("%064x", 1),
+		"SPONSOR_PRIVATE_KEY": fmt.Sprintf("%064x", 2),
+	}
+
+	runtime, err := LoadWithSecrets(secrets)
+	if err != nil {
+		t.Fatalf("LoadWithSecrets() error = %v", err)
+	}
+	if source, sponsor, ok := runtime.LiveSecrets.PrivateKeys(); !ok || source == nil || sponsor == nil {
+		t.Fatal("LoadWithSecrets() не использовал supplied credentials")
+	}
+
+	t.Setenv("SOURCE_PRIVATE_KEY", "test-only-process-source-canary")
+	_, err = LoadWithSecrets(secrets)
+	if err == nil || !strings.Contains(err.Error(), "SOURCE_PRIVATE_KEY") {
+		t.Fatalf("LoadWithSecrets() принял initial environment key: %v", err)
+	}
+	if strings.Contains(err.Error(), "test-only-process-source-canary") {
+		t.Fatalf("ошибка раскрывает initial environment key: %q", err)
+	}
+}
+
+func TestLoadWithSecretsRejectsCredentialsWithoutSigning(t *testing.T) {
+	tests := []struct {
+		name      string
+		emergency bool
+	}{
+		{name: "dry-run"},
+		{name: "emergency", emergency: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			values := validEnvironment()
+			if test.emergency {
+				values["DRY_RUN"] = "false"
+				values["EMERGENCY_STOP"] = "true"
+				values["RPC_BROADCAST_HTTP_BASE"] = "https://broadcast.invalid/rpc"
+			}
+			var dotenv strings.Builder
+			for name, value := range values {
+				fmt.Fprintf(&dotenv, "%s=%s\n", name, value)
+			}
+			path := filepath.Join(directory, "guard-daemon.env")
+			if err := os.WriteFile(path, []byte(dotenv.String()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GUARD_DAEMON_CONFIG", path)
+			unsetPrivateKeyEnvironment(t)
+
+			_, err := LoadWithSecrets(map[string]string{
+				"SOURCE_PRIVATE_KEY": fmt.Sprintf("%064x", 1),
+			})
+			if err == nil || !strings.Contains(err.Error(), "SOURCE_PRIVATE_KEY") {
+				t.Fatalf("LoadWithSecrets() принял credential без signing: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsAlternativeDotEnvGrammarBeforeParsingValues(t *testing.T) {
 	tests := []string{
 		"SOURCE_PRIVATE_KEY: test-only-private-canary",
@@ -322,6 +399,23 @@ func mapLookup(values map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) {
 		value, ok := values[name]
 		return value, ok
+	}
+}
+
+func unsetPrivateKeyEnvironment(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"SOURCE_PRIVATE_KEY", "SPONSOR_PRIVATE_KEY"} {
+		previous, existed := os.LookupEnv(name)
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if existed {
+				_ = os.Setenv(name, previous)
+			} else {
+				_ = os.Unsetenv(name)
+			}
+		})
 	}
 }
 

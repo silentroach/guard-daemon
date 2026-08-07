@@ -207,12 +207,12 @@ snapshot="$(mktemp -d "${TMPDIR:-/tmp}/guard-daemon-release.XXXXXX")"
 
 source_archive="$candidate_tmp/guard-daemon-source.tar"
 require_no_repository_attributes
-git -C "$repo_root" -c core.attributesFile=/dev/null archive \
+git -C "$repo_root" -c core.attributesFile=/dev/null -c tar.umask=0002 archive \
   --format=tar \
   --prefix="guard-daemon-${release_commit}/" \
   "$release_commit" >"$source_archive"
 require_no_repository_attributes
-if ! git -C "$repo_root" -c core.attributesFile=/dev/null archive \
+if ! git -C "$repo_root" -c core.attributesFile=/dev/null -c tar.umask=0002 archive \
   --format=tar \
   --prefix="guard-daemon-${release_commit}/" \
   "$release_commit" | cmp - "$source_archive"; then

@@ -124,6 +124,14 @@ flagged_path=""
 first_root="${temporary_directory}/first"
 second_root="${temporary_directory}/second"
 mkdir -p "${first_root}" "${second_root}"
+first_checkout="${temporary_directory}/first-checkout"
+second_checkout="${temporary_directory}/second-checkout"
+git clone --quiet --no-local --no-checkout -- "${root}" "${first_checkout}"
+git clone --quiet --no-local --no-checkout -- "${root}" "${second_checkout}"
+git -C "${first_checkout}" checkout --quiet --detach "${commit}"
+git -C "${second_checkout}" checkout --quiet --detach "${commit}"
+git -C "${first_checkout}" config --local tar.umask 0077
+git -C "${second_checkout}" config --local tar.umask 0002
 
 # Invoked indirectly after export by the builder child.
 # shellcheck disable=SC2329
@@ -149,13 +157,13 @@ GOWORK=/dev/null \
 NODE_OPTIONS=--require=/guard-daemon-forbidden-node-hook \
 NPM_CONFIG_SCRIPT_SHELL=/usr/bin/false \
 PYTHONHOME=/guard-daemon-forbidden-python-home \
-  run_builder "${root}" "${first_root}"
+  run_builder "${first_checkout}" "${first_root}"
 unset -f env
 unset -f strings
 unset -f git
 GOFIPS140=off \
 npm_config_script_shell=/usr/bin/false \
-  run_builder "${root}" "${second_root}"
+  run_builder "${second_checkout}" "${second_root}"
 
 first="${first_root}/${commit}"
 second="${second_root}/${commit}"

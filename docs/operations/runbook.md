@@ -29,6 +29,8 @@
 /usr/lib/guard-daemon/check-systemd-health.sh
 /usr/lib/guard-daemon/verify-systemd-account.sh
 /etc/guard-daemon/guard-daemon.env
+/etc/guard-daemon/credentials/source-private-key
+/etc/guard-daemon/credentials/sponsor-private-key
 /etc/guard-daemon/manifests/
 /var/lib/guard-daemon/
 /var/lib/guard-daemon-operator/deployment-recovery/
@@ -227,6 +229,8 @@ test "$("$RELEASE_TARGET/guard-daemon" --version)" = "$RELEASE_ID"
 if test "$ACTIVATE_RELEASE" = true; then
   test ! -e /usr/lib/guard-daemon/current
   test ! -L /usr/lib/guard-daemon/current
+  test ! -e /usr/lib/guard-daemon/current.new
+  test ! -L /usr/lib/guard-daemon/current.new
   install -D -o root -g root -m 0644 "$TOOLING_TARGET/packaging/systemd/guard-daemon.service" /usr/lib/systemd/system/guard-daemon.service
   install -D -o root -g root -m 0644 "$TOOLING_TARGET/packaging/systemd/guard-daemon.sysusers" /usr/lib/sysusers.d/guard-daemon.conf
   install -D -o root -g root -m 0644 "$TOOLING_TARGET/packaging/systemd/guard-daemon.tmpfiles" /usr/lib/tmpfiles.d/guard-daemon.conf
@@ -262,15 +266,19 @@ release, а действующие unit и `current` не меняются.
 
 Установите отдельно проверенный манифест каждой включённой сети в
 `/etc/guard-daemon/manifests/`: владелец `root`, группа `guard-daemon`, режим
-`0640`. Заполните `/etc/guard-daemon/guard-daemon.env` через `sudoedit`. Файл
-обязан принадлежать `root:guard-daemon`, иметь режим `0640` и не должен быть
-доступен на запись пользователю службы. Полный перечень полей находится в
-[`docs/configuration.md`](../configuration.md).
+`0640`. Заполните публичный `/etc/guard-daemon/guard-daemon.env` через
+`sudoedit`. Файл обязан принадлежать `root:guard-daemon`, иметь режим `0640` и не
+должен быть доступен на запись пользователю службы. Полный перечень полей
+находится в [`docs/configuration.md`](../configuration.md). Ключи в этот файл не
+записываются; `/etc/guard-daemon/credentials/` остаётся `root:root 0700`, а оба
+credential file до рабочего запуска остаются пустыми `root:root 0600`.
 
 Не создавайте `.env` в каталоге выпуска. `STATE_DIRECTORY` запрещено задавать в
-операторском `guard-daemon.env`. Unit читает этот файл первым, а package-owned
-`/usr/lib/guard-daemon/guard-daemon.state.env` вторым, поэтому последнее значение
-всегда принудительно равно `/var/lib/guard-daemon`.
+операторском `guard-daemon.env`. Unit передаёт binary только фиксированный путь
+`GUARD_DAEMON_CONFIG`, а публичный файл читается после установки
+`RLIMIT_CORE=0` и `PR_SET_DUMPABLE=0`. Package-owned
+`/usr/lib/guard-daemon/guard-daemon.state.env` отдельно принудительно задаёт
+`/var/lib/guard-daemon`.
 
 ## Предварительная проверка
 
@@ -282,6 +290,9 @@ systemd-analyze verify /usr/lib/systemd/system/guard-daemon.service
 /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc \
   /usr/lib/guard-daemon/verify-systemd-account.sh
 test "$(stat -c '%U:%G %a' /etc/guard-daemon/guard-daemon.env)" = 'root:guard-daemon 640'
+test "$(stat -c '%U:%G %a' /etc/guard-daemon/credentials)" = 'root:root 700'
+test "$(stat -c '%U:%G %a' /etc/guard-daemon/credentials/source-private-key)" = 'root:root 600'
+test "$(stat -c '%U:%G %a' /etc/guard-daemon/credentials/sponsor-private-key)" = 'root:root 600'
 test "$(stat -c '%U:%G %a' /usr/lib/guard-daemon/guard-daemon.state.env)" = 'root:root 644'
 test "$(stat -c '%U:%G %a' /usr/lib/guard-daemon/check-systemd-health.sh)" = 'root:root 644'
 test "$(stat -c '%U:%G %a' /usr/lib/guard-daemon/verify-systemd-account.sh)" = 'root:root 644'
@@ -321,7 +332,7 @@ Commit текущего бинарного файла, который вывод
 
 В `guard-daemon.env` установите `DRY_RUN=true`, `EMERGENCY_STOP=false`, удалите
 строки `SOURCE_PRIVATE_KEY`, `SPONSOR_PRIVATE_KEY` и все
-`RPC_BROADCAST_HTTP_<N>`. Затем:
+`RPC_BROADCAST_HTTP_<N>`. Оба credential file оставьте пустыми. Затем:
 
 ```bash
 set -euo pipefail
@@ -334,6 +345,11 @@ MATCH_STATUS=0
 grep -q '^STATE_DIRECTORY=' /etc/guard-daemon/guard-daemon.env || MATCH_STATUS=$?
 test "$MATCH_STATUS" -eq 1
 test "$(cat /usr/lib/guard-daemon/guard-daemon.state.env)" = 'STATE_DIRECTORY=/var/lib/guard-daemon'
+for CREDENTIAL in source-private-key sponsor-private-key; do
+  CREDENTIAL_PATH="/etc/guard-daemon/credentials/$CREDENTIAL"
+  test "$(stat -c '%U:%G %a' "$CREDENTIAL_PATH")" = 'root:root 600'
+  test ! -s "$CREDENTIAL_PATH"
+done
 test -x /usr/lib/guard-daemon/current/guard-daemon
 test -r /usr/lib/guard-daemon/current/artifacts/contracts/RescuerV2.json
 systemctl start guard-daemon.service
@@ -362,7 +378,7 @@ systemctl show guard-daemon.service --property=ActiveState --property=SubState -
 
 В защищённом файле окружения установите `DRY_RUN=false` и
 `EMERGENCY_STOP=true`, добавьте отдельный `RPC_BROADCAST_HTTP_<N>` для каждой
-сети и убедитесь, что оба приватных ключа отсутствуют. После независимой
+сети и убедитесь, что оба credential file пусты. После независимой
 операторской проверки ролей, лимитов, манифестов и отсутствия второго активного
 хоста выполните:
 
@@ -375,6 +391,11 @@ MATCH_STATUS=0
 grep -Eq '^(SOURCE_PRIVATE_KEY|SPONSOR_PRIVATE_KEY|STATE_DIRECTORY)=' /etc/guard-daemon/guard-daemon.env || MATCH_STATUS=$?
 test "$MATCH_STATUS" -eq 1
 test "$(cat /usr/lib/guard-daemon/guard-daemon.state.env)" = 'STATE_DIRECTORY=/var/lib/guard-daemon'
+for CREDENTIAL in source-private-key sponsor-private-key; do
+  CREDENTIAL_PATH="/etc/guard-daemon/credentials/$CREDENTIAL"
+  test "$(stat -c '%U:%G %a' "$CREDENTIAL_PATH")" = 'root:root 600'
+  test ! -s "$CREDENTIAL_PATH"
+done
 test -x /usr/lib/guard-daemon/current/guard-daemon
 test -r /usr/lib/guard-daemon/current/artifacts/contracts/RescuerV2.json
 systemctl start guard-daemon.service
@@ -392,11 +413,14 @@ HEALTH_CHECK=/usr/lib/guard-daemon/check-systemd-health.sh
 ## Рабочий запуск
 
 Только после сохранения результатов аварийной аттестации постоянно запретите
-автозапуск и остановите службу. В защищённом файле окружения установите
-`EMERGENCY_STOP=false`, добавьте оба ключа и не меняйте остальные проверенные
-поля. Mask устанавливается до остановки, поэтому reboot во время изменения
-конфигурации не запустит частично подготовленный live-процесс. Ограничьте баланс
-горячего `sponsor` утверждённым объёмом, затем запустите службу вручную:
+автозапуск и остановите службу. В публичной конфигурации установите
+`EMERGENCY_STOP=false` и не меняйте остальные проверенные поля. Утверждённый
+менеджер секретов отдельно записывает ключи в `source-private-key` и
+`sponsor-private-key`, сохраняя `root:root 0600`; ключи не передаются через
+командную строку, `.env` или начальное окружение. Mask устанавливается до
+остановки, поэтому reboot во время изменения конфигурации не запустит частично
+подготовленный live-процесс. Ограничьте баланс горячего `sponsor` утверждённым
+объёмом, затем запустите службу вручную:
 
 ```bash
 set -euo pipefail
@@ -411,13 +435,16 @@ test "$(systemctl show guard-daemon.service --property=ActiveState --value)" = '
 sudoedit /etc/guard-daemon/guard-daemon.env
 test "$(grep -c '^DRY_RUN=false$' /etc/guard-daemon/guard-daemon.env)" -eq 1
 test "$(grep -c '^EMERGENCY_STOP=false$' /etc/guard-daemon/guard-daemon.env)" -eq 1
-test "$(grep -c '^SOURCE_PRIVATE_KEY=' /etc/guard-daemon/guard-daemon.env)" -eq 1
-test "$(grep -c '^SPONSOR_PRIVATE_KEY=' /etc/guard-daemon/guard-daemon.env)" -eq 1
 test "$(grep -Ec '^RPC_BROADCAST_HTTP_[A-Z][A-Z0-9_]*=' /etc/guard-daemon/guard-daemon.env)" -gt 0
 MATCH_STATUS=0
-grep -q '^STATE_DIRECTORY=' /etc/guard-daemon/guard-daemon.env || MATCH_STATUS=$?
+grep -Eq '^(SOURCE_PRIVATE_KEY|SPONSOR_PRIVATE_KEY|STATE_DIRECTORY)=' /etc/guard-daemon/guard-daemon.env || MATCH_STATUS=$?
 test "$MATCH_STATUS" -eq 1
 test "$(cat /usr/lib/guard-daemon/guard-daemon.state.env)" = 'STATE_DIRECTORY=/var/lib/guard-daemon'
+for CREDENTIAL in source-private-key sponsor-private-key; do
+  CREDENTIAL_PATH="/etc/guard-daemon/credentials/$CREDENTIAL"
+  test "$(stat -c '%U:%G %a' "$CREDENTIAL_PATH")" = 'root:root 600'
+  test -s "$CREDENTIAL_PATH"
+done
 test -x /usr/lib/guard-daemon/current/guard-daemon
 test -r /usr/lib/guard-daemon/current/artifacts/contracts/RescuerV2.json
 test ! -e /var/lib/guard-daemon-operator/live-disabled-after-restore
@@ -568,6 +595,11 @@ MATCH_STATUS=0
 grep -Eq '^(SOURCE_PRIVATE_KEY|SPONSOR_PRIVATE_KEY|STATE_DIRECTORY)=' /etc/guard-daemon/guard-daemon.env || MATCH_STATUS=$?
 test "$MATCH_STATUS" -eq 1
 test "$(cat /usr/lib/guard-daemon/guard-daemon.state.env)" = 'STATE_DIRECTORY=/var/lib/guard-daemon'
+for CREDENTIAL in source-private-key sponsor-private-key; do
+  CREDENTIAL_PATH="/etc/guard-daemon/credentials/$CREDENTIAL"
+  test "$(stat -c '%U:%G %a' "$CREDENTIAL_PATH")" = 'root:root 600'
+  test ! -s "$CREDENTIAL_PATH"
+done
 test -x /usr/lib/guard-daemon/current/guard-daemon
 test -r /usr/lib/guard-daemon/current/artifacts/contracts/RescuerV2.json
 systemctl unmask guard-daemon.service
@@ -583,7 +615,8 @@ systemctl enable guard-daemon.service
 test "$(systemctl is-enabled guard-daemon.service)" = 'enabled'
 ```
 
-Перед `start` удалите из файла обе строки приватных ключей и установите ровно
+Перед `start` утверждённый менеджер секретов должен заменить оба credential file
+пустыми файлами `root:root 0600`; в публичной конфигурации установите ровно
 `DRY_RUN=false` и `EMERGENCY_STOP=true`. Оставьте
 `RPC_BROADCAST_HTTP_<N>`: рабочая схема конфигурации требует это поле, хотя в
 аварийном режиме компонент отправки не создаётся.
@@ -605,9 +638,10 @@ test "$(systemctl is-enabled guard-daemon.service)" = 'enabled'
    не меняет `current` или установленный unit. Не переиспользуйте каталог уже
    установленного или rollback-выпуска.
 2. До снимка штатно остановите службу, отключите автозапуск и установите
-   постоянную mask. Затем удалите ключи, установите `DRY_RUN=false` и
-   `EMERGENCY_STOP=true`; отдельные URL отправки оставьте. Mask сохраняется при
-   reboot и не снимается до emergency-запуска нового выпуска:
+   постоянную mask. Затем замените оба credential file пустыми файлами
+   `root:root 0600`, установите `DRY_RUN=false` и `EMERGENCY_STOP=true`;
+   отдельные URL отправки оставьте. Mask сохраняется при reboot и не снимается до
+   emergency-запуска нового выпуска:
 
 ```bash
 set -euo pipefail
@@ -630,6 +664,11 @@ test "$(grep -Ec '^RPC_BROADCAST_HTTP_[A-Z][A-Z0-9_]*=' /etc/guard-daemon/guard-
 MATCH_STATUS=0
 grep -Eq '^(SOURCE_PRIVATE_KEY|SPONSOR_PRIVATE_KEY|STATE_DIRECTORY)=' /etc/guard-daemon/guard-daemon.env || MATCH_STATUS=$?
 test "$MATCH_STATUS" -eq 1
+for CREDENTIAL in source-private-key sponsor-private-key; do
+  CREDENTIAL_PATH="/etc/guard-daemon/credentials/$CREDENTIAL"
+  test "$(stat -c '%U:%G %a' "$CREDENTIAL_PATH")" = 'root:root 600'
+  test ! -s "$CREDENTIAL_PATH"
+done
 ```
 
 3. Пока service masked, создайте единый снимок состояния по
@@ -656,6 +695,11 @@ test "$(grep -Ec '^RPC_BROADCAST_HTTP_[A-Z][A-Z0-9_]*=' /etc/guard-daemon/guard-
 MATCH_STATUS=0
 grep -Eq '^(SOURCE_PRIVATE_KEY|SPONSOR_PRIVATE_KEY|STATE_DIRECTORY)=' /etc/guard-daemon/guard-daemon.env || MATCH_STATUS=$?
 test "$MATCH_STATUS" -eq 1
+for CREDENTIAL in source-private-key sponsor-private-key; do
+  CREDENTIAL_PATH="/etc/guard-daemon/credentials/$CREDENTIAL"
+  test "$(stat -c '%U:%G %a' "$CREDENTIAL_PATH")" = 'root:root 600'
+  test ! -s "$CREDENTIAL_PATH"
+done
 test -x "/usr/lib/guard-daemon/releases/$RELEASE_ID/guard-daemon"
 test -r "/usr/lib/guard-daemon/releases/$RELEASE_ID/artifacts/contracts/RescuerV2.json"
 test "$("/usr/lib/guard-daemon/releases/$RELEASE_ID/guard-daemon" --version)" = "$RELEASE_ID"
@@ -733,7 +777,8 @@ marker нет.
 Следующая процедура снимок не восстанавливает: она переключает только двоичный
 файл поверх наиболее нового, никогда не восстановленного состояния после
 доказанной совместимости. Сначала автозапуск постоянно блокируется и служба
-останавливается, затем оператор удаляет ключи и включает аварийный режим:
+останавливается, затем оператор очищает credential files через утверждённый
+менеджер секретов и включает аварийный режим:
 
 ```bash
 set -euo pipefail
@@ -755,11 +800,18 @@ test "$(grep -Ec '^RPC_BROADCAST_HTTP_[A-Z][A-Z0-9_]*=' /etc/guard-daemon/guard-
 MATCH_STATUS=0
 grep -Eq '^(SOURCE_PRIVATE_KEY|SPONSOR_PRIVATE_KEY|STATE_DIRECTORY)=' /etc/guard-daemon/guard-daemon.env || MATCH_STATUS=$?
 test "$MATCH_STATUS" -eq 1
+for CREDENTIAL in source-private-key sponsor-private-key; do
+  CREDENTIAL_PATH="/etc/guard-daemon/credentials/$CREDENTIAL"
+  test "$(stat -c '%U:%G %a' "$CREDENTIAL_PATH")" = 'root:root 600'
+  test ! -s "$CREDENTIAL_PATH"
+done
 test -x "/usr/lib/guard-daemon/releases/$RELEASE_ID/guard-daemon"
 test -r "/usr/lib/guard-daemon/releases/$RELEASE_ID/artifacts/contracts/RescuerV2.json"
 test "$("/usr/lib/guard-daemon/releases/$RELEASE_ID/guard-daemon" --version)" = "$RELEASE_ID"
 test "$(cat /usr/lib/guard-daemon/guard-daemon.state.env)" = 'STATE_DIRECTORY=/var/lib/guard-daemon'
-ln -sfn "releases/$RELEASE_ID" /usr/lib/guard-daemon/current.new
+test ! -e /usr/lib/guard-daemon/current.new
+test ! -L /usr/lib/guard-daemon/current.new
+ln -s "releases/$RELEASE_ID" /usr/lib/guard-daemon/current.new
 mv -Tf /usr/lib/guard-daemon/current.new /usr/lib/guard-daemon/current
 systemctl daemon-reload
 test "$(readlink -f /usr/lib/guard-daemon/current)" = "/usr/lib/guard-daemon/releases/$RELEASE_ID"

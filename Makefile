@@ -1,5 +1,7 @@
 .PHONY: adversarial-test artifacts-verify audit build check ci-policy contracts-build contracts-lint contracts-static contracts-test deployment-check documentation-check format format-check fuzz-test go-ci lint mod-verify node-ci operations-check operations-rehearsal race release-candidate reproducibility-check secret-scan security-validation test typecheck vet vuln workflow-lint
 
+export RELEASE_COMMIT
+
 format:
 	gofmt -w $$(git ls-files '*.go')
 	npm run format
@@ -44,7 +46,7 @@ reproducibility-check:
 		/bin/bash --noprofile --norc test/ci/compare-artifacts.sh
 
 release-candidate:
-	/usr/bin/env -i PATH="$$PATH" RELEASE_COMMIT="$(RELEASE_COMMIT)" \
+	/usr/bin/env -i PATH="$$PATH" RELEASE_COMMIT="$${RELEASE_COMMIT:-}" \
 		/bin/bash --noprofile --norc scripts/build-release-candidate.sh
 
 mod-verify:

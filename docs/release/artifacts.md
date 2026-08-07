@@ -80,8 +80,9 @@ Nix-patched Go нельзя использовать как компилятор
 `guard-daemon-source.tar` является точным результатом одной операции:
 
 ```sh
-GIT_ATTR_NOSYSTEM=1 git -c core.attributesFile=/dev/null archive \
-  --format=tar --prefix="guard-daemon-<commit>/" <commit>
+GIT_ATTR_NOSYSTEM=1 git -c core.attributesFile=/dev/null \
+  -c tar.umask=0002 archive --format=tar \
+  --prefix="guard-daemon-<commit>/" <commit>
 ```
 
 Префикс является частью канонического формата. Запрещено менять его, заголовки
@@ -90,6 +91,8 @@ tar, повторно упаковывать или сжимать резуль�
 неотслеживаемые, игнорируемые и локальные операторские файлы исключены.
 Builder дополнительно отключает системные/global attributes и отклоняет
 repository-local `info/attributes`, `assume-unchanged` и `skip-worktree`.
+Локальный `tar.umask` принудительно переопределяется каноническим `0002`, поэтому
+Git config двух checkout не создаёт common-mode различие source archive.
 
 `LICENSE`, `RescuerV2.json` и `rescuer-manifest.schema.json` извлекаются из того
 же commit. Генератор должен завершиться с ошибкой, если файл отсутствует,

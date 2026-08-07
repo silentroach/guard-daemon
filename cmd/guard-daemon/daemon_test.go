@@ -121,6 +121,58 @@ func TestDaemonStartsExactlyOneLoopPerConfiguredNetworkAndStopsWorkers(t *testin
 	}
 }
 
+func TestWatcherReadinessClearsRPCDegradedOnlyThroughCallback(t *testing.T) {
+	network := testNetwork("readiness-network", 202)
+	watcherError := errors.New("watcher stopped before readiness")
+	var watcherDependencies watcher.Dependencies
+	dependencies := daemonDependencies{
+		serviceClock: newSupervisorClock(),
+		observer:     observability.Discard{},
+		dial: func(context.Context, string, uint64) (generationClient, error) {
+			return &stubGenerationClient{generation: 1}, nil
+		},
+		newSession: stubSessionFactory(nil),
+		newWatcher: func(dependencies watcher.Dependencies) (generationRunner, error) {
+			watcherDependencies = dependencies
+			return runnerFunc(func(context.Context) error { return watcherError }), nil
+		},
+	}
+	dependencies = completeTestDependencies(t, dependencies)
+	process, err := newDaemon(context.Background(), testRuntime(t, []domain.Network{network}), dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer process.shutdown(nil)
+	chainID := network.ChainID
+	if !process.health.Snapshot().Chains[chainID].Conditions.RPCDegraded {
+		t.Fatal("initial health не начался с degraded RPC")
+	}
+	if _, err := process.alerts.Raise(chainID, observability.AlertRPCDegraded); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := process.networks[0].runGeneration(context.Background(), 1, dependencies); !errors.Is(err, watcherError) {
+		t.Fatalf("runGeneration() error = %v", err)
+	}
+	if watcherDependencies.Ready == nil {
+		t.Fatal("watcher dependencies не содержат readiness callback")
+	}
+	if !process.health.Snapshot().Chains[chainID].Conditions.RPCDegraded {
+		t.Fatal("runGeneration очистил degraded RPC до initial watcher scan")
+	}
+	if err := watcherDependencies.Ready(); err != nil {
+		t.Fatalf("Ready() error = %v", err)
+	}
+	if process.health.Snapshot().Chains[chainID].Conditions.RPCDegraded {
+		t.Fatal("Ready() не очистил degraded RPC")
+	}
+	for _, alert := range process.alerts.Snapshot() {
+		if alert.ChainID == chainID && alert.Code == observability.AlertRPCDegraded && alert.Active {
+			t.Fatal("Ready() оставил активный degraded RPC alert")
+		}
+	}
+}
+
 func TestGenerationFallsBackFromWSToHTTP(t *testing.T) {
 	network := testNetwork("fallback-network", 201)
 	testClock := newSupervisorClock()

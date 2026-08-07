@@ -6,7 +6,7 @@
 
 ## Цель
 
-Подготовить полностью русскоязычную, точную и безопасную документацию для сборки, локальной проверки, изолированного запуска, обновления, emergency stop, migration и rollback. Подготовить release candidate без выполнения mainnet deployment, tag или push.
+Подготовить полностью русскоязычную, точную и безопасную документацию для сборки, локальной проверки, изолированного запуска, обновления, emergency stop и rollback. Зафиксировать fail-closed границу неподдерживаемой in-place migration. Подготовить release candidate без выполнения mainnet deployment, tag или push.
 
 ## Границы задачи
 
@@ -27,7 +27,7 @@
 6. Отдельно описать: source key остаётся compromised, победа не гарантирована, legacy EOA нельзя повторно использовать.
 7. Deployment activation runbook: clean build, artifact verification, chain/destination/sponsor/runtime checks, operator confirmation, ограниченное funding и post-deploy readback.
 8. Mainnet action выполняет только оператор. Agent instructions явно запрещают автоматический broadcast.
-9. Migration runbook включает смену delegation на attested implementation, проверку результата и вывод legacy deployment из использования без конкретных operator addresses.
+9. In-place смена rescuer не заявляется без crash-consistent переноса всех bindings, incidents, nonce и budget. Пока такого механизма нет, migration runbook обязан блокировать смену manifest/state, запрещать сброс постоянных данных и направлять оператора к emergency stop и отдельному forward fix.
 10. Rollback/emergency runbook включает stop signing, сохранение monitoring, quarantine sponsor funds и incident evidence без публикации secrets.
 11. Service запускается не от `root`, с отдельным пользователем, read-only filesystem где возможно, `NoNewPrivileges`, ограниченными capabilities, защищённым environment file и outbound policy.
 12. Health/alerts основаны на state/metrics Task 08, а не на свежести логов.
@@ -56,7 +56,7 @@
 - Каждая настройка автоматически сверяется с typed config schema.
 - Quick start не способен случайно выполнить live transaction.
 - Service hardening соответствует фактическим файлам установки и не требует `root` для daemon.
-- Deployment/migration/rollback runbooks проверены dry-run rehearsal на local chain.
+- Deployment и rollback проверены локальной репетицией; migration runbook точно описывает проверяемый fail-closed отказ неподдерживаемой смены rescuer.
 - Release checklist требует успешные GitHub Actions checks, operator evidence branch protection/Dependabot и отсутствие Critical/High findings.
 - Release candidate подготовлен, но tag/push/mainnet deployment не выполнены без отдельного запроса.
 
@@ -65,7 +65,7 @@
 - Documentation command tests либо проверяемые shell examples без live network.
 - Link/config-schema validation.
 - Secret scan всех документов и generated release metadata.
-- Local rehearsal install/start/health/stop/rollback.
+- Local rehearsal install/start/health/stop/rollback и тесты отсутствия отдельного proactive renewal.
 - Проверка SBOM/checksum reproducibility на двух clean builds.
 
 ## Независимое ревью

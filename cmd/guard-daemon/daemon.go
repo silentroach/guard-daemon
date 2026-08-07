@@ -1098,14 +1098,6 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 		return processError("daemon.session", domain.ErrorRPCTransient, errorSessionFailed, true, err)
 	}
 	defer session.Close()
-	if network.alerts != nil {
-		if _, alertErr := network.alerts.Resolve(network.network.ChainID, observability.AlertRPCDegraded); alertErr != nil {
-			return processError("daemon.rpc_alert", domain.ErrorInternal, errorSessionFailed, true, alertErr)
-		}
-	}
-	if network.health != nil {
-		_ = network.health.SetCondition(network.network.ChainID, observability.ConditionRPCDegraded, false)
-	}
 	if err := updateQueueDepth(generationContext, network.network.ChainID, network.handoff, network.metrics); err != nil {
 		return err
 	}
@@ -1123,6 +1115,19 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 		Generation:     generation,
 		LookbackBlocks: network.watchLookback,
 		ReadTimeout:    network.readTimeout,
+		Ready: func() error {
+			if network.alerts != nil {
+				if _, alertErr := network.alerts.Resolve(network.network.ChainID, observability.AlertRPCDegraded); alertErr != nil {
+					return processError("daemon.rpc_alert", domain.ErrorInternal, errorSessionFailed, true, alertErr)
+				}
+			}
+			if network.health != nil {
+				if healthErr := network.health.SetCondition(network.network.ChainID, observability.ConditionRPCDegraded, false); healthErr != nil {
+					return processError("daemon.rpc_health", domain.ErrorInternal, errorSessionFailed, true, healthErr)
+				}
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		return processError("daemon.watcher", domain.ErrorInternal, errorWatcherFailed, false, err)

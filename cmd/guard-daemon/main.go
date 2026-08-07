@@ -50,7 +50,13 @@ func runProcess() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	runtimeConfig, err := config.Load()
+	secrets, err := loadSystemdCredentials()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Ошибка конфигурации: не удалось безопасно загрузить credentials.")
+		stop()
+		return 1
+	}
+	runtimeConfig, err := config.LoadWithSecrets(secrets)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Ошибка конфигурации: %v.\n", err)
 		stop()

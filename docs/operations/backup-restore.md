@@ -108,8 +108,9 @@ durable и атомарно создаёт root-owned marker
 новое состояние.
 
 Сначала постоянно запретите автозапуск, остановите службу и только после
-подтверждения `MainPID=0` измените конфигурацию: удалите обе строки приватных
-ключей, установите `DRY_RUN=false` и `EMERGENCY_STOP=true`, сохранив обязательные
+подтверждения `MainPID=0` замените оба credential file пустыми файлами
+`root:root 0600` через утверждённый менеджер секретов. В публичной конфигурации
+установите `DRY_RUN=false` и `EMERGENCY_STOP=true`, сохранив обязательные
 `RPC_BROADCAST_HTTP_<N>`. Mask устанавливается до остановки, поэтому reboot в
 любой момент до безопасного emergency startup не вернёт прежнюю live
 конфигурацию. Следующая процедура выполняется целиком от `root`; любое
@@ -136,6 +137,11 @@ MATCH_STATUS=0
 grep -Eq '^(SOURCE_PRIVATE_KEY|SPONSOR_PRIVATE_KEY|STATE_DIRECTORY)=' /etc/guard-daemon/guard-daemon.env || MATCH_STATUS=$?
 test "$MATCH_STATUS" -eq 1
 test "$(cat /usr/lib/guard-daemon/guard-daemon.state.env)" = 'STATE_DIRECTORY=/var/lib/guard-daemon'
+for CREDENTIAL in source-private-key sponsor-private-key; do
+  CREDENTIAL_PATH="/etc/guard-daemon/credentials/$CREDENTIAL"
+  test "$(stat -c '%U:%G %a' "$CREDENTIAL_PATH")" = 'root:root 600'
+  test ! -s "$CREDENTIAL_PATH"
+done
 
 ARCHIVE='<путь-к-доверенному-снимку.tar>'
 TRUSTED_ARCHIVE_SHA256='<доверенный-64hex-sha256-выбранного-архива>'

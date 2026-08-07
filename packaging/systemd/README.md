@@ -32,8 +32,11 @@ login-capable, unlocked, несистемную или включённую в �
 
 `systemd-tmpfiles` создаёт:
 
-- защищённый каталог конфигурации и обязательный пустой файл окружения с
-  владельцем `root:guard-daemon`;
+- защищённый каталог конфигурации и обязательный пустой публичный файл
+  конфигурации с владельцем `root:guard-daemon`;
+- root-only каталог `/etc/guard-daemon/credentials` и пустые credential files
+  `source-private-key` и `sponsor-private-key` с владельцем `root:root` и
+  режимом `0600`;
 - устойчивый каталог состояния `/var/lib/guard-daemon` с режимом `0700`;
 - операторский каталог `/var/lib/guard-daemon-operator` с режимом `0755` и
   владельцем `root:root`; tmpfiles не создаёт постоянный restore marker;
@@ -47,13 +50,16 @@ login-capable, unlocked, несистемную или включённую в �
   `/var/tmp/guard-daemon-leases-v1` с режимом `0700`.
 
 `StateDirectory=guard-daemon` повторно обеспечивает существование и владельца
-`/var/lib/guard-daemon` при запуске. Unit сначала читает операторский
-`/etc/guard-daemon/guard-daemon.env`, затем принадлежащий пакету
-`/usr/lib/guard-daemon/guard-daemon.state.env`. Второй файл содержит только
+`/var/lib/guard-daemon` при запуске. Unit не передаёт операторский файл через
+`EnvironmentFile`: он задаёт только фиксированный путь
+`GUARD_DAEMON_CONFIG=/etc/guard-daemon/guard-daemon.env`, а binary читает
+публичную конфигурацию после запрета core dump. Приватные ключи поступают через
+`LoadCredential` из root-only `/etc/guard-daemon/credentials/`; начальное
+окружение процесса содержит только пути и не содержит значений ключей. Package
+state file `/usr/lib/guard-daemon/guard-daemon.state.env` содержит только
 `STATE_DIRECTORY=/var/lib/guard-daemon`, устанавливается как `root:root` с
-режимом `0644` и принудительно возвращает канонический путь, даже если
-операторский файл ошибочно попытался его переопределить. Такая строка в
-операторском файле всё равно запрещена предварительной проверкой.
+режимом `0644` и принудительно задаёт канонический путь. Такая строка в
+операторском файле запрещена предварительной проверкой.
 
 Deployment CLI для chain ID `1`, `56` и `137` запускает назначенный
 root-оператор из аутентифицированного
@@ -72,11 +78,14 @@ recovery/manifest каталоги. Полный candidate сохраняетс�
 
 ## Граница привилегий
 
-Установка пакета, заполнение `/etc/guard-daemon/guard-daemon.env`, установка
-манифестов и управление выпуском выполняются от `root`. Процесс работает как
-`guard-daemon` без capabilities и без новых привилегий. Файл окружения обязателен
-и читается процессом, но изменяется только `root`; рекомендуемый режим `0640`,
-владелец `root`, группа `guard-daemon`.
+Установка пакета, заполнение `/etc/guard-daemon/guard-daemon.env` и
+`/etc/guard-daemon/credentials/`, установка манифестов и управление выпуском
+выполняются от `root`. Процесс работает как `guard-daemon` без capabilities и без
+новых привилегий. Публичный файл конфигурации обязателен и читается процессом,
+но изменяется только `root`; рекомендуемый режим `0640`, владелец `root`,
+группа `guard-daemon`. Credential files остаются `root:root 0600`; systemd
+копирует их через `LoadCredential`, а binary отклоняет `SOURCE_PRIVATE_KEY` и
+`SPONSOR_PRIVATE_KEY` в начальном environment.
 
 `ProtectSystem=strict` делает файловую систему доступной только для чтения, кроме
 явно разрешённых `/var/lib/guard-daemon` и
@@ -87,12 +96,12 @@ children недоступными процессу и не включает oper
 намеренно: приватный `/var/tmp` разрушил бы общую для хоста блокировку и позволил
 бы двум процессам считать себя единственным владельцем одной роли `sponsor`.
 
-`LimitCORE=0` является внешней границей unit. До чтения конфигурации и приватных
-ключей Linux binary дополнительно устанавливает собственные hard/soft
+`LimitCORE=0` является внешней границей unit. До чтения публичной конфигурации и
+credential files Linux binary дополнительно устанавливает собственные hard/soft
 `RLIMIT_CORE=0` и `PR_SET_DUMPABLE=0`; невозможность применить любую из этих
-политик блокирует startup. Поэтому pipe-based crash collector не получает core
-или окружение live-процесса даже когда глобальный `kernel.core_pattern` направлен
-в такой collector.
+политик блокирует startup. Поэтому pipe-based crash collector не получает core,
+credential payload или окружение live-процесса даже когда глобальный
+`kernel.core_pattern` направлен в такой collector.
 
 Unit не использует `Type=notify`, `ExecReload`, `DynamicUser` или автоматический
 перезапуск. Конфигурация применяется только полной остановкой и новым запуском.

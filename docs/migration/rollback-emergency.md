@@ -23,12 +23,12 @@ EMERGENCY_STOP=true
 
 До остановки процесса оператор постоянно отключает и маскирует systemd unit,
 чтобы reboot во время удаления ключей не вернул прежний live-режим. Процесс
-перезапускается вручную без `SOURCE_PRIVATE_KEY` и `SPONSOR_PRIVATE_KEY`, с теми
-же доверенными манифестами, ролями и постоянными файлами; автозапуск возвращается
-только после проверки emergency health. В этом режиме новые authorization
-signatures, sponsor signatures, initial broadcast и exact rebroadcast запрещены,
-а watcher, finalized reads, receipt reconciliation и diagnostics продолжают
-работать.
+перезапускается вручную с пустыми systemd credentials `source-private-key` и
+`sponsor-private-key`, с теми же доверенными манифестами, ролями и постоянными
+файлами; автозапуск возвращается только после проверки emergency health. В этом
+режиме новые authorization signatures, sponsor signatures, initial broadcast и
+exact rebroadcast запрещены, а watcher, finalized reads, receipt reconciliation
+и diagnostics продолжают работать.
 
 Если безопасный emergency startup не проходит аттестацию или не может открыть
 state/ledger, процесс оставляют остановленным. Ошибку нельзя обходить заменой
