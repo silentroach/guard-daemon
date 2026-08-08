@@ -21,6 +21,8 @@ const (
 
 var errRPCResponseTooLarge = errors.New("RPC response превышает допустимый размер")
 
+var errDial = errors.New("не удалось подключиться к RPC")
+
 type Dialer interface {
 	DialContext(context.Context, string, uint64) (*GenerationClient, error)
 }
@@ -33,7 +35,7 @@ type headSubscriberFacade struct{ HeadSubscriber }
 type historicalReaderFacade struct{ HistoricalReader }
 
 func (EthClientDialer) DialContext(ctx context.Context, endpoint string, generation uint64) (*GenerationClient, error) {
-	backend, err := dialEthClient(ctx, endpoint)
+	backend, err := DialEthClient(ctx, endpoint)
 	if err != nil {
 		return nil, domain.NewError("rpc.dial", domain.ErrorRPCTransient, dialFailed, true, false, nil)
 	}
@@ -49,6 +51,19 @@ func (EthClientDialer) DialContext(ctx context.Context, endpoint string, generat
 		return nil, domain.NewError("rpc.client", domain.ErrorInternal, "rpc_client_invalid", false, false, err)
 	}
 	return client, nil
+}
+
+// DialEthClient creates an RPC client with bounded HTTP and WebSocket responses.
+// Backend errors are deliberately hidden because endpoints may contain secrets.
+func DialEthClient(ctx context.Context, endpoint string) (*ethclient.Client, error) {
+	backend, err := dialEthClient(ctx, endpoint)
+	if err == nil {
+		return backend, nil
+	}
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("%w: %w", errDial, ctx.Err())
+	}
+	return nil, errDial
 }
 
 func DialQuorum(ctx context.Context, endpoints []ProviderEndpoint, timeout time.Duration) (*QuorumReader, error) {

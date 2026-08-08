@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"guard-daemon/internal/rpc"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 func TestEthClientDialerRedactsEndpointFromError(t *testing.T) {
@@ -72,7 +74,23 @@ func TestEthClientRejectsOversizedHTTPResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if _, err := client.Reader().ChainID(context.Background()); err == nil {
+	if _, err := client.Reader().CodeAt(context.Background(), common.Address{}, nil); err == nil {
 		t.Fatal("oversized HTTP response принят")
+	}
+}
+
+func TestDialEthClientRedactsEndpointFromError(t *testing.T) {
+	t.Parallel()
+
+	const endpoint = "http://deterministic.invalid/private-credential%zz"
+	_, err := rpc.DialEthClient(context.Background(), endpoint)
+	if err == nil {
+		t.Fatalf("DialEthClient() error = %v", err)
+	}
+	if strings.Contains(err.Error(), endpoint) || strings.Contains(err.Error(), "private-credential") {
+		t.Fatalf("DialEthClient() exposed endpoint: %q", err)
+	}
+	if errors.Unwrap(err) != nil {
+		t.Fatalf("DialEthClient() exposed raw error through Unwrap: %v", errors.Unwrap(err))
 	}
 }
