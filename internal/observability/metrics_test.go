@@ -59,7 +59,7 @@ func TestMetricsTrackBoundedChainState(t *testing.T) {
 	}
 	got := metrics.Snapshot()
 	if len(got.Chains) != 2 || !reflect.DeepEqual(got.Chains[1], want) {
-		t.Fatalf("snapshot = %#v, want chain 1 %#v and two configured chains", got, want)
+		t.Fatalf("snapshot = %#v, want network 1 %#v and two configured networks", got, want)
 	}
 	if got.Chains[8453].Delegation != DelegationUnknown {
 		t.Fatalf("initial delegation = %v, want DelegationUnknown", got.Chains[8453].Delegation)
@@ -130,7 +130,7 @@ func TestMetricsConcurrentCountersAreExact(t *testing.T) {
 	chain := metrics.Snapshot().Chains[1]
 	want := uint64(workers * increments)
 	if chain.Candidates != want || chain.Attempts != want {
-		t.Fatalf("concurrent counters = candidates %d, attempts %d; want %d", chain.Candidates, chain.Attempts, want)
+		t.Fatalf("concurrent counters: candidates %d, attempts %d; want %d", chain.Candidates, chain.Attempts, want)
 	}
 }
 
@@ -142,16 +142,16 @@ func TestMetricsRejectUnconfiguredCardinalityAndInvalidTransitions(t *testing.T)
 		t.Fatal(err)
 	}
 	if err := metrics.RecordCandidate(2); !errors.Is(err, ErrUnknownChain) {
-		t.Fatalf("unknown chain error = %v, want ErrUnknownChain", err)
+		t.Fatalf("unknown network error = %v, want ErrUnknownChain", err)
 	}
 	if err := metrics.ResolveAmbiguous(1); !errors.Is(err, ErrAmbiguousUnderflow) {
-		t.Fatalf("resolve error = %v, want ErrAmbiguousUnderflow", err)
+		t.Fatalf("resolution error = %v, want ErrAmbiguousUnderflow", err)
 	}
 	if err := metrics.SetDelegationState(1, DelegationState(255)); !errors.Is(err, ErrInvalidDelegation) {
 		t.Fatalf("delegation error = %v, want ErrInvalidDelegation", err)
 	}
 	if len(metrics.Snapshot().Chains) != 1 {
-		t.Fatal("unknown chain увеличил cardinality")
+		t.Fatal("unknown network increased dimensions")
 	}
 
 	tooMany := make([]domain.NetworkID, MaxConfiguredChains+1)
@@ -159,6 +159,6 @@ func TestMetricsRejectUnconfiguredCardinalityAndInvalidTransitions(t *testing.T)
 		tooMany[index] = domain.NetworkID(index + 1)
 	}
 	if _, err := NewMetrics(tooMany); !errors.Is(err, ErrInvalidChains) {
-		t.Fatalf("NewMetrics error = %v, want ErrInvalidChains", err)
+		t.Fatalf("NewMetrics returned error %v, want ErrInvalidChains", err)
 	}
 }

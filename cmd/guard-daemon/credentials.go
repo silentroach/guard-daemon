@@ -22,7 +22,7 @@ var systemdCredentials = []systemdCredential{
 func loadSystemdCredentials() (map[string]string, error) {
 	for _, credential := range systemdCredentials {
 		if _, present := os.LookupEnv(credential.name); present {
-			return nil, fmt.Errorf("credential %s запрещён в initial environment", credential.name)
+			return nil, fmt.Errorf("credential %s is forbidden in the initial environment", credential.name)
 		}
 	}
 
@@ -31,11 +31,11 @@ func loadSystemdCredentials() (map[string]string, error) {
 		return map[string]string{}, nil
 	}
 	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
-		return nil, fmt.Errorf("неканонический credentials directory")
+		return nil, fmt.Errorf("credentials directory is not canonical")
 	}
 	metadata, err := os.Lstat(directory)
 	if err != nil || !metadata.IsDir() || metadata.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("некорректный credentials directory")
+		return nil, fmt.Errorf("invalid credentials directory")
 	}
 
 	values := make(map[string]string, len(systemdCredentials))
@@ -43,20 +43,20 @@ func loadSystemdCredentials() (map[string]string, error) {
 		path := filepath.Join(directory, credential.identifier)
 		metadata, err := os.Lstat(path)
 		if err != nil || !metadata.Mode().IsRegular() || metadata.Mode()&os.ModeSymlink != 0 || metadata.Size() > maximumCredentialBytes {
-			return nil, fmt.Errorf("credential %s не является допустимым файлом", credential.name)
+			return nil, fmt.Errorf("credential %s is not a valid file", credential.name)
 		}
 		value, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("credential %s не удалось прочитать", credential.name)
+			return nil, fmt.Errorf("failed to read credential %s", credential.name)
 		}
 		if len(value) > maximumCredentialBytes {
-			return nil, fmt.Errorf("credential %s превышает допустимый размер", credential.name)
+			return nil, fmt.Errorf("credential %s exceeds the maximum size", credential.name)
 		}
 		if len(value) == 0 {
 			continue
 		}
 		if bytes.IndexAny(value, "\x00\r\n\t ") >= 0 {
-			return nil, fmt.Errorf("credential %s содержит whitespace", credential.name)
+			return nil, fmt.Errorf("credential %s contains whitespace", credential.name)
 		}
 		values[credential.name] = string(value)
 	}

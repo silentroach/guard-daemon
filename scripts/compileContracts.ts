@@ -116,13 +116,13 @@ const namedImmutableReferences = (
   for (const [id, entries] of Object.entries(references)) {
     const name = names.get(id);
     if (!name || !requiredImmutables.some((required) => required === name)) {
-      throw new Error(`Неизвестная immutable reference с AST ID ${id}`);
+      throw new Error(`Unknown immutable reference with AST ID ${id}`);
     }
     named[name] = entries;
   }
   for (const name of requiredImmutables) {
     if (!named[name]?.length) {
-      throw new Error(`Компилятор не вернул immutable reference ${name}`);
+      throw new Error(`Compiler did not return immutable reference ${name}`);
     }
   }
   return named;
@@ -135,7 +135,7 @@ export const compileContracts = (
   const actualCompilerVersion = solc.version();
   if (actualCompilerVersion !== compilerVersion) {
     throw new Error(
-      `Ожидался solc ${compilerVersion}, получен ${actualCompilerVersion}`,
+      `Expected solc ${compilerVersion}, received ${actualCompilerVersion}`,
     );
   }
 
@@ -164,7 +164,7 @@ export const compileContracts = (
   return contracts.map(({ contractName, sourceName }) => {
     const contract = output.contracts?.[sourceName]?.[contractName];
     if (!contract) {
-      throw new Error(`Компилятор не вернул ${sourceName}:${contractName}`);
+      throw new Error(`Compiler did not return ${sourceName}:${contractName}`);
     }
 
     const sourceTree = Object.entries(sources)
@@ -203,6 +203,6 @@ const scriptPath = process.argv[1];
 if (scriptPath && import.meta.url === pathToFileURL(resolve(scriptPath)).href) {
   const outputDirectory = resolve("build/contracts");
   const artifactPaths = compileContracts(outputDirectory);
-  console.log(`Скомпилировано контрактов: ${artifactPaths.length}`);
-  console.log(`Артефакты: ${outputDirectory}`);
+  console.log(`Contracts compiled: ${artifactPaths.length}`);
+  console.log(`Artifacts: ${outputDirectory}`);
 }

@@ -14,14 +14,14 @@ import (
 const MaxConfiguredChains = 128
 
 var (
-	ErrInvalidChains        = errors.New("набор наблюдаемых chain ID недопустим")
-	ErrUnknownChain         = errors.New("chain ID не входит в настроенный набор")
-	ErrAmbiguousUnderflow   = errors.New("счётчик активных ambiguous outcomes уже равен нулю")
-	ErrInvalidDelegation    = errors.New("состояние делегации недопустимо")
-	ErrInvalidReconcileTime = errors.New("время успешной сверки не задано")
+	ErrInvalidChains        = errors.New("invalid set of monitored chain IDs")
+	ErrUnknownChain         = errors.New("chain ID is not in the configured set")
+	ErrAmbiguousUnderflow   = errors.New("active ambiguous result count is already zero")
+	ErrInvalidDelegation    = errors.New("invalid delegation state")
+	ErrInvalidReconcileTime = errors.New("successful reconciliation time is not set")
 )
 
-// DelegationState задаёт закрытое состояние EIP-7702 delegation.
+// DelegationState перечисляет допустимые состояния делегирования EIP-7702.
 type DelegationState uint8
 
 const (
@@ -31,7 +31,8 @@ const (
 	DelegationUnexpected
 )
 
-// ChainMetrics не содержит token, incident или иных unbounded labels.
+// ChainMetrics не содержит меток по токенам, инцидентам и другим данным
+// с неограниченным числом значений.
 type ChainMetrics struct {
 	QueueDepth                   uint64
 	Candidates                   uint64
@@ -48,7 +49,7 @@ type ChainMetrics struct {
 	LastSuccessfulReconciliation time.Time
 }
 
-// MetricsSnapshot является deep copy состояния на один момент времени.
+// MetricsSnapshot содержит глубокую копию состояния на один момент времени.
 type MetricsSnapshot struct {
 	Chains       map[domain.NetworkID]ChainMetrics
 	GlobalBudget BudgetMetrics
@@ -60,8 +61,8 @@ type BudgetMetrics struct {
 	Remaining uint256.Int
 }
 
-// Metrics хранит только заранее настроенные chain ID и поэтому не допускает
-// роста cardinality от входящих token/event labels.
+// Metrics хранит только заранее настроенные chain ID, поэтому входящие данные
+// о токенах и событиях не увеличивают число значений меток.
 type Metrics struct {
 	mu           sync.RWMutex
 	chains       map[domain.NetworkID]*ChainMetrics
@@ -130,7 +131,8 @@ func (metrics *Metrics) RecordLostRace(chainID domain.NetworkID) error {
 	})
 }
 
-// OpenAmbiguous одновременно увеличивает active и монотонный total counter.
+// OpenAmbiguous одновременно увеличивает текущее число операций с неопределённым
+// результатом и их накопительный счётчик.
 func (metrics *Metrics) OpenAmbiguous(chainID domain.NetworkID) error {
 	return metrics.update(chainID, func(current *ChainMetrics) {
 		current.ActiveAmbiguous = saturatingIncrement(current.ActiveAmbiguous)
@@ -152,8 +154,8 @@ func (metrics *Metrics) ResolveAmbiguous(chainID domain.NetworkID) error {
 	return nil
 }
 
-// SetActiveAmbiguous восстанавливает gauge из durable state без увеличения
-// монотонного счётчика повторно при каждом RPC reconnect.
+// SetActiveAmbiguous восстанавливает текущее значение из сохранённого состояния,
+// не увеличивая накопительный счётчик при каждом подключении RPC.
 func (metrics *Metrics) SetActiveAmbiguous(chainID domain.NetworkID, active uint64) error {
 	return metrics.update(chainID, func(current *ChainMetrics) {
 		current.ActiveAmbiguous = active
@@ -169,8 +171,8 @@ func (metrics *Metrics) SetDelegationState(chainID domain.NetworkID, state Deleg
 	})
 }
 
-// RecordSuccessfulReconciliation не позволяет запоздавшему update сдвинуть
-// отметку успешной сверки назад.
+// RecordSuccessfulReconciliation не позволяет более старому обновлению сдвинуть
+// назад время последней успешной сверки.
 func (metrics *Metrics) RecordSuccessfulReconciliation(chainID domain.NetworkID, at time.Time) error {
 	if at.IsZero() {
 		return ErrInvalidReconcileTime

@@ -6,13 +6,13 @@ import (
 	"io"
 )
 
-// Mode задаёт безопасный dry-run либо явно включённый live-режим.
+// Mode задаёт безопасный пробный режим или явно включённый рабочий режим.
 type Mode uint8
 
 const (
-	// ModeDryRun запрещает использование приватных ключей и отправку транзакций.
+	// ModeDryRun запрещает использование закрытых ключей и отправку транзакций.
 	ModeDryRun Mode = iota
-	// ModeLive разрешает последующее создание signer после внешней аттестации.
+	// ModeLive разрешает последующее создание подписанта после внешней аттестации.
 	ModeLive
 )
 
@@ -21,12 +21,12 @@ func (mode Mode) IsDryRun() bool {
 	return mode == ModeDryRun
 }
 
-// IsLive сообщает, включён ли live-режим.
+// IsLive сообщает, включён ли рабочий режим.
 func (mode Mode) IsLive() bool {
 	return mode == ModeLive
 }
 
-// String возвращает безопасное имя режима.
+// String возвращает безопасное для вывода название режима.
 func (mode Mode) String() string {
 	switch mode {
 	case ModeDryRun:
@@ -34,7 +34,7 @@ func (mode Mode) String() string {
 	case ModeLive:
 		return "live"
 	default:
-		return "неизвестный"
+		return "unknown"
 	}
 }
 
@@ -49,17 +49,18 @@ func loadMode(lookup func(string) (string, bool)) (Mode, error) {
 	case "false":
 		return ModeLive, nil
 	default:
-		return 0, fmt.Errorf("переменная DRY_RUN должна быть равна true или false")
+		return 0, fmt.Errorf("DRY_RUN must be true or false")
 	}
 }
 
-// LiveSecrets непрозрачно хранит ключи, разобранные только для live-режима.
+// LiveSecrets хранит закрытые ключи в непрозрачном виде; они разбираются только
+// для рабочего режима.
 type LiveSecrets struct {
 	sourcePrivateKey  *ecdsa.PrivateKey
 	sponsorPrivateKey *ecdsa.PrivateKey
 }
 
-// PrivateKeys возвращает ключи только при наличии полной live-конфигурации.
+// PrivateKeys возвращает оба ключа только при наличии полной конфигурации рабочего режима.
 func (secrets LiveSecrets) PrivateKeys() (*ecdsa.PrivateKey, *ecdsa.PrivateKey, bool) {
 	if secrets.sourcePrivateKey == nil || secrets.sponsorPrivateKey == nil {
 		return nil, nil, false
@@ -69,7 +70,7 @@ func (secrets LiveSecrets) PrivateKeys() (*ecdsa.PrivateKey, *ecdsa.PrivateKey, 
 
 // Format всегда скрывает содержимое ключей независимо от формата вывода.
 func (LiveSecrets) Format(state fmt.State, _ rune) {
-	_, _ = io.WriteString(state, "LiveSecrets{скрыто}")
+	_, _ = io.WriteString(state, "LiveSecrets{redacted}")
 }
 
 func loadLiveSecrets(lookup func(string) (string, bool), mode Mode, emergencyStop bool) (LiveSecrets, error) {

@@ -60,8 +60,8 @@ const (
 )
 
 var (
-	ErrInvalidDependencies = errors.New("некорректные зависимости watcher")
-	errPollingFallback     = errors.New("переход watcher на polling")
+	ErrInvalidDependencies = errors.New("invalid watcher dependencies")
+	errPollingFallback     = errors.New("watcher falling back to polling")
 )
 
 type WatchStore interface {
@@ -159,7 +159,8 @@ func NewService(dependencies Dependencies) (*Service, error) {
 	}, nil
 }
 
-// PolicyFingerprint связывает state с фильтром и политикой первого backfill.
+// PolicyFingerprint вычисляет отпечаток фильтра наблюдателя и глубины первоначального
+// ретроспективного сканирования.
 func PolicyFingerprint(network domain.Network, lookbackBlocks uint64) [sha256.Size]byte {
 	hash := sha256.New()
 	hash.Write([]byte("guard-daemon/watcher-policy/v1"))
@@ -271,7 +272,8 @@ func (service *Service) watchSubscriptions(ctx context.Context, query ethereum.F
 		}
 	}()
 
-	// Закрывает окно между первым backfill и регистрацией subscription.
+	// Повторное сканирование устраняет риск пропуска событий между первоначальным
+	// поиском пропущенных блоков и регистрацией подписки.
 	if err := service.scan(ctx); err != nil {
 		return err
 	}
@@ -667,7 +669,7 @@ func (service *Service) metadataCall(ctx context.Context, address common.Address
 	defer cancel()
 	result, err := service.contracts.CallContract(callContext, ethereum.CallMsg{To: &address, Data: data}, nil)
 	if err != nil || result == nil || len(result) > metadataReturnLimit {
-		return nil, errors.New("недопустимый ответ metadata")
+		return nil, errors.New("invalid metadata response")
 	}
 	return result, nil
 }

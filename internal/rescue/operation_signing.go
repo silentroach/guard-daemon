@@ -117,7 +117,7 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 		return session.releaseBeforeSigned(ctx, incident, reservation.ID, newError("rescue.fees", domain.ErrorRPCInvalidResponse, codeFeeInvalid, true, true, nil))
 	}
 
-	// This is intentionally the final RPC read before authorization signing.
+	// Это намеренно последнее чтение RPC перед подписанием авторизации.
 	sourceNonce, err := session.checkedPendingNonce(ctx, coordinator.source)
 	if err != nil {
 		return session.releaseBeforeSigned(ctx, incident, reservation.ID, err)

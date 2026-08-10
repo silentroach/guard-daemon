@@ -2,10 +2,10 @@
 
 set -euo pipefail
 
-: "${FOUNDRY_VERSION:?Не задана версия Foundry}"
-: "${FOUNDRY_SHA256:?Не задан SHA-256 Foundry}"
-: "${GITHUB_PATH:?Скрипт разрешено запускать только в GitHub Actions}"
-: "${RUNNER_TEMP:?Не задан временный каталог GitHub Actions}"
+: "${FOUNDRY_VERSION:?Foundry version is not set}"
+: "${FOUNDRY_SHA256:?Foundry SHA-256 is not set}"
+: "${GITHUB_PATH:?This script may only run in GitHub Actions}"
+: "${RUNNER_TEMP:?GitHub Actions temporary directory is not set}"
 
 archive="${RUNNER_TEMP}/foundry.tar.gz"
 install_dir="${RUNNER_TEMP}/foundry"
@@ -26,7 +26,7 @@ version_output="$("${install_dir}/forge" --version)"
 case "${version_output}" in
   *"Version: ${FOUNDRY_VERSION#v}"*) ;;
   *)
-    printf '%s\n' "Получена неожиданная версия Forge: ${version_output}" >&2
+    printf '%s\n' "Unexpected Forge version: ${version_output}" >&2
     exit 1
     ;;
 esac

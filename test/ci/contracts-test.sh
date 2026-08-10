@@ -17,7 +17,7 @@ for required in "${required_tests[@]}"; do
   case "${test_list}" in
     *"${required}"*) ;;
     *)
-      printf 'Обязательный Solidity test не найден: %s\n' "${required}" >&2
+      printf 'Required Solidity test not found: %s\n' "${required}" >&2
       exit 1
       ;;
   esac

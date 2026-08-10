@@ -24,18 +24,18 @@ func TestAdmissionControllerIsIdempotentAndRejectsIdentityConflict(t *testing.T)
 	request := testAdmissionRequest(1, 1, 1)
 	first, err := controller.Admit(request)
 	if err != nil || !first.Allowed {
-		t.Fatalf("first Admit() = %#v, %v", first, err)
+		t.Fatalf("first Admit() returned %#v, %v", first, err)
 	}
 	replay, err := controller.Admit(request)
 	if err != nil || replay != first || controller.TrackedAttempts() != 1 {
-		t.Fatalf("replayed Admit() = %#v, %v, tracked=%d", replay, err, controller.TrackedAttempts())
+		t.Fatalf("duplicate Admit() returned %#v, %v, tracked=%d", replay, err, controller.TrackedAttempts())
 	}
 
 	request.Token = common.HexToAddress("0xff")
 	decision, err := controller.Admit(request)
 	assertAdmissionError(t, decision, err, AdmissionAttemptIdentityConflict, time.Time{}, false)
 	if !errors.Is(err, ErrInvalidAdmissionRequest) {
-		t.Fatalf("identity conflict error = %v, want ErrInvalidAdmissionRequest", err)
+		t.Fatalf("identifier conflict error = %v, want ErrInvalidAdmissionRequest", err)
 	}
 }
 
@@ -85,7 +85,7 @@ func TestAdmissionControllerRollingLimits(t *testing.T) {
 			clock := &admissionTestClock{now: start}
 			controller := newTestAdmissionController(t, clock, config)
 			if _, err := controller.Admit(test.first); err != nil {
-				t.Fatalf("first Admit() error = %v", err)
+				t.Fatalf("first Admit() returned an error: %v", err)
 			}
 			decision, err := controller.Admit(test.second)
 			assertAdmissionError(t, decision, err, test.wantReason, start.Add(time.Minute), true)
@@ -93,7 +93,7 @@ func TestAdmissionControllerRollingLimits(t *testing.T) {
 			clock.advance(time.Minute)
 			decision, err = controller.Admit(test.second)
 			if err != nil || !decision.Allowed || controller.TrackedAttempts() != 1 {
-				t.Fatalf("Admit() after window = %#v, %v, tracked=%d", decision, err, controller.TrackedAttempts())
+				t.Fatalf("Admit() after window returned %#v, %v, tracked=%d", decision, err, controller.TrackedAttempts())
 			}
 		})
 	}
@@ -109,13 +109,13 @@ func TestAdmissionControllerLimitsDistinctUnknownTokens(t *testing.T) {
 	first := testAdmissionRequest(1, 1, 1)
 	first.Unknown = true
 	if _, err := controller.Admit(first); err != nil {
-		t.Fatalf("first unknown Admit() error = %v", err)
+		t.Fatalf("first Admit() for unknown token returned an error: %v", err)
 	}
 	clock.advance(10 * time.Second)
 	sameToken := testAdmissionRequest(2, 1, 2)
 	sameToken.Unknown = true
 	if _, err := controller.Admit(sameToken); err != nil {
-		t.Fatalf("same unknown token Admit() error = %v", err)
+		t.Fatalf("Admit() for the same unknown token returned an error: %v", err)
 	}
 	newToken := testAdmissionRequest(3, 2, 3)
 	newToken.Network = 2
@@ -126,7 +126,7 @@ func TestAdmissionControllerLimitsDistinctUnknownTokens(t *testing.T) {
 	clock.advance(time.Minute)
 	decision, err = controller.Admit(newToken)
 	if err != nil || !decision.Allowed {
-		t.Fatalf("new unknown after complete token window = %#v, %v", decision, err)
+		t.Fatalf("new unknown token after full token window = %#v, %v", decision, err)
 	}
 }
 
@@ -142,7 +142,7 @@ func TestAdmissionControllerBoundsThousandsOfUnknownTokensWithoutGoroutines(t *t
 		request.Unknown = true
 		decision, err := controller.Admit(request)
 		if index <= 64 && (err != nil || !decision.Allowed) {
-			t.Fatalf("Admit(%d) = %#v, %v", index, decision, err)
+			t.Fatalf("Admit(%d) returned %#v, %v", index, decision, err)
 		}
 		if index > 64 {
 			assertAdmissionError(t, decision, err, AdmissionCapacityLimited, time.Unix(400, 0).Add(time.Hour), true)
@@ -153,25 +153,25 @@ func TestAdmissionControllerBoundsThousandsOfUnknownTokensWithoutGoroutines(t *t
 		t.Fatalf("goroutines after load = %d, want %d", after, before)
 	}
 	if tracked := controller.TrackedAttempts(); tracked != 64 {
-		t.Fatalf("TrackedAttempts() = %d, want capacity 64", tracked)
+		t.Fatalf("TrackedAttempts() returned %d, want capacity 64", tracked)
 	}
 	if len(controller.attempts) != 64 || len(controller.tokens) != 64 || len(controller.events) != 64 || len(controller.unknown) != 64 || len(controller.latest) != 64 {
-		t.Fatalf("bounded indexes = attempts:%d tokens:%d events:%d unknown:%d latest:%d", len(controller.attempts), len(controller.tokens), len(controller.events), len(controller.unknown), len(controller.latest))
+		t.Fatalf("bounded indexes: attempts=%d, tokens=%d, events=%d, unknown=%d, latest=%d", len(controller.attempts), len(controller.tokens), len(controller.events), len(controller.unknown), len(controller.latest))
 	}
 
 	clock.advance(time.Hour)
 	if tracked := controller.TrackedAttempts(); tracked != 0 {
-		t.Fatalf("TrackedAttempts() after expiry = %d, want 0", tracked)
+		t.Fatalf("TrackedAttempts() after expiration returned %d, want 0", tracked)
 	}
 	if len(controller.attempts) != 0 || len(controller.tokens) != 0 || len(controller.events) != 0 || len(controller.unknown) != 0 || len(controller.latest) != 0 {
-		t.Fatalf("indexes retained expired state: attempts:%d tokens:%d events:%d unknown:%d latest:%d", len(controller.attempts), len(controller.tokens), len(controller.events), len(controller.unknown), len(controller.latest))
+		t.Fatalf("indexes retained expired state: attempts=%d, tokens=%d, events=%d, unknown=%d, latest=%d", len(controller.attempts), len(controller.tokens), len(controller.events), len(controller.unknown), len(controller.latest))
 	}
 }
 
 func TestNewAdmissionControllerRejectsInvalidConfig(t *testing.T) {
 	_, err := NewAdmissionController(AdmissionConfig{}, &admissionTestClock{})
 	if !errors.Is(err, ErrInvalidAdmissionConfig) {
-		t.Fatalf("NewAdmissionController() error = %v, want ErrInvalidAdmissionConfig", err)
+		t.Fatalf("NewAdmissionController() returned error %v, want ErrInvalidAdmissionConfig", err)
 	}
 }
 
@@ -202,7 +202,7 @@ func TestPersistentAdmissionIsGlobalAcrossNetworksAndRestart(t *testing.T) {
 	assertAdmissionError(t, decision, err, AdmissionGlobalRateLimited, clock.now.Add(time.Minute), true)
 	clock.advance(time.Minute)
 	if decision, err := reopened.Admit(second); err != nil || !decision.Allowed {
-		t.Fatalf("Admit after persistent window = %#v, %v", decision, err)
+		t.Fatalf("Admit after persistent window returned %#v, %v", decision, err)
 	}
 }
 
@@ -215,7 +215,7 @@ func TestPersistentAdmissionRejectsExistingMissingState(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := OpenAdmissionController(path, config, clock); !errors.Is(err, ErrAdmissionPersistence) {
-			t.Fatalf("OpenAdmissionController() error = %v", err)
+			t.Fatalf("OpenAdmissionController() returned an error: %v", err)
 		}
 	})
 	t.Run("missing buckets", func(t *testing.T) {
@@ -231,7 +231,7 @@ func TestPersistentAdmissionRejectsExistingMissingState(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := OpenAdmissionController(path, config, clock); !errors.Is(err, ErrAdmissionPersistence) {
-			t.Fatalf("OpenAdmissionController() error = %v", err)
+			t.Fatalf("OpenAdmissionController() returned an error: %v", err)
 		}
 	})
 }
@@ -267,7 +267,7 @@ func newTestAdmissionController(t *testing.T, clock AdmissionClock, config Admis
 	t.Helper()
 	controller, err := NewAdmissionController(config, clock)
 	if err != nil {
-		t.Fatalf("NewAdmissionController() error = %v", err)
+		t.Fatalf("NewAdmissionController() returned an error: %v", err)
 	}
 	return controller
 }
@@ -276,11 +276,11 @@ func assertAdmissionError(t *testing.T, decision AdmissionDecision, err error, r
 	t.Helper()
 	var admissionErr *AdmissionError
 	if !errors.As(err, &admissionErr) {
-		t.Fatalf("Admit() error = %v, want *AdmissionError", err)
+		t.Fatalf("Admit() returned error %v, want *AdmissionError", err)
 	}
 	if decision.Allowed || decision.Reason != reason || !decision.RetryAt.Equal(retryAt) || admissionErr.Reason != reason ||
 		!admissionErr.RetryAt.Equal(retryAt) || admissionErr.Retryable != retryable {
-		t.Fatalf("Admit() = %#v, %#v, want reason=%s retryAt=%s retryable=%t", decision, admissionErr, reason, retryAt, retryable)
+		t.Fatalf("Admit() returned %#v, %#v, want reason=%s, retry at=%s, retryable=%t", decision, admissionErr, reason, retryAt, retryable)
 	}
 }
 

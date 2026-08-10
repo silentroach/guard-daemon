@@ -15,7 +15,7 @@ func TestParseDelegation(t *testing.T) {
 
 	got, err := contracts.ParseDelegation(code)
 	if err != nil || got != target {
-		t.Fatalf("ParseDelegation() = %s, %v", got, err)
+		t.Fatalf("ParseDelegation() returned %s, %v", got, err)
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-var ErrInvalidCandidate = errors.New("candidate имеет некорректную идентичность")
+var ErrInvalidCandidate = errors.New("candidate has an invalid identifier")
 
 type NetworkID int64
 
@@ -26,11 +26,11 @@ type Network struct {
 	Rescuer    common.Address
 	HasRescuer bool
 	Tokens     []Token
-	// AllowUnknownTokens is true only after an explicit config opt-in.
+	// AllowUnknownTokens включается только при явном разрешении в конфигурации.
 	AllowUnknownTokens bool
 }
 
-// Format excludes private RPC endpoints from accidental logs.
+// Format исключает конфиденциальные RPC URL из форматированного вывода.
 func (network Network) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "Network{Name:"+network.Name+" ChainID:"+strconv.FormatInt(int64(network.ChainID), 10)+"}")
 }
@@ -121,8 +121,8 @@ func NewTokenReconciliationCandidate(network NetworkID, source common.Address, t
 	return candidate
 }
 
-// ValidateCandidate подтверждает, что deserialized candidate сохранил stable ID
-// и обязательные identity-поля.
+// ValidateCandidate проверяет, что десериализованный кандидат сохранил неизменный ID
+// и обязательные поля идентификации.
 func ValidateCandidate(candidate RescueCandidate) error {
 	if candidate.Network <= 0 || candidate.Source == (common.Address{}) || candidate.ID != candidateID(candidate) {
 		return ErrInvalidCandidate
@@ -157,8 +157,8 @@ func candidateID(candidate RescueCandidate) CandidateID {
 	h.Write(candidate.TxHash[:])
 	binary.BigEndian.PutUint64(number[:], uint64(candidate.LogIndex))
 	h.Write(number[:])
-	// Generation связывает обработку с RPC session, но не является частью
-	// stable ID, который должен переживать reconnect и перезапуск процесса.
+	// Generation привязывает обработку к сеансу RPC, но не входит в неизменный ID.
+	// Благодаря этому ID сохраняется при повторном подключении и перезапуске процесса.
 	binary.BigEndian.PutUint64(number[:], candidate.Observation)
 	h.Write(number[:])
 	var id CandidateID
@@ -177,8 +177,8 @@ func NewIncidentID(candidate CandidateID) IncidentID {
 	return id
 }
 
-// NewAssetIncidentID связывает одну финансовую операцию с durable candidate.
-// Asset равен нулевому адресу только для native asset.
+// NewAssetIncidentID связывает одну финансовую операцию с кандидатом из долговременного
+// хранилища. Параметр Asset равен нулевому адресу только для нативного актива.
 func NewAssetIncidentID(candidate CandidateID, kind CandidateKind, asset common.Address) IncidentID {
 	h := sha256.New()
 	h.Write([]byte("guard-daemon/asset-incident/v1"))

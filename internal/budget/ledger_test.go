@@ -39,10 +39,10 @@ func TestCostQuoteMaximumRejectsOverflow(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := test.quote.Maximum(test.overhead)
 			if !errors.Is(err, test.wantErr) {
-				t.Fatalf("Maximum error = %v, want %v", err, test.wantErr)
+				t.Fatalf("Maximum returned error %v, want %v", err, test.wantErr)
 			}
 			if err == nil && got.Uint64() != test.want {
-				t.Fatalf("Maximum = %d, want %d", got.Uint64(), test.want)
+				t.Fatalf("Maximum returned %d, want %d", got.Uint64(), test.want)
 			}
 		})
 	}
@@ -59,7 +59,7 @@ func TestLedgerLifecycleIdempotencyAndSnapshots(t *testing.T) {
 	request := testRequest(policy.Networks[0], 1, 42)
 	reservation, err := ledger.Reserve(ctx, request)
 	if err != nil {
-		t.Fatalf("Reserve: %v", err)
+		t.Fatalf("Reserve returned an error: %v", err)
 	}
 	if reservation.ID != NewReservationID(request.Attempt) || reservation.State != ReservationHeld || reservation.Maximum.Uint64() != 42 {
 		t.Fatalf("held reservation = %+v", reservation)
@@ -69,7 +69,7 @@ func TestLedgerLifecycleIdempotencyAndSnapshots(t *testing.T) {
 	replayedRequest.SponsorBalance = amount(999)
 	replayed, err := ledger.Reserve(ctx, replayedRequest)
 	if err != nil || replayed != reservation {
-		t.Fatalf("idempotent Reserve = (%+v, %v), want original", replayed, err)
+		t.Fatalf("idempotent Reserve returned (%+v, %v), want original reservation", replayed, err)
 	}
 	conflict := request
 	conflict.Quote.MaxFeePerGas = amount(43 - policy.Networks[0].TransactionOverhead.Uint64())
@@ -79,40 +79,40 @@ func TestLedgerLifecycleIdempotencyAndSnapshots(t *testing.T) {
 
 	stored, found, err := ledger.ReservationByAttempt(ctx, request.Attempt)
 	if err != nil || !found || stored != reservation {
-		t.Fatalf("ReservationByAttempt = (%+v, %t, %v)", stored, found, err)
+		t.Fatalf("ReservationByAttempt returned (%+v, %t, %v)", stored, found, err)
 	}
 	assertSnapshot(t, ledger, 0, 42, 958)
 
 	txHash := testHash(1)
 	exposed, err := ledger.MarkExposed(ctx, reservation.ID, txHash)
 	if err != nil || exposed.State != ReservationExposed || exposed.TxHash != txHash || exposed.ExposedAt.IsZero() {
-		t.Fatalf("MarkExposed = (%+v, %v)", exposed, err)
+		t.Fatalf("MarkExposed returned (%+v, %v)", exposed, err)
 	}
 	if duplicate, err := ledger.MarkExposed(ctx, reservation.ID, txHash); err != nil || duplicate != exposed {
-		t.Fatalf("duplicate MarkExposed = (%+v, %v)", duplicate, err)
+		t.Fatalf("duplicate MarkExposed returned (%+v, %v)", duplicate, err)
 	}
 	if _, err := ledger.MarkExposed(ctx, reservation.ID, testHash(2)); !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("conflicting MarkExposed error = %v", err)
+		t.Fatalf("conflicting MarkExposed error: %v", err)
 	}
 	if _, err := ledger.ReleaseProvenUnused(ctx, reservation.ID); !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("release exposed error = %v", err)
+		t.Fatalf("exposed reservation release error: %v", err)
 	}
 
 	charge := FinalizedCharge{ReservationID: reservation.ID, TxHash: txHash, Actual: amount(30)}
 	committed, err := ledger.CommitFinalized(ctx, charge)
 	if err != nil || committed.State != ReservationCommitted || committed.Actual.Uint64() != 30 {
-		t.Fatalf("CommitFinalized = (%+v, %v)", committed, err)
+		t.Fatalf("CommitFinalized returned (%+v, %v)", committed, err)
 	}
 	if duplicate, err := ledger.CommitFinalized(ctx, charge); err != nil || duplicate != committed {
-		t.Fatalf("duplicate CommitFinalized = (%+v, %v)", duplicate, err)
+		t.Fatalf("duplicate CommitFinalized returned (%+v, %v)", duplicate, err)
 	}
 	tooLarge := charge
 	tooLarge.Actual = amount(43)
 	if _, err := ledger.CommitFinalized(ctx, tooLarge); !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("conflicting CommitFinalized error = %v", err)
+		t.Fatalf("conflicting CommitFinalized error: %v", err)
 	}
 	if _, err := ledger.ReleaseProvenUnused(ctx, reservation.ID); !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("release committed error = %v", err)
+		t.Fatalf("committed reservation release error: %v", err)
 	}
 	assertSnapshot(t, ledger, 30, 0, 970)
 
@@ -122,21 +122,21 @@ func TestLedgerLifecycleIdempotencyAndSnapshots(t *testing.T) {
 	}
 	released, err := ledger.ReleaseProvenUnused(ctx, held.ID)
 	if err != nil || released.State != ReservationReleased {
-		t.Fatalf("ReleaseProvenUnused = (%+v, %v)", released, err)
+		t.Fatalf("ReleaseProvenUnused returned (%+v, %v)", released, err)
 	}
 	if duplicate, err := ledger.ReleaseProvenUnused(ctx, held.ID); err != nil || duplicate != released {
-		t.Fatalf("duplicate ReleaseProvenUnused = (%+v, %v)", duplicate, err)
+		t.Fatalf("duplicate ReleaseProvenUnused returned (%+v, %v)", duplicate, err)
 	}
 	open, err := ledger.OpenReservations(ctx)
 	if err != nil || len(open) != 0 {
-		t.Fatalf("OpenReservations = (%+v, %v), want empty", open, err)
+		t.Fatalf("OpenReservations returned (%+v, %v), want empty result", open, err)
 	}
 	reopened, err := ledger.Reserve(ctx, testRequest(policy.Networks[1], 2, 25))
 	if err != nil || reopened.ID != held.ID || reopened.State != ReservationHeld {
-		t.Fatalf("Reserve after released crash boundary = (%+v, %v)", reopened, err)
+		t.Fatalf("Reserve after a crash past the release boundary returned (%+v, %v)", reopened, err)
 	}
 	if _, err := ledger.MarkExposed(ctx, reopened.ID, testHash(3)); err != nil {
-		t.Fatalf("MarkExposed after reopen = %v", err)
+		t.Fatalf("MarkExposed after reopening returned an error: %v", err)
 	}
 }
 
@@ -150,7 +150,7 @@ func TestLedgerEnforcesSponsorAndRollingLimits(t *testing.T) {
 		ledger := openTestLedger(t, filepath.Join(t.TempDir(), "budget.db"), testOptions(policy, clock))
 		defer ledger.Close()
 		if _, err := ledger.Reserve(ctx, testRequest(policy.Networks[0], 1, 81)); !errors.Is(err, ErrBudgetExceeded) {
-			t.Fatalf("network per-transaction error = %v", err)
+			t.Fatalf("network per-transaction limit error: %v", err)
 		}
 	})
 
@@ -163,18 +163,18 @@ func TestLedgerEnforcesSponsorAndRollingLimits(t *testing.T) {
 		firstRequest.SponsorBalance = amount(100)
 		first, err := ledger.Reserve(ctx, firstRequest)
 		if err != nil {
-			t.Fatalf("Reserve preserving exact reserve: %v", err)
+			t.Fatalf("Reserve preserving the exact reserve returned an error: %v", err)
 		}
 		secondRequest := testRequest(policy.Networks[0], 2, 11)
 		secondRequest.SponsorBalance = amount(100)
 		if _, err := ledger.Reserve(ctx, secondRequest); !errors.Is(err, ErrSponsorReserve) {
-			t.Fatalf("second Reserve error = %v, want ErrSponsorReserve", err)
+			t.Fatalf("second Reserve returned error %v, want ErrSponsorReserve", err)
 		}
 		if _, err := ledger.ReleaseProvenUnused(ctx, first.ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := ledger.Reserve(ctx, secondRequest); err != nil {
-			t.Fatalf("Reserve after proven release: %v", err)
+			t.Fatalf("Reserve after proven release returned an error: %v", err)
 		}
 	})
 
@@ -190,10 +190,10 @@ func TestLedgerEnforcesSponsorAndRollingLimits(t *testing.T) {
 		}
 		held, err := ledger.Reserve(ctx, testRequest(policy.Networks[0], 2, 40))
 		if err != nil {
-			t.Fatalf("Reserve to exact hourly limit: %v", err)
+			t.Fatalf("Reserve up to the exact hourly limit returned an error: %v", err)
 		}
 		if _, err := ledger.Reserve(ctx, testRequest(policy.Networks[0], 3, 1)); !errors.Is(err, ErrBudgetExceeded) {
-			t.Fatalf("hourly overflow error = %v", err)
+			t.Fatalf("hourly limit excess error: %v", err)
 		}
 		if _, err := ledger.ReleaseProvenUnused(ctx, held.ID); err != nil {
 			t.Fatal(err)
@@ -201,10 +201,10 @@ func TestLedgerEnforcesSponsorAndRollingLimits(t *testing.T) {
 		clock.Advance(time.Hour + time.Nanosecond)
 		reserveExposeCommit(t, ledger, testRequest(policy.Networks[0], 4, 60), 60, testHash(11))
 		if _, err := ledger.Reserve(ctx, testRequest(policy.Networks[0], 5, 31)); !errors.Is(err, ErrBudgetExceeded) {
-			t.Fatalf("daily overflow error = %v", err)
+			t.Fatalf("daily limit excess error: %v", err)
 		}
 		if _, err := ledger.Reserve(ctx, testRequest(policy.Networks[0], 6, 30)); err != nil {
-			t.Fatalf("Reserve to exact daily limit: %v", err)
+			t.Fatalf("Reserve up to the exact daily limit returned an error: %v", err)
 		}
 	})
 }
@@ -226,7 +226,7 @@ func TestLedgerPersistentRecordCapacityReusesReleasedSlots(t *testing.T) {
 		}
 	}
 	if _, err := ledger.Reserve(context.Background(), testRequest(policy.Networks[0], 3, 5)); err != nil {
-		t.Fatalf("Reserve after released compaction = %v", err)
+		t.Fatalf("Reserve after compacting a released reservation returned an error: %v", err)
 	}
 }
 
@@ -241,7 +241,7 @@ func TestLedgerPersistentCapacityNeverPurgesOpenReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := ledger.Reserve(context.Background(), testRequest(policy.Networks[0], 2, 5)); !errors.Is(err, ErrCapacity) {
-		t.Fatalf("Reserve above open capacity = %v", err)
+		t.Fatalf("Reserve beyond available capacity returned an error: %v", err)
 	}
 }
 
@@ -267,12 +267,12 @@ func TestForeignNetworkTimestampCannotAdvanceBudgetWindow(t *testing.T) {
 	foreign := testRequest(policy.Networks[1], 2, 1)
 	foreign.ObservedAt = clock.Now().Add(maximumObservedSkew + time.Second)
 	if _, err := ledger.Reserve(context.Background(), foreign); !errors.Is(err, ErrInvalidRequest) {
-		t.Fatalf("foreign future timestamp = %v", err)
+		t.Fatalf("foreign timestamp from the future: %v", err)
 	}
 	second := testRequest(policy.Networks[0], 3, 50)
 	second.ObservedAt = clock.Now()
 	if _, err := ledger.Reserve(context.Background(), second); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("foreign timestamp advanced hourly budget: %v", err)
+		t.Fatalf("foreign timestamp advanced the hourly budget: %v", err)
 	}
 }
 
@@ -288,7 +288,7 @@ func TestScopeSnapshotBlockedIncludesRollingWindows(t *testing.T) {
 		}
 	}
 	if (ScopeSnapshot{Remaining: Totals{PerHour: available, PerDay: available, Cumulative: available}}).Blocked() {
-		t.Fatal("nonempty scope was blocked")
+		t.Fatal("non-empty scope was blocked")
 	}
 }
 
@@ -316,7 +316,7 @@ func TestSnapshotAdvancesAndExpiresIdleRollingWindow(t *testing.T) {
 	clock.Advance(time.Hour + time.Nanosecond)
 	after, err := ledger.Snapshot(context.Background())
 	if err != nil || after.Global.Blocked() || after.Global.Spent.PerHour.Uint64() != 0 {
-		t.Fatalf("expired snapshot = %+v, %v", after.Global, err)
+		t.Fatalf("snapshot after expiration = %+v, %v", after.Global, err)
 	}
 }
 
@@ -341,7 +341,7 @@ func TestSnapshotDoesNotPersistForwardHostClockJump(t *testing.T) {
 	}
 	clock.Advance(48 * time.Hour)
 	if snapshot, err := ledger.Snapshot(context.Background()); err != nil || snapshot.Global.Blocked() {
-		t.Fatalf("diagnostic snapshot after jump = %+v, %v", snapshot.Global, err)
+		t.Fatalf("diagnostic snapshot after clock jump = %+v, %v", snapshot.Global, err)
 	}
 	if err := ledger.Close(); err != nil {
 		t.Fatal(err)
@@ -350,7 +350,7 @@ func TestSnapshotDoesNotPersistForwardHostClockJump(t *testing.T) {
 	reopened := openTestLedger(t, path, options)
 	defer reopened.Close()
 	if snapshot, err := reopened.Snapshot(context.Background()); err != nil || !snapshot.Global.Blocked() {
-		t.Fatalf("restart snapshot after clock correction = %+v, %v", snapshot.Global, err)
+		t.Fatalf("snapshot after restart and clock correction = %+v, %v", snapshot.Global, err)
 	}
 }
 
@@ -455,13 +455,13 @@ func TestLedgerAppliesGlobalAndNetworkScopesIndependently(t *testing.T) {
 	defer ledger.Close()
 
 	if _, err := ledger.Reserve(ctx, testRequest(policy.Networks[0], 1, 60)); err != nil {
-		t.Fatalf("first network exact cumulative limit: %v", err)
+		t.Fatalf("exact cumulative limit for first network: %v", err)
 	}
 	if _, err := ledger.Reserve(ctx, testRequest(policy.Networks[0], 2, 1)); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("network cumulative overflow error = %v", err)
+		t.Fatalf("network cumulative limit excess error: %v", err)
 	}
 	if _, err := ledger.Reserve(ctx, testRequest(policy.Networks[1], 3, 101)); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("global per-transaction overflow error = %v", err)
+		t.Fatalf("global per-transaction limit excess error: %v", err)
 	}
 	if _, err := ledger.Reserve(ctx, testRequest(policy.Networks[1], 4, 100)); err != nil {
 		t.Fatalf("second network reservation: %v", err)
@@ -506,22 +506,22 @@ func TestLedgerPersistsCrashBoundariesAndConservativeClock(t *testing.T) {
 		t.Fatalf("open reservations after restart = (%+v, %v)", open, err)
 	}
 	if _, err := ledger.ReleaseProvenUnused(ctx, held.ID); err != nil {
-		t.Fatalf("release crash-before-sign reservation: %v", err)
+		t.Fatalf("releasing reservation after pre-signing crash: %v", err)
 	}
 	if _, err := ledger.ReleaseProvenUnused(ctx, exposed.ID); !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("release crash-after-sign reservation error = %v", err)
+		t.Fatalf("reservation release error after post-signing crash: %v", err)
 	}
 	if _, err := ledger.CommitFinalized(ctx, FinalizedCharge{ReservationID: exposed.ID, TxHash: exposed.TxHash, Actual: amount(50)}); err != nil {
-		t.Fatalf("reconcile exposed reservation: %v", err)
+		t.Fatalf("reconciling exposed reservation: %v", err)
 	}
 
 	clock.Set(clock.Now().Add(-2 * time.Hour))
 	snapshot, err := ledger.Snapshot(ctx)
 	if err != nil || !snapshot.At.Equal(exposed.ExposedAt) {
-		t.Fatalf("rollback snapshot time = (%s, %v), want %s", snapshot.At, err, exposed.ExposedAt)
+		t.Fatalf("snapshot time after rollback = (%s, %v), want %s", snapshot.At, err, exposed.ExposedAt)
 	}
 	if _, err := ledger.Reserve(ctx, testRequest(policy.Networks[0], 3, 51)); !errors.Is(err, ErrBudgetExceeded) {
-		t.Fatalf("clock rollback reset hourly budget: %v", err)
+		t.Fatalf("clock rollback reset the hourly budget: %v", err)
 	}
 	ledger = reopenTestLedger(t, ledger, path, options)
 	snapshot, err = ledger.Snapshot(ctx)
@@ -555,7 +555,7 @@ func TestLedgerBindingPermissionsCorruptionAndClose(t *testing.T) {
 	started := time.Now()
 	_, lockErr := Open(path, options)
 	if !errors.Is(lockErr, ErrOpenFailed) || time.Since(started) > 2*time.Second || strings.Contains(lockErr.Error(), path) {
-		t.Fatalf("second Open = %v after %s", lockErr, time.Since(started))
+		t.Fatalf("second Open returned %v after %s", lockErr, time.Since(started))
 	}
 	if err := ledger.Close(); err != nil {
 		t.Fatal(err)
@@ -567,7 +567,7 @@ func TestLedgerBindingPermissionsCorruptionAndClose(t *testing.T) {
 		if opened != nil {
 			opened.Close()
 		}
-		t.Fatalf("fingerprint mismatch error = %v", err)
+		t.Fatalf("fingerprint mismatch error: %v", err)
 	}
 	policyMismatch := options
 	policyMismatch.Policy.Global.Cumulative = amount(1001)
@@ -575,7 +575,7 @@ func TestLedgerBindingPermissionsCorruptionAndClose(t *testing.T) {
 		if opened != nil {
 			opened.Close()
 		}
-		t.Fatalf("policy mismatch error = %v", err)
+		t.Fatalf("policy mismatch error: %v", err)
 	}
 
 	ledger = openTestLedger(t, path, options)
@@ -593,9 +593,9 @@ func TestLedgerBindingPermissionsCorruptionAndClose(t *testing.T) {
 		if opened != nil {
 			opened.Close()
 		}
-		t.Fatalf("corrupt reservation reopen error = %v", err)
+		t.Fatalf("corrupt reservation reopen error: %v", err)
 	} else if strings.Contains(err.Error(), path) {
-		t.Fatalf("corruption error leaked path: %v", err)
+		t.Fatalf("corruption error exposed path: %v", err)
 	}
 
 	closedPath := filepath.Join(root, "closed", "budget.db")
@@ -604,17 +604,17 @@ func TestLedgerBindingPermissionsCorruptionAndClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := closed.Close(); err != nil {
-		t.Fatalf("idempotent Close: %v", err)
+		t.Fatalf("idempotent Close returned an error: %v", err)
 	}
 	if _, err := closed.Snapshot(ctx); !errors.Is(err, ErrClosed) {
-		t.Fatalf("operation after Close error = %v", err)
+		t.Fatalf("operation error after Close: %v", err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	reopened := openTestLedger(t, closedPath, options)
 	defer reopened.Close()
 	if _, err := reopened.Snapshot(canceled); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled Snapshot error = %v", err)
+		t.Fatalf("canceled Snapshot error: %v", err)
 	}
 }
 
@@ -632,7 +632,7 @@ func TestLedgerRejectsMissingIndexAndExistingEmptyFile(t *testing.T) {
 		if opened != nil {
 			opened.Close()
 		}
-		t.Fatalf("existing empty file error = %v", err)
+		t.Fatalf("existing empty file error: %v", err)
 	}
 
 	path := filepath.Join(t.TempDir(), "budget.db")
@@ -651,7 +651,7 @@ func TestLedgerRejectsMissingIndexAndExistingEmptyFile(t *testing.T) {
 		if opened != nil {
 			opened.Close()
 		}
-		t.Fatalf("missing attempt index error = %v", err)
+		t.Fatalf("missing attempt index error: %v", err)
 	}
 }
 
@@ -659,15 +659,15 @@ func reserveExposeCommit(t *testing.T, ledger *BudgetLedger, request Reservation
 	t.Helper()
 	reservation, err := ledger.Reserve(context.Background(), request)
 	if err != nil {
-		t.Fatalf("Reserve: %v", err)
+		t.Fatalf("Reserve returned an error: %v", err)
 	}
 	reservation, err = ledger.MarkExposed(context.Background(), reservation.ID, hash)
 	if err != nil {
-		t.Fatalf("MarkExposed: %v", err)
+		t.Fatalf("MarkExposed returned an error: %v", err)
 	}
 	reservation, err = ledger.CommitFinalized(context.Background(), FinalizedCharge{ReservationID: reservation.ID, TxHash: hash, Actual: amount(actual)})
 	if err != nil {
-		t.Fatalf("CommitFinalized: %v", err)
+		t.Fatalf("CommitFinalized returned an error: %v", err)
 	}
 	return reservation
 }
@@ -676,7 +676,7 @@ func assertSnapshot(t *testing.T, ledger *BudgetLedger, spent, reserved, remaini
 	t.Helper()
 	snapshot, err := ledger.Snapshot(context.Background())
 	if err != nil {
-		t.Fatalf("Snapshot: %v", err)
+		t.Fatalf("Snapshot returned an error: %v", err)
 	}
 	if snapshot.Global.Spent.Cumulative.Uint64() != spent || snapshot.Global.Reserved.Cumulative.Uint64() != reserved ||
 		snapshot.Global.Remaining.Cumulative.Uint64() != remaining {
@@ -688,7 +688,7 @@ func openTestLedger(t *testing.T, path string, options OpenOptions) *BudgetLedge
 	t.Helper()
 	ledger, err := Open(path, options)
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("Open returned an error: %v", err)
 	}
 	return ledger
 }
@@ -696,7 +696,7 @@ func openTestLedger(t *testing.T, path string, options OpenOptions) *BudgetLedge
 func reopenTestLedger(t *testing.T, ledger *BudgetLedger, path string, options OpenOptions) *BudgetLedger {
 	t.Helper()
 	if err := ledger.Close(); err != nil {
-		t.Fatalf("Close before reopen: %v", err)
+		t.Fatalf("Close before reopening returned an error: %v", err)
 	}
 	return openTestLedger(t, path, options)
 }

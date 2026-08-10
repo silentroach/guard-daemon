@@ -18,8 +18,8 @@ const (
 )
 
 var (
-	ErrLeaseHeld = errors.New("хранилище: lease уже удерживается")
-	ErrLeaseLost = errors.New("хранилище: lease потерян")
+	ErrLeaseHeld = errors.New("store: lease already held")
+	ErrLeaseLost = errors.New("store: lease lost")
 	closedLease  = func() <-chan struct{} {
 		closed := make(chan struct{})
 		close(closed)

@@ -19,9 +19,9 @@ const (
 	maxRPCResponseBytes                  = int64(8 << 20)
 )
 
-var errRPCResponseTooLarge = errors.New("RPC response превышает допустимый размер")
+var errRPCResponseTooLarge = errors.New("RPC response exceeds the size limit")
 
-var errDial = errors.New("не удалось подключиться к RPC")
+var errDial = errors.New("failed to connect to RPC")
 
 type Dialer interface {
 	DialContext(context.Context, string, uint64) (*GenerationClient, error)
@@ -53,8 +53,9 @@ func (EthClientDialer) DialContext(ctx context.Context, endpoint string, generat
 	return client, nil
 }
 
-// DialEthClient creates an RPC client with bounded HTTP and WebSocket responses.
-// Backend errors are deliberately hidden because endpoints may contain secrets.
+// DialEthClient создаёт клиента RPC с ограничением размера ответов HTTP и WebSocket.
+// Подробности ошибки подключения намеренно скрываются, поскольку адреса могут
+// содержать секреты.
 func DialEthClient(ctx context.Context, endpoint string) (*ethclient.Client, error) {
 	backend, err := dialEthClient(ctx, endpoint)
 	if err == nil {

@@ -21,13 +21,13 @@ func TestEthClientDialerRedactsEndpointFromError(t *testing.T) {
 	const endpoint = "unsupported-test://deterministic.invalid/non-secret-marker"
 	_, err := (rpc.EthClientDialer{}).DialContext(context.Background(), endpoint, 1)
 	if err == nil {
-		t.Fatal("DialContext() error = nil")
+		t.Fatal("DialContext(): expected an error")
 	}
 	if strings.Contains(err.Error(), endpoint) || strings.Contains(err.Error(), "deterministic.invalid") {
-		t.Fatalf("DialContext() exposed endpoint: %q", err)
+		t.Fatalf("DialContext() exposed endpoint address: %q", err)
 	}
 	if errors.Unwrap(err) != nil {
-		t.Fatalf("DialContext() exposed raw error through Unwrap: %v", errors.Unwrap(err))
+		t.Fatalf("DialContext() exposed the source error through Unwrap: %v", errors.Unwrap(err))
 	}
 }
 
@@ -46,11 +46,11 @@ func TestDialQuorumRedactsEndpointFromError(t *testing.T) {
 	}
 	_, err := rpc.DialQuorum(context.Background(), endpoints, time.Second)
 	if !errors.Is(err, rpc.ErrQuorumDial) {
-		t.Fatalf("DialQuorum() error = %v", err)
+		t.Fatalf("DialQuorum() returned an error: %v", err)
 	}
 	for _, endpoint := range endpoints {
 		if strings.Contains(err.Error(), endpoint.Endpoint) || strings.Contains(err.Error(), "private-credential") {
-			t.Fatalf("DialQuorum() exposed endpoint: %q", err)
+			t.Fatalf("DialQuorum() exposed endpoint address: %q", err)
 		}
 	}
 }
@@ -75,7 +75,7 @@ func TestEthClientRejectsOversizedHTTPResponse(t *testing.T) {
 	}
 	defer client.Close()
 	if _, err := client.Reader().CodeAt(context.Background(), common.Address{}, nil); err == nil {
-		t.Fatal("oversized HTTP response принят")
+		t.Fatal("oversized HTTP response accepted")
 	}
 }
 
@@ -85,12 +85,12 @@ func TestDialEthClientRedactsEndpointFromError(t *testing.T) {
 	const endpoint = "http://deterministic.invalid/private-credential%zz"
 	_, err := rpc.DialEthClient(context.Background(), endpoint)
 	if err == nil {
-		t.Fatalf("DialEthClient() error = %v", err)
+		t.Fatalf("DialEthClient() returned an error: %v", err)
 	}
 	if strings.Contains(err.Error(), endpoint) || strings.Contains(err.Error(), "private-credential") {
-		t.Fatalf("DialEthClient() exposed endpoint: %q", err)
+		t.Fatalf("DialEthClient() exposed endpoint address: %q", err)
 	}
 	if errors.Unwrap(err) != nil {
-		t.Fatalf("DialEthClient() exposed raw error through Unwrap: %v", errors.Unwrap(err))
+		t.Fatalf("DialEthClient() exposed the source error through Unwrap: %v", errors.Unwrap(err))
 	}
 }

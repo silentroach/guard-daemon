@@ -12,12 +12,12 @@ func TestWatchPolicyParsing(t *testing.T) {
 		configure func(map[string]string)
 		want      WatchPolicy
 	}{
-		{name: "значения по умолчанию", want: WatchPolicy{StateDirectory: "state", LookbackBlocks: 64}},
-		{name: "явные значения", configure: func(values map[string]string) {
+		{name: "defaults", want: WatchPolicy{StateDirectory: "state", LookbackBlocks: 64}},
+		{name: "explicit values", configure: func(values map[string]string) {
 			values["STATE_DIRECTORY"] = "var/lib/guard-state"
 			values["WATCH_LOOKBACK_BLOCKS"] = "73"
 		}, want: WatchPolicy{StateDirectory: "var/lib/guard-state", LookbackBlocks: 73}},
-		{name: "верхняя граница", configure: func(values map[string]string) {
+		{name: "upper bound", configure: func(values map[string]string) {
 			values["WATCH_LOOKBACK_BLOCKS"] = "10000"
 		}, want: WatchPolicy{StateDirectory: "state", LookbackBlocks: 10000}},
 	}
@@ -33,7 +33,7 @@ func TestWatchPolicyParsing(t *testing.T) {
 				t.Fatal(err)
 			}
 			if runtimeConfig.Watch != test.want {
-				t.Fatalf("watch policy = %#v, нужно %#v", runtimeConfig.Watch, test.want)
+				t.Fatalf("watch policy = %#v, want %#v", runtimeConfig.Watch, test.want)
 			}
 		})
 	}
@@ -46,18 +46,18 @@ func TestWatchPolicyValidation(t *testing.T) {
 		value     string
 		wantError string
 	}{
-		{name: "пустой state directory", field: "STATE_DIRECTORY", value: "", wantError: "переменная STATE_DIRECTORY должна задавать непустой нормализованный путь без NUL"},
-		{name: "ненормализованный state directory", field: "STATE_DIRECTORY", value: "private-state-path-canary/../state", wantError: "переменная STATE_DIRECTORY должна задавать непустой нормализованный путь без NUL"},
-		{name: "повторный разделитель state directory", field: "STATE_DIRECTORY", value: "private-state-path-canary//nested", wantError: "переменная STATE_DIRECTORY должна задавать непустой нормализованный путь без NUL"},
-		{name: "NUL в state directory", field: "STATE_DIRECTORY", value: "private-state-path-canary\x00/nested", wantError: "переменная STATE_DIRECTORY должна задавать непустой нормализованный путь без NUL"},
-		{name: "пустой lookback", field: "WATCH_LOOKBACK_BLOCKS", value: "", wantError: "переменная WATCH_LOOKBACK_BLOCKS должна быть положительным целым десятичным числом"},
-		{name: "нулевой lookback", field: "WATCH_LOOKBACK_BLOCKS", value: "0", wantError: "переменная WATCH_LOOKBACK_BLOCKS должна быть положительным целым десятичным числом"},
-		{name: "отрицательный lookback", field: "WATCH_LOOKBACK_BLOCKS", value: "-1", wantError: "переменная WATCH_LOOKBACK_BLOCKS должна быть положительным целым десятичным числом"},
-		{name: "знак плюс в lookback", field: "WATCH_LOOKBACK_BLOCKS", value: "+1", wantError: "переменная WATCH_LOOKBACK_BLOCKS должна быть положительным целым десятичным числом"},
-		{name: "пробел в lookback", field: "WATCH_LOOKBACK_BLOCKS", value: " 1", wantError: "переменная WATCH_LOOKBACK_BLOCKS должна быть положительным целым десятичным числом"},
-		{name: "дробный lookback", field: "WATCH_LOOKBACK_BLOCKS", value: "1.5", wantError: "переменная WATCH_LOOKBACK_BLOCKS должна быть положительным целым десятичным числом"},
-		{name: "переполнение uint64", field: "WATCH_LOOKBACK_BLOCKS", value: "18446744073709551616", wantError: "переменная WATCH_LOOKBACK_BLOCKS должна быть положительным целым десятичным числом"},
-		{name: "превышение лимита", field: "WATCH_LOOKBACK_BLOCKS", value: "10001", wantError: "переменная WATCH_LOOKBACK_BLOCKS не должна превышать 10000"},
+		{name: "empty state directory", field: "STATE_DIRECTORY", value: "", wantError: "STATE_DIRECTORY must specify a non-empty normalized path without NUL bytes"},
+		{name: "unnormalized state directory", field: "STATE_DIRECTORY", value: "private-state-path-canary/../state", wantError: "STATE_DIRECTORY must specify a non-empty normalized path without NUL bytes"},
+		{name: "repeated state directory separator", field: "STATE_DIRECTORY", value: "private-state-path-canary//nested", wantError: "STATE_DIRECTORY must specify a non-empty normalized path without NUL bytes"},
+		{name: "NUL in state directory", field: "STATE_DIRECTORY", value: "private-state-path-canary\x00/nested", wantError: "STATE_DIRECTORY must specify a non-empty normalized path without NUL bytes"},
+		{name: "empty lookback", field: "WATCH_LOOKBACK_BLOCKS", value: "", wantError: "WATCH_LOOKBACK_BLOCKS must be a positive decimal integer"},
+		{name: "zero lookback", field: "WATCH_LOOKBACK_BLOCKS", value: "0", wantError: "WATCH_LOOKBACK_BLOCKS must be a positive decimal integer"},
+		{name: "negative lookback", field: "WATCH_LOOKBACK_BLOCKS", value: "-1", wantError: "WATCH_LOOKBACK_BLOCKS must be a positive decimal integer"},
+		{name: "plus sign in lookback", field: "WATCH_LOOKBACK_BLOCKS", value: "+1", wantError: "WATCH_LOOKBACK_BLOCKS must be a positive decimal integer"},
+		{name: "space in lookback", field: "WATCH_LOOKBACK_BLOCKS", value: " 1", wantError: "WATCH_LOOKBACK_BLOCKS must be a positive decimal integer"},
+		{name: "fractional lookback", field: "WATCH_LOOKBACK_BLOCKS", value: "1.5", wantError: "WATCH_LOOKBACK_BLOCKS must be a positive decimal integer"},
+		{name: "uint64 overflow", field: "WATCH_LOOKBACK_BLOCKS", value: "18446744073709551616", wantError: "WATCH_LOOKBACK_BLOCKS must be a positive decimal integer"},
+		{name: "limit exceeded", field: "WATCH_LOOKBACK_BLOCKS", value: "10001", wantError: "WATCH_LOOKBACK_BLOCKS must not exceed 10000"},
 	}
 
 	for _, test := range tests {
@@ -66,7 +66,7 @@ func TestWatchPolicyValidation(t *testing.T) {
 			values[test.field] = test.value
 			_, err := LoadFrom(mapLookup(values))
 			if err == nil || err.Error() != test.wantError {
-				t.Fatalf("LoadFrom() error = %v, нужно %q", err, test.wantError)
+				t.Fatalf("LoadFrom() returned error %v, want %q", err, test.wantError)
 			}
 		})
 	}
@@ -96,7 +96,7 @@ func TestWatchPolicyRedactsStateDirectory(t *testing.T) {
 	for _, output := range formatted {
 		t.Run(output.name, func(t *testing.T) {
 			if strings.Contains(output.value, canary) {
-				t.Fatalf("форматирование раскрывает STATE_DIRECTORY: %q", output.value)
+				t.Fatalf("formatting exposes STATE_DIRECTORY: %q", output.value)
 			}
 		})
 	}
@@ -104,6 +104,6 @@ func TestWatchPolicyRedactsStateDirectory(t *testing.T) {
 	values["STATE_DIRECTORY"] = canary + "/../state"
 	_, err = LoadFrom(mapLookup(values))
 	if err == nil || strings.Contains(err.Error(), canary) || strings.Contains(err.Error(), values["STATE_DIRECTORY"]) {
-		t.Fatalf("ошибка раскрывает STATE_DIRECTORY: %v", err)
+		t.Fatalf("error exposes STATE_DIRECTORY: %v", err)
 	}
 }

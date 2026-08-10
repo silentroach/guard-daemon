@@ -18,14 +18,14 @@ func TestAlertCooldownSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if emitted, err := manager.Raise(1, AlertBudgetBlocked); err != nil || !emitted || firstNotifications != 1 {
-		t.Fatalf("first Raise = %t, %v, notifications=%d", emitted, err, firstNotifications)
+		t.Fatalf("first Raise returned %t, %v, notifications=%d", emitted, err, firstNotifications)
 	}
 	restarted, err := NewAlertManager(AlertManagerConfig{Cooldown: time.Minute, Capacity: 8, StatePath: path}, clock, AlertSinkFunc(func(Alert) error { restartedNotifications++; return nil }))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if emitted, err := restarted.Raise(1, AlertBudgetBlocked); err != nil || emitted || restartedNotifications != 0 {
-		t.Fatalf("restarted Raise = %t, %v, notifications=%d", emitted, err, restartedNotifications)
+		t.Fatalf("Raise after restart returned %t, %v, notifications=%d", emitted, err, restartedNotifications)
 	}
 }
 
@@ -40,7 +40,7 @@ func TestAlertPendingDeliveryReplaysAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := manager.Raise(1, AlertBudgetBlocked); !errors.Is(err, ErrAlertDelivery) {
-		t.Fatalf("Raise() error = %v", err)
+		t.Fatalf("Raise() returned an error: %v", err)
 	}
 	var replayed []Alert
 	restarted, err := NewAlertManager(
@@ -54,7 +54,7 @@ func TestAlertPendingDeliveryReplaysAfterRestart(t *testing.T) {
 		t.Fatalf("replayed alerts = %#v", replayed)
 	}
 	if emitted, err := restarted.Raise(1, AlertBudgetBlocked); err != nil || emitted {
-		t.Fatalf("Raise() after replay = %t, %v", emitted, err)
+		t.Fatalf("Raise() after replay returned %t, %v", emitted, err)
 	}
 }
 
@@ -80,10 +80,10 @@ func TestAlertPersistenceFailureRollsBackInMemoryTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := manager.Raise(1, AlertBudgetBlocked); !errors.Is(err, ErrAlertPersistence) {
-		t.Fatalf("Raise() error = %v", err)
+		t.Fatalf("Raise() returned an error: %v", err)
 	}
 	if manager.Active(1, AlertBudgetBlocked) || notifications != 0 {
-		t.Fatalf("failed persistence escaped: active=%t notifications=%d", manager.Active(1, AlertBudgetBlocked), notifications)
+		t.Fatalf("persistence error was not handled: active=%t, notifications=%d", manager.Active(1, AlertBudgetBlocked), notifications)
 	}
 	if err := os.Remove(parent); err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestAlertPersistenceFailureRollsBackInMemoryTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 	if emitted, err := manager.Raise(1, AlertBudgetBlocked); err != nil || !emitted || notifications != 1 {
-		t.Fatalf("Raise() after recovery = %t, %v, notifications=%d", emitted, err, notifications)
+		t.Fatalf("Raise() after recovery returned %t, %v, notifications=%d", emitted, err, notifications)
 	}
 }
 
@@ -111,36 +111,36 @@ func TestAlertManagerDeduplicatesWithFakeClockAndResolve(t *testing.T) {
 	}
 
 	if emitted, err := manager.Raise(1, AlertRPCDegraded); err != nil || !emitted {
-		t.Fatalf("initial Raise() = %v, %v", emitted, err)
+		t.Fatalf("initial Raise() returned %v, %v", emitted, err)
 	}
 	if emitted, err := manager.Raise(1, AlertRPCDegraded); err != nil || emitted {
-		t.Fatalf("deduplicated Raise() = %v, %v", emitted, err)
+		t.Fatalf("deduplicated Raise() returned %v, %v", emitted, err)
 	}
 	clock.Advance(time.Minute - time.Nanosecond)
 	if emitted, err := manager.Raise(1, AlertRPCDegraded); err != nil || emitted {
-		t.Fatalf("pre-cooldown Raise() = %v, %v", emitted, err)
+		t.Fatalf("Raise() before cooldown returned %v, %v", emitted, err)
 	}
 	clock.Advance(time.Nanosecond)
 	if emitted, err := manager.Raise(1, AlertRPCDegraded); err != nil || !emitted {
-		t.Fatalf("cooldown Raise() = %v, %v", emitted, err)
+		t.Fatalf("Raise() after cooldown returned %v, %v", emitted, err)
 	}
 	if resolved, err := manager.Resolve(1, AlertRPCDegraded); err != nil || !resolved {
-		t.Fatalf("Resolve() = %v, %v", resolved, err)
+		t.Fatalf("Resolve() returned %v, %v", resolved, err)
 	}
 	if resolved, err := manager.Resolve(1, AlertRPCDegraded); err != nil || resolved {
-		t.Fatalf("duplicate Resolve() = %v, %v", resolved, err)
+		t.Fatalf("duplicate Resolve() returned %v, %v", resolved, err)
 	}
 	if manager.Active(1, AlertRPCDegraded) {
-		t.Fatal("resolved alert остался активным")
+		t.Fatal("resolved alert remained active")
 	}
 
 	wantStates := []AlertState{AlertFiring, AlertFiring, AlertResolved}
 	if len(notifications) != len(wantStates) {
-		t.Fatalf("notifications = %#v, want states %#v", notifications, wantStates)
+		t.Fatalf("alerts = %#v, want states %#v", notifications, wantStates)
 	}
 	for index, want := range wantStates {
 		if notifications[index].State != want {
-			t.Fatalf("notification %d state = %v, want %v", index, notifications[index].State, want)
+			t.Fatalf("alert state %d = %v, want %v", index, notifications[index].State, want)
 		}
 	}
 }
@@ -231,7 +231,7 @@ func TestAlertManagerCallsSinkOutsideLock(t *testing.T) {
 		states = append(states, alert.State)
 		if alert.State == AlertFiring {
 			if resolved, err := manager.Resolve(alert.ChainID, alert.Code); err != nil || !resolved {
-				t.Fatalf("reentrant Resolve() = %v, %v", resolved, err)
+				t.Fatalf("reentrant Resolve() returned %v, %v", resolved, err)
 			}
 		}
 		return nil
@@ -242,7 +242,7 @@ func TestAlertManagerCallsSinkOutsideLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if emitted, err := manager.Raise(1, AlertAmbiguousRescue); err != nil || !emitted {
-		t.Fatalf("Raise() = %v, %v", emitted, err)
+		t.Fatalf("Raise() returned %v, %v", emitted, err)
 	}
 	if len(states) != 2 || states[0] != AlertFiring || states[1] != AlertResolved {
 		t.Fatalf("reentrant sink states = %#v", states)
@@ -264,13 +264,13 @@ func TestAlertManagerCapacityNeverEvictsActiveAlert(t *testing.T) {
 		t.Fatalf("capacity error = %v, want ErrAlertCapacity", err)
 	}
 	if !manager.Active(1, AlertBudgetBlocked) || len(manager.Snapshot()) != 1 {
-		t.Fatal("active alert был вытеснен при исчерпании capacity")
+		t.Fatal("active alert evicted when capacity was exhausted")
 	}
 	if _, err := manager.Resolve(1, AlertBudgetBlocked); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.Raise(2, AlertRPCDegraded); err != nil {
-		t.Fatalf("resolved entry не была переиспользована: %v", err)
+		t.Fatalf("resolved entry was not reused: %v", err)
 	}
 	status := manager.Snapshot()
 	if len(status) != 1 || status[0].ChainID != 2 || !status[0].Active {

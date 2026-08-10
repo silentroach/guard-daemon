@@ -15,7 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// ReadProvider описывает независимый источник проверяемых чтений.
+// ReadProvider описывает независимый источник данных для кворумной проверки.
 type ReadProvider struct {
 	ID                  string
 	HTTPURL             string
@@ -24,7 +24,7 @@ type ReadProvider struct {
 	EndpointFingerprint string
 }
 
-// Format не допускает случайного вывода RPC URL.
+// Format исключает RPC URL из форматированного вывода.
 func (provider ReadProvider) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "ReadProvider{ID:"+provider.ID+" EndpointFingerprint:"+provider.EndpointFingerprint+"}")
 }
@@ -44,13 +44,13 @@ type Network struct {
 	EconomicPolicy      EconomicPolicy
 }
 
-// Format исключает RPC URL и путь manifest из случайного вывода.
+// Format исключает RPC URL и путь к манифесту из форматированного вывода.
 func (network Network) Format(state fmt.State, _ rune) {
 	value := "Network{Name:" + network.Name + " ChainID:" + strconv.FormatInt(int64(network.ChainID), 10) + " ReadProviders:" + strconv.Itoa(len(network.ReadProviders)) + "}"
 	_, _ = io.WriteString(state, value)
 }
 
-// Domain создаёт совместимое доменное описание для daemon integration.
+// Domain преобразует конфигурацию сети в доменную модель для службы.
 func (network Network) Domain(rescuer common.Address) domain.Network {
 	result := domain.Network{
 		Name:               network.Name,
@@ -169,16 +169,16 @@ func enabledNetworkNames(lookup func(string) (string, bool)) ([]string, error) {
 	for _, part := range parts {
 		name := strings.TrimSpace(part)
 		if name == "" {
-			return nil, fmt.Errorf("переменная ENABLED_NETWORKS содержит пустое имя сети")
+			return nil, fmt.Errorf("ENABLED_NETWORKS contains an empty network name")
 		}
 		if name != strings.ToLower(name) {
-			return nil, fmt.Errorf("переменная ENABLED_NETWORKS содержит имя сети не в нижнем регистре")
+			return nil, fmt.Errorf("ENABLED_NETWORKS contains a network name that is not lowercase")
 		}
 		if _, ok := known[name]; !ok {
-			return nil, fmt.Errorf("переменная ENABLED_NETWORKS содержит неизвестное имя сети")
+			return nil, fmt.Errorf("ENABLED_NETWORKS contains an unknown network name")
 		}
 		if _, ok := seen[name]; ok {
-			return nil, fmt.Errorf("переменная ENABLED_NETWORKS содержит повторяющееся имя сети")
+			return nil, fmt.Errorf("ENABLED_NETWORKS contains a duplicate network name")
 		}
 		seen[name] = struct{}{}
 		names = append(names, name)
@@ -219,7 +219,7 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 			return Network{}, err
 		}
 		if strings.TrimSpace(trustDomain) != trustDomain {
-			return Network{}, fmt.Errorf("переменная %s содержит некорректный trust domain", trustName)
+			return Network{}, fmt.Errorf("environment variable %s contains an invalid trust domain", trustName)
 		}
 
 		digest := sha256.Sum256([]byte(canonical))
@@ -234,22 +234,22 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 		canonicalWS = append(canonicalWS, canonicalWebSocket)
 	}
 	if canonicalHTTP[0] == canonicalHTTP[1] || providers[0].EndpointFingerprint == providers[1].EndpointFingerprint {
-		return Network{}, fmt.Errorf("переменные RPC_READ_1_HTTP_%s и RPC_READ_2_HTTP_%s должны задавать разные endpoint", suffix, suffix)
+		return Network{}, fmt.Errorf("RPC_READ_1_HTTP_%s and RPC_READ_2_HTTP_%s must specify distinct endpoints", suffix, suffix)
 	}
 	if strings.EqualFold(providers[0].TrustDomain, providers[1].TrustDomain) {
-		return Network{}, fmt.Errorf("переменные RPC_READ_1_TRUST_DOMAIN_%s и RPC_READ_2_TRUST_DOMAIN_%s должны различаться", suffix, suffix)
+		return Network{}, fmt.Errorf("RPC_READ_1_TRUST_DOMAIN_%s and RPC_READ_2_TRUST_DOMAIN_%s must differ", suffix, suffix)
 	}
 	if canonicalWS[0] == canonicalWS[1] {
-		return Network{}, fmt.Errorf("переменные RPC_READ_1_WS_%s и RPC_READ_2_WS_%s должны задавать разные endpoint", suffix, suffix)
+		return Network{}, fmt.Errorf("RPC_READ_1_WS_%s and RPC_READ_2_WS_%s must specify distinct endpoints", suffix, suffix)
 	}
 
 	broadcastName := "RPC_BROADCAST_HTTP_" + suffix
 	broadcast, broadcastSet := lookup(broadcastName)
 	if mode.IsDryRun() && broadcastSet {
-		return Network{}, fmt.Errorf("переменная %s допустима только при DRY_RUN=false", broadcastName)
+		return Network{}, fmt.Errorf("environment variable %s is only allowed when DRY_RUN=false", broadcastName)
 	}
 	if mode.IsLive() && (!broadcastSet || broadcast == "") {
-		return Network{}, fmt.Errorf("не задана обязательная переменная окружения %s", broadcastName)
+		return Network{}, fmt.Errorf("required environment variable %s is not set", broadcastName)
 	}
 	if broadcast != "" {
 		canonicalBroadcast, err := validateEndpoint(broadcastName, broadcast, false)
@@ -258,7 +258,7 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 		}
 		for _, readEndpoint := range canonicalHTTP {
 			if canonicalBroadcast == readEndpoint {
-				return Network{}, fmt.Errorf("переменная %s должна отличаться от RPC чтения", broadcastName)
+				return Network{}, fmt.Errorf("environment variable %s must differ from the read RPC endpoints", broadcastName)
 			}
 		}
 	}
@@ -303,7 +303,7 @@ func loadManifestSourceProvenance(lookup func(string) (string, bool), suffix str
 		return pinnedArtifactSourceKind, pinnedArtifactSourceValue, nil
 	}
 	if len(commit) != 40 || !lowercaseHex(commit) {
-		return "", "", fmt.Errorf("переменная %s должна содержать полный commit из 40 шестнадцатеричных символов в нижнем регистре", name)
+		return "", "", fmt.Errorf("environment variable %s must contain a full 40-character lowercase hexadecimal commit hash", name)
 	}
 	return "git-commit", commit, nil
 }
@@ -349,9 +349,9 @@ func validateEndpoint(name, value string, websocket bool) (string, error) {
 
 func endpointError(name string, websocket bool) error {
 	if websocket {
-		return fmt.Errorf("переменная %s должна содержать URL со схемой ws или wss", name)
+		return fmt.Errorf("environment variable %s must contain a URL with the ws or wss scheme", name)
 	}
-	return fmt.Errorf("переменная %s должна содержать URL со схемой http или https", name)
+	return fmt.Errorf("environment variable %s must contain a URL with the http or https scheme", name)
 }
 
 func loadTokenPolicy(lookup func(string) (string, bool), suffix string, known []domain.Token) ([]domain.Token, []common.Address, bool, error) {
@@ -366,21 +366,21 @@ func loadTokenPolicy(lookup func(string) (string, bool), suffix string, known []
 	switch mode {
 	case "known-only":
 		if allowlistSet {
-			return nil, nil, false, fmt.Errorf("переменная %s допустима только в режиме allowlist", allowlistName)
+			return nil, nil, false, fmt.Errorf("environment variable %s is only allowed when TOKEN_MODE=allowlist", allowlistName)
 		}
 		return append([]domain.Token(nil), known...), trustedTokenAddresses(known), false, nil
 	case "all":
 		if allowlistSet {
-			return nil, nil, false, fmt.Errorf("переменная %s допустима только в режиме allowlist", allowlistName)
+			return nil, nil, false, fmt.Errorf("environment variable %s is only allowed when TOKEN_MODE=allowlist", allowlistName)
 		}
 		return append([]domain.Token(nil), known...), trustedTokenAddresses(known), true, nil
 	case "allowlist":
 		if !allowlistSet || allowlist == "" {
-			return nil, nil, false, fmt.Errorf("не задана обязательная переменная окружения %s", allowlistName)
+			return nil, nil, false, fmt.Errorf("required environment variable %s is not set", allowlistName)
 		}
 		return parseTokenAllowlist(allowlistName, allowlist, known)
 	default:
-		return nil, nil, false, fmt.Errorf("переменная %s содержит неподдерживаемый режим токенов", modeName)
+		return nil, nil, false, fmt.Errorf("environment variable %s contains an unsupported token mode", modeName)
 	}
 }
 
@@ -396,14 +396,14 @@ func parseTokenAllowlist(name, value string, known []domain.Token) ([]domain.Tok
 	for _, part := range parts {
 		candidate := strings.TrimSpace(part)
 		if candidate == "" || !common.IsHexAddress(candidate) {
-			return nil, nil, false, fmt.Errorf("переменная %s содержит некорректный EVM-адрес", name)
+			return nil, nil, false, fmt.Errorf("environment variable %s contains an invalid EVM address", name)
 		}
 		address := common.HexToAddress(candidate)
 		if address == (common.Address{}) {
-			return nil, nil, false, fmt.Errorf("переменная %s содержит нулевой EVM-адрес", name)
+			return nil, nil, false, fmt.Errorf("environment variable %s contains the zero EVM address", name)
 		}
 		if _, ok := seen[address]; ok {
-			return nil, nil, false, fmt.Errorf("переменная %s содержит повторяющийся EVM-адрес", name)
+			return nil, nil, false, fmt.Errorf("environment variable %s contains a duplicate EVM address", name)
 		}
 		seen[address] = struct{}{}
 		configured, knownToken := metadata[address]

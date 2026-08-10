@@ -34,7 +34,7 @@ func TestPaidActionGateStopClosesEntryAndWaitsForActiveAction(t *testing.T) {
 	}
 	select {
 	case <-stopDone:
-		t.Fatal("Stop вернулся до завершения активного платного действия")
+		t.Fatal("Stop returned before the active paid action completed")
 	default:
 	}
 
@@ -43,7 +43,7 @@ func TestPaidActionGateStopClosesEntryAndWaitsForActiveAction(t *testing.T) {
 		forbiddenCalls.Add(1)
 		return nil
 	}); !errors.Is(err, ErrPaidActionsStopped) {
-		t.Fatalf("Do while stopping error = %v, want ErrPaidActionsStopped", err)
+		t.Fatalf("Do during shutdown returned error %v, want ErrPaidActionsStopped", err)
 	}
 	close(release)
 	if err := <-actionDone; err != nil {
@@ -54,10 +54,10 @@ func TestPaidActionGateStopClosesEntryAndWaitsForActiveAction(t *testing.T) {
 		forbiddenCalls.Add(1)
 		return nil
 	}); !errors.Is(err, ErrPaidActionsStopped) {
-		t.Fatalf("Do after Stop error = %v, want ErrPaidActionsStopped", err)
+		t.Fatalf("Do after Stop returned error %v, want ErrPaidActionsStopped", err)
 	}
 	if forbiddenCalls.Load() != 0 {
-		t.Fatalf("после stop выполнено callbacks: %d", forbiddenCalls.Load())
+		t.Fatalf("callbacks executed after Stop: %d", forbiddenCalls.Load())
 	}
 }
 
@@ -91,7 +91,7 @@ func TestPaidActionGateConcurrentStopIsIdempotent(t *testing.T) {
 	close(release)
 	wait.Wait()
 	if !gate.Stopped() {
-		t.Fatal("gate не сохранил stopped state")
+		t.Fatal("gate did not preserve stopped state")
 	}
 }
 
@@ -99,11 +99,11 @@ func TestPaidActionGateReturnsActionErrorAndRejectsNil(t *testing.T) {
 	t.Parallel()
 
 	gate := NewPaidActionGate()
-	want := errors.New("синтетическая безопасная ошибка")
+	want := errors.New("synthetic safe error")
 	if err := gate.Do(func() error { return want }); !errors.Is(err, want) {
-		t.Fatalf("Do error = %v, want action error", err)
+		t.Fatalf("Do returned error %v, want action error", err)
 	}
 	if err := gate.Do(nil); !errors.Is(err, ErrNilPaidAction) {
-		t.Fatalf("Do(nil) error = %v, want ErrNilPaidAction", err)
+		t.Fatalf("Do(nil) returned error %v, want ErrNilPaidAction", err)
 	}
 }

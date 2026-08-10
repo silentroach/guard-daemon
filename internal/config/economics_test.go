@@ -20,7 +20,7 @@ func TestEconomicPolicyDefaultsAndOverrides(t *testing.T) {
 			wantGas: [2]uint64{300000, 100000},
 		},
 		{
-			name: "явные значения",
+			name: "explicit values",
 			configure: func(values map[string]string) {
 				values["NETWORK_MAX_TRANSACTION_COST_WEI_BASE"] = "9000000000000000"
 				values["NETWORK_HOURLY_BUDGET_WEI_BASE"] = "18000000000000000"
@@ -57,7 +57,7 @@ func TestEconomicPolicyDefaultsAndOverrides(t *testing.T) {
 				policy.TransactionOverheadWei.String(), policy.NativeMinimumNetValueWei.String(), policy.UnknownTokenMaxTransactionCostWei.String(),
 			}
 			if got != test.want || [2]uint64{policy.TokenGasLimit, policy.NativeGasLimit} != test.wantGas {
-				t.Fatalf("EconomicPolicy = values %v gas [%d %d]", got, policy.TokenGasLimit, policy.NativeGasLimit)
+				t.Fatalf("EconomicPolicy: values %v, gas [%d %d]", got, policy.TokenGasLimit, policy.NativeGasLimit)
 			}
 		})
 	}
@@ -69,19 +69,19 @@ func TestEconomicPolicyRejectsHierarchyOverflowAndUnsafeGasBounds(t *testing.T) 
 		field string
 		value string
 	}{
-		{name: "network per-tx выше global", field: "NETWORK_MAX_TRANSACTION_COST_WEI_BASE", value: "11000000000000000"},
-		{name: "network hour меньше per-tx", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "7000000000000000"},
-		{name: "network hour выше global", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "21000000000000000"},
-		{name: "network day меньше hour", field: "NETWORK_DAILY_BUDGET_WEI_BASE", value: "14000000000000000"},
-		{name: "network cumulative меньше day", field: "NETWORK_CUMULATIVE_BUDGET_WEI_BASE", value: "24000000000000000"},
-		{name: "network reserve ниже global", field: "NETWORK_SPONSOR_MIN_BALANCE_WEI_BASE", value: "19000000000000000"},
-		{name: "priority fee выше max fee", field: "MAX_PRIORITY_FEE_PER_GAS_WEI_BASE", value: "21000000000"},
-		{name: "token gas нарушает per-tx", field: "TOKEN_GAS_LIMIT_BASE", value: "500000"},
-		{name: "native gas нарушает per-tx", field: "NATIVE_GAS_LIMIT_BASE", value: "400000"},
-		{name: "overhead нарушает per-tx", field: "CHAIN_OVERHEAD_MAX_WEI_BASE", value: "8000000000000000"},
-		{name: "unknown cap выше network per-tx", field: "UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE", value: "9000000000000000"},
-		{name: "переполнение uint256", field: "MAX_FEE_PER_GAS_WEI_BASE", value: "115792089237316195423570985008687907853269984665640564039457584007913129639936"},
-		{name: "переполнение gas uint64", field: "TOKEN_GAS_LIMIT_BASE", value: "18446744073709551616"},
+		{name: "network per-tx above global", field: "NETWORK_MAX_TRANSACTION_COST_WEI_BASE", value: "11000000000000000"},
+		{name: "network hour below per-tx", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "7000000000000000"},
+		{name: "network hour above global", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "21000000000000000"},
+		{name: "network day below hour", field: "NETWORK_DAILY_BUDGET_WEI_BASE", value: "14000000000000000"},
+		{name: "network cumulative below day", field: "NETWORK_CUMULATIVE_BUDGET_WEI_BASE", value: "24000000000000000"},
+		{name: "network reserve below global", field: "NETWORK_SPONSOR_MIN_BALANCE_WEI_BASE", value: "19000000000000000"},
+		{name: "priority fee above max fee", field: "MAX_PRIORITY_FEE_PER_GAS_WEI_BASE", value: "21000000000"},
+		{name: "token gas violates per-tx", field: "TOKEN_GAS_LIMIT_BASE", value: "500000"},
+		{name: "native gas violates per-tx", field: "NATIVE_GAS_LIMIT_BASE", value: "400000"},
+		{name: "overhead violates per-tx", field: "CHAIN_OVERHEAD_MAX_WEI_BASE", value: "8000000000000000"},
+		{name: "unknown cap above network per-tx", field: "UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE", value: "9000000000000000"},
+		{name: "uint256 overflow", field: "MAX_FEE_PER_GAS_WEI_BASE", value: "115792089237316195423570985008687907853269984665640564039457584007913129639936"},
+		{name: "gas uint64 overflow", field: "TOKEN_GAS_LIMIT_BASE", value: "18446744073709551616"},
 	}
 
 	for _, test := range tests {
@@ -117,17 +117,17 @@ func TestEveryNetworkUsesItsOwnBoundedEconomicProfile(t *testing.T) {
 			policy := runtimeConfig.Networks[0].EconomicPolicy
 			profile := [3]string{policy.MaxFeePerGasWei.String(), policy.MaxPriorityFeePerGasWei.String(), policy.TransactionOverheadWei.String()}
 			if profile != wantProfiles[definition.name] {
-				t.Fatalf("chain profile = %v, нужно %v", profile, wantProfiles[definition.name])
+				t.Fatalf("network profile = %v, want %v", profile, wantProfiles[definition.name])
 			}
 			if other, duplicate := seen[profile]; duplicate {
-				t.Fatalf("сети %s и %s используют один fee/tip/overhead profile", definition.name, other)
+				t.Fatalf("networks %s and %s share one fee, tip, and overhead profile", definition.name, other)
 			}
 			seen[profile] = definition.name
 
 			maximum := new(big.Int).Mul(new(big.Int).SetUint64(policy.TokenGasLimit), policy.MaxFeePerGasWei)
 			maximum.Add(maximum, policy.TransactionOverheadWei)
 			if maximum.Cmp(policy.MaxTransactionCostWei) > 0 || policy.MaxTransactionCostWei.Cmp(runtimeConfig.Policy.MaxTransactionCostWei) > 0 || policy.HourlyBudgetWei.Cmp(runtimeConfig.Policy.HourlyBudgetWei) > 0 || policy.DailyBudgetWei.Cmp(runtimeConfig.Policy.DailyBudgetWei) > 0 || policy.CumulativeBudgetWei.Cmp(runtimeConfig.Policy.CumulativeBudgetWei) > 0 {
-				t.Fatalf("неограниченный economic profile: maximum=%s policy=%+v", maximum, policy)
+				t.Fatalf("unbounded economic profile: maximum=%s, policy=%+v", maximum, policy)
 			}
 		})
 	}
@@ -147,10 +147,10 @@ func TestEconomicPolicyCloneDoesNotAliasBigIntegers(t *testing.T) {
 	cloned.TransactionOverheadWei.SetInt64(2)
 	cloned.TokenValueRules[0].MinimumBalance.SetInt64(3)
 	if original.MaxFeePerGasWei.String() != "20000000000" || original.TransactionOverheadWei.String() != "500000000000000" {
-		t.Fatal("EconomicPolicy.Clone переиспользовал mutable big.Int")
+		t.Fatal("EconomicPolicy.Clone reused mutable big.Int")
 	}
 	if original.TokenValueRules[0].MinimumBalance.String() != "1000000" {
-		t.Fatal("EconomicPolicy.Clone переиспользовал правило ценности token")
+		t.Fatal("EconomicPolicy.Clone reused token value rule")
 	}
 }
 
@@ -168,7 +168,7 @@ func TestTokenValueRulesAreBoundToTrustedTokensAndNetworkCap(t *testing.T) {
 		values := validEnvironment()
 		values["TOKEN_VALUE_RULES_BASE"] = encoded
 		if _, err := LoadFromMap(values); err == nil || !strings.Contains(err.Error(), "TOKEN_VALUE_RULES_BASE") {
-			t.Fatalf("правило %q принято или ошибка не называет поле: %v", encoded, err)
+			t.Fatalf("rule %q accepted or error does not name field: %v", encoded, err)
 		}
 	}
 }

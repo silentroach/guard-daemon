@@ -29,10 +29,10 @@ func TestPublicConfigurationDocumentsOnlySupportedFields(t *testing.T) {
 		}
 		name, value, ok := strings.Cut(line, "=")
 		if !ok {
-			t.Fatalf("строка .env.example не является присваиванием: %q", line)
+			t.Fatalf(".env.example line is not an assignment: %q", line)
 		}
 		if _, exists := supported[name]; !exists {
-			t.Errorf(".env.example документирует неподдерживаемое поле %s", name)
+			t.Errorf(".env.example documents unsupported field %s", name)
 		}
 		assignments[name] = value
 	}
@@ -40,27 +40,27 @@ func TestPublicConfigurationDocumentsOnlySupportedFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	if assignments["DRY_RUN"] != "true" {
-		t.Fatal(".env.example не сохраняет безопасный dry-run default")
+		t.Fatal(".env.example does not preserve safe dry-run mode by default")
 	}
 	if assignments["STATE_DIRECTORY"] != defaultStateDirectory {
-		t.Fatal(".env.example не совпадает с default STATE_DIRECTORY")
+		t.Fatal(".env.example does not match the default STATE_DIRECTORY")
 	}
 	if assignments["WATCH_LOOKBACK_BLOCKS"] != defaultLookbackBlocks {
-		t.Fatal(".env.example не совпадает с default WATCH_LOOKBACK_BLOCKS")
+		t.Fatal(".env.example does not match the default WATCH_LOOKBACK_BLOCKS")
 	}
 	if _, exists := assignments["SOURCE_PRIVATE_KEY"]; exists {
-		t.Fatal(".env.example не должен предлагать хранить source key в файле")
+		t.Fatal(".env.example must not suggest storing the source key in a file")
 	}
 	if _, exists := assignments["SPONSOR_PRIVATE_KEY"]; exists {
-		t.Fatal(".env.example не должен предлагать хранить sponsor key в файле")
+		t.Fatal(".env.example must not suggest storing the sponsor key in a file")
 	}
 	for _, role := range []string{"SOURCE_ADDRESS", "SPONSOR_ADDRESS", "DESTINATION_ADDRESS"} {
 		if !strings.HasPrefix(assignments[role], "0xYOUR_") {
-			t.Errorf(".env.example содержит не-placeholder для %s", role)
+			t.Errorf(".env.example contains a non-placeholder value for %s", role)
 		}
 	}
 	if _, exists := assignments["RPC_BROADCAST_HTTP_BASE"]; exists {
-		t.Fatal(".env.example не должен включать live broadcast RPC по умолчанию")
+		t.Fatal(".env.example must not enable production broadcast RPC by default")
 	}
 	for field, want := range map[string]string{
 		"MAX_TRANSACTION_COST_WEI":                    defaultMaxTransactionCostWei,
@@ -89,7 +89,7 @@ func TestPublicConfigurationDocumentsOnlySupportedFields(t *testing.T) {
 		"CHAIN_OVERHEAD_MAX_WEI_BASE":                 "500000000000000",
 	} {
 		if assignments[field] != want {
-			t.Errorf(".env.example: %s=%q, нужно %q", field, assignments[field], want)
+			t.Errorf(".env.example: %s=%q, want %q", field, assignments[field], want)
 		}
 	}
 
@@ -100,12 +100,12 @@ func TestPublicConfigurationDocumentsOnlySupportedFields(t *testing.T) {
 	text := string(documentation)
 	for _, field := range staticEnvironmentFields {
 		if !strings.Contains(text, "`"+field+"`") {
-			t.Errorf("docs/configuration.md не документирует поле %s", field)
+			t.Errorf("docs/configuration.md does not document field %s", field)
 		}
 	}
 	for _, template := range EnvironmentFieldTemplates() {
 		if !strings.Contains(text, "`"+template+"`") {
-			t.Errorf("docs/configuration.md не документирует шаблон %s", template)
+			t.Errorf("docs/configuration.md does not document template %s", template)
 		}
 	}
 }
@@ -123,7 +123,7 @@ func TestEconomicAndTokenTrustDocumentationParity(t *testing.T) {
 		}
 		text := string(contents)
 		if strings.Contains(text, "пока только разбираются") || strings.Contains(text, "относится к Task 08") {
-			t.Errorf("%s содержит устаревшее phantom-описание Task 08", path)
+			t.Errorf("%s contains stale phantom Task 08 description", path)
 		}
 	}
 
@@ -133,8 +133,8 @@ func TestEconomicAndTokenTrustDocumentationParity(t *testing.T) {
 	}
 	text := string(documentation)
 	for _, statement := range []string{
-		"Allowlisted unknown address остаётся разрешённым для watcher, но не получает",
-		"известные metadata или доверенную оценку ценности",
+		"Неизвестный адрес из списка разрешённых остаётся доступным компоненту",
+		"наблюдения, но не получает известных метаданных или доверенной оценки ценности",
 		"дополнительно ограничена",
 		"UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_<N>",
 		"при запуске демон выдаёт предупреждение оператору",
@@ -143,7 +143,7 @@ func TestEconomicAndTokenTrustDocumentationParity(t *testing.T) {
 		"token-reported",
 	} {
 		if !strings.Contains(text, statement) {
-			t.Errorf("docs/configuration.md не фиксирует token trust policy: %q", statement)
+			t.Error("docs/configuration.md is missing a required token trust policy statement")
 		}
 	}
 }
@@ -155,10 +155,11 @@ func TestWatchPolicyDocumentationParity(t *testing.T) {
 		filepath.Join(root, "docs", "configuration.md"),
 	}
 	want := []string{
-		"ограниченное окно ретроспективного просмотра до согласованного финализированного блока",
+		"ограниченное число предыдущих блоков до согласованного финализированного блока",
 		"Локальное состояние обязательно для восстановления после сбоя",
-		"Повреждение state, несовпадение сохранённой идентичности сети или конфигурации и невозможность получить эксклюзивную блокировку являются fail-closed ошибками запуска",
-		"Checkpoint продвигается только после durable `Ack` соответствующих candidates",
+		"Повреждение состояния, несовпадение сохранённого идентификатора сети или конфигурации",
+		"невозможность получить исключительную блокировку приводят к ошибке запуска",
+		"Контрольная точка продвигается только после надёжной записи `Ack` для соответствующих кандидатов",
 	}
 
 	for _, path := range paths {
@@ -169,7 +170,7 @@ func TestWatchPolicyDocumentationParity(t *testing.T) {
 			}
 			for _, statement := range want {
 				if !strings.Contains(string(contents), statement) {
-					t.Errorf("%s не фиксирует policy: %q", path, statement)
+					t.Errorf("%s is missing a required policy statement", path)
 				}
 			}
 		})

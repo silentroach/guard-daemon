@@ -15,7 +15,7 @@ export GOMAXPROCS="${fuzz_parallelism}"
 for specification in "${targets[@]}"; do
   package=${specification%%:*}
   target=${specification#*:}
-  printf 'Ограниченный фаззинг %s в %s\n' "${target}" "${package}"
+  printf 'Bounded fuzzing of %s in %s\n' "${target}" "${package}"
   go test -mod=readonly "${package}" \
     -run '^$' \
     -fuzz "^${target}$" \

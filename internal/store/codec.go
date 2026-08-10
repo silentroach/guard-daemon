@@ -17,7 +17,7 @@ const (
 	maxSymbolBytes = 64
 )
 
-var errInvalidRecord = errors.New("некорректная запись хранилища")
+var errInvalidRecord = errors.New("invalid store record")
 
 type candidateRecord struct {
 	Status    CandidateStatus

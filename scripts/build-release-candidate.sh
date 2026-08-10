@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 if [[ -n "${BASH_ENV:-}" || -n "${ENV:-}" || -n "$(builtin declare -F)" ]]; then
-  builtin printf 'Ошибка сборки кандидата: shell должен быть запущен через clean environment.\n' >&2
+  builtin printf 'Release candidate build error: the shell must start in a clean environment.\n' >&2
   builtin exit 1
 fi
 
@@ -45,7 +45,7 @@ readonly NPM_GLOBAL_CONFIG="/var/empty/guard-daemon-npm-globalconfig"
 readonly NPM_USER_CONFIG="/var/empty/guard-daemon-npm-userconfig"
 
 fail() {
-  printf 'Ошибка сборки кандидата: %s\n' "$1" >&2
+  printf 'Release candidate build error: %s\n' "$1" >&2
   exit 1
 }
 
@@ -53,15 +53,15 @@ require_version() {
   local tool="$1"
   local expected="$2"
   local actual="$3"
-  [[ "$actual" == "$expected" ]] || fail "$tool должен иметь версию $expected, получено: $actual"
+  [[ "$actual" == "$expected" ]] || fail "$tool must be version $expected, received: $actual"
 }
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(git -C "$script_dir/.." rev-parse --show-toplevel)"
 git_dir="$(git -C "$repo_root" rev-parse --absolute-git-dir)" || \
-  fail "не удалось определить git-dir"
+  fail "failed to determine git-dir"
 git_common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)" || \
-  fail "не удалось определить git common-dir"
+  fail "failed to determine Git common directory"
 
 require_no_repository_attributes() {
   local directory
@@ -69,7 +69,7 @@ require_no_repository_attributes() {
   for directory in "$git_dir" "$git_common_dir"; do
     attributes_path="$directory/info/attributes"
     if [[ -e "$attributes_path" || -L "$attributes_path" ]]; then
-      fail "локальный Git-файл info/attributes запрещён: $attributes_path"
+      fail "local Git info/attributes file is forbidden: $attributes_path"
     fi
   done
 }
@@ -80,16 +80,16 @@ require_no_hidden_index_flags() {
   local tag
   local path
   index_entries="$(git -C "$repo_root" ls-files -v --full-name)" || \
-    fail "не удалось проверить флаги Git index"
+    fail "failed to check Git index flags"
   while IFS= read -r entry; do
     tag="${entry%% *}"
     path="${entry#? }"
     case "$tag" in
       [a-z])
-        fail "для отслеживаемого пути запрещён Git index flag assume-unchanged: $path"
+        fail "Git index flag assume-unchanged is forbidden for tracked path: $path"
         ;;
       S)
-        fail "для отслеживаемого пути запрещён Git index flag skip-worktree: $path"
+        fail "Git index flag skip-worktree is forbidden for tracked path: $path"
         ;;
     esac
   done <<<"$index_entries"
@@ -99,7 +99,7 @@ require_no_npm_config_files() {
   local config_path
   for config_path in "$NPM_GLOBAL_CONFIG" "$NPM_USER_CONFIG"; do
     [[ ! -e "$config_path" && ! -L "$config_path" ]] || \
-      fail "изолированный npm config path должен отсутствовать: $config_path"
+      fail "isolated npm config path must not exist: $config_path"
   done
 }
 
@@ -112,36 +112,36 @@ contains_directory_path() {
 require_no_repository_attributes
 
 release_commit="${RELEASE_COMMIT:-}"
-[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || fail "RELEASE_COMMIT должен состоять ровно из 40 lowercase hex символов"
+[[ "$release_commit" =~ ^[0-9a-f]{40}$ ]] || fail "RELEASE_COMMIT must contain exactly 40 lowercase hexadecimal characters"
 
 resolved_commit="$(git -C "$repo_root" rev-parse --verify "${release_commit}^{commit}" 2>/dev/null)" || \
-  fail "RELEASE_COMMIT не является существующим локальным commit"
-[[ "$resolved_commit" == "$release_commit" ]] || fail "RELEASE_COMMIT разрешился не в указанный commit"
+  fail "RELEASE_COMMIT is not an existing local commit"
+[[ "$resolved_commit" == "$release_commit" ]] || fail "RELEASE_COMMIT did not resolve to the specified commit"
 [[ "$(git -C "$repo_root" cat-file -t "$release_commit")" == "commit" ]] || \
-  fail "RELEASE_COMMIT не указывает на commit object"
+  fail "RELEASE_COMMIT does not refer to a commit object"
 head_commit="$(git -C "$repo_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" || \
-  fail "HEAD не указывает на commit"
-[[ "$head_commit" == "$release_commit" ]] || fail "HEAD должен совпадать с RELEASE_COMMIT"
+  fail "HEAD does not refer to a commit"
+[[ "$head_commit" == "$release_commit" ]] || fail "HEAD must match RELEASE_COMMIT"
 require_no_hidden_index_flags
 worktree_status="$(git -C "$repo_root" status --porcelain=v1 --untracked-files=all)" || \
-  fail "не удалось проверить чистоту checkout"
+  fail "failed to check whether the checkout is clean"
 [[ -z "$worktree_status" ]] || \
-  fail "для сборки требуется clean checkout без tracked и untracked изменений"
+  fail "the build requires a clean checkout without tracked or untracked changes"
 release_tree="$(git -C "$repo_root" show -s --format=%T "$release_commit")"
-[[ "$release_tree" =~ ^[0-9a-f]{40}$ ]] || fail "release tree имеет неканонический идентификатор"
+[[ "$release_tree" =~ ^[0-9a-f]{40}$ ]] || fail "release tree has a noncanonical identifier"
 
-go_binary="$(command -v go)" || fail "go не найден"
-node_binary="$(command -v node)" || fail "node не найден"
-npm_binary="$(command -v npm)" || fail "npm не найден"
-python_binary="$(command -v python3)" || fail "python3 не найден"
-command -v tar >/dev/null 2>&1 || fail "tar не найден"
-command -v cmp >/dev/null 2>&1 || fail "cmp не найден"
+go_binary="$(command -v go)" || fail "go not found"
+node_binary="$(command -v node)" || fail "node not found"
+npm_binary="$(command -v npm)" || fail "npm not found"
+python_binary="$(command -v python3)" || fail "python3 not found"
+command -v tar >/dev/null 2>&1 || fail "tar not found"
+command -v cmp >/dev/null 2>&1 || fail "cmp not found"
 
 require_no_npm_config_files
 [[ -f "$ENV_BINARY" && ! -L "$ENV_BINARY" && -x "$ENV_BINARY" ]] || \
-  fail "требуется обычный executable $ENV_BINARY"
+  fail "regular executable $ENV_BINARY is required"
 [[ -f "$STRINGS_BINARY" && -x "$STRINGS_BINARY" ]] || \
-  fail "требуется executable $STRINGS_BINARY"
+  fail "executable $STRINGS_BINARY is required"
 go_version_output="$(
   "$ENV_BINARY" -i LC_ALL=C PATH="$PATH" TZ=UTC \
     GOENV=off GOEXPERIMENT='' GOFIPS140=off GOFLAGS='' GOTOOLCHAIN=local \
@@ -170,14 +170,14 @@ else
   output_root="$repo_root/$output_setting"
 fi
 mkdir -p -- "$output_root"
-[[ ! -L "$output_root" && -d "$output_root" ]] || fail "release output root должен быть обычным каталогом"
+[[ ! -L "$output_root" && -d "$output_root" ]] || fail "release output root must be a regular directory"
 
 target="$output_root/$release_commit"
-[[ ! -e "$target" && ! -L "$target" ]] || fail "каталог кандидата уже существует: $target"
+[[ ! -e "$target" && ! -L "$target" ]] || fail "candidate directory already exists: $target"
 
 lock="$output_root/.${release_commit}.lock"
 if ! mkdir -- "$lock" 2>/dev/null; then
-  fail "другая сборка этого commit уже выполняется или оставила lock"
+  fail "another build of this commit is running or left a lock"
 fi
 
 snapshot=""
@@ -201,7 +201,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
-[[ ! -e "$target" && ! -L "$target" ]] || fail "каталог кандидата появился после получения lock"
+[[ ! -e "$target" && ! -L "$target" ]] || fail "candidate directory appeared after the lock was acquired"
 candidate_tmp="$(mktemp -d "$output_root/.${release_commit}.tmp.XXXXXX")"
 snapshot="$(mktemp -d "${TMPDIR:-/tmp}/guard-daemon-release.XXXXXX")"
 
@@ -216,7 +216,7 @@ if ! git -C "$repo_root" -c core.attributesFile=/dev/null -c tar.umask=0002 arch
   --format=tar \
   --prefix="guard-daemon-${release_commit}/" \
   "$release_commit" | cmp - "$source_archive"; then
-  fail "source archive не совпал с повторным каноническим git archive"
+  fail "source archive did not match a repeated canonical git archive"
 fi
 require_no_repository_attributes
 tar -xf "$source_archive" -C "$snapshot" --strip-components=1
@@ -231,17 +231,17 @@ for source_path in \
   scripts/build-release-candidate.sh \
   scripts/release_metadata.py; do
   [[ -f "$snapshot/$source_path" && ! -L "$snapshot/$source_path" ]] || \
-    fail "snapshot не содержит обязательный обычный файл: $source_path"
+    fail "snapshot does not contain the required regular file: $source_path"
 done
 cmp "$repo_root/scripts/build-release-candidate.sh" \
   "$snapshot/scripts/build-release-candidate.sh" || \
-  fail "выполняемый builder не совпадает с release commit"
+  fail "executed builder does not match the release commit"
 
 npm_cache="$snapshot/.release-cache/npm"
 go_build_cache="$snapshot/.release-cache/go-build"
 go_module_cache_path=/var/tmp/guard-daemon-release-go-mod-v1
 if ! mkdir -m 0700 -- "$go_module_cache_path" 2>/dev/null; then
-  fail "изолированный Go module cache занят или оставлен предыдущей сборкой: $go_module_cache_path"
+  fail "isolated Go module cache is in use or was left by a previous build: $go_module_cache_path"
 fi
 go_module_cache="$go_module_cache_path"
 isolated_home="$snapshot/.release-home"
@@ -295,7 +295,7 @@ go_environment=(
 )
 go_root="$("${go_environment[@]}" "$go_binary" env GOROOT)"
 [[ "$go_root" == /* && -d "$go_root" && ! -L "$go_root" ]] || \
-  fail "GOROOT должен быть обычным абсолютным каталогом"
+  fail "GOROOT must be a regular absolute directory"
 (
   cd "$snapshot"
   "${go_environment[@]}" "$go_binary" mod download
@@ -317,7 +317,7 @@ chmod 0755 "$candidate_tmp/guard-daemon-linux-amd64"
 
 binary_strings="$candidate_tmp/.binary-strings"
 if ! "$STRINGS_BINARY" "$candidate_tmp/guard-daemon-linux-amd64" >"$binary_strings"; then
-  fail "не удалось проверить строки исполняемого файла"
+  fail "failed to inspect executable strings"
 fi
 forbidden_directories=(
   "${repo_root%/}"
@@ -328,13 +328,13 @@ forbidden_directories=(
 while IFS= read -r binary_string; do
   for forbidden_directory in "${forbidden_directories[@]}"; do
     [[ "$forbidden_directory" =~ ^/[^/]+/.+ ]] || \
-      fail "build/toolchain directory path слишком короткий: $forbidden_directory"
+      fail "build/toolchain directory path is too short: $forbidden_directory"
     if contains_directory_path "$binary_string" "$forbidden_directory"; then
-      fail "исполняемый файл содержит локальный build/toolchain path: $forbidden_directory"
+      fail "executable contains a local build/toolchain path: $forbidden_directory"
     fi
   done
   [[ "$binary_string" != *"/nix/store/"* ]] || \
-    fail "исполняемый файл содержит локальный build/toolchain path: /nix/store/"
+    fail "executable contains a local build/toolchain path: /nix/store/"
 done <"$binary_strings"
 rm -- "$binary_strings"
 
@@ -389,14 +389,14 @@ run_metadata checksums \
 run_metadata verify --directory "$candidate_tmp"
 
 candidate_identity="$(directory_identity "$candidate_tmp")" || \
-  fail "не удалось зафиксировать identity staging-каталога кандидата"
-[[ ! -e "$target" && ! -L "$target" ]] || fail "каталог кандидата появился до публикации результата"
+  fail "failed to record the candidate staging directory identity"
+[[ ! -e "$target" && ! -L "$target" ]] || fail "candidate directory appeared before publication"
 if ! mv -- "$candidate_tmp" "$target"; then
-  fail "не удалось опубликовать каталог кандидата"
+  fail "failed to publish the candidate directory"
 fi
 published_identity="$(directory_identity "$target")" || \
-  fail "опубликованный путь кандидата не является обычным каталогом"
+  fail "published candidate path is not a regular directory"
 [[ "$published_identity" == "$candidate_identity" ]] || \
-  fail "опубликованный путь не совпадает со staging-каталогом кандидата"
+  fail "published path does not match the candidate staging directory"
 candidate_tmp=""
 printf '%s\n' "$target"

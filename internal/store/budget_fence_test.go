@@ -21,7 +21,7 @@ func TestBudgetFenceIsHostWidePerSponsor(t *testing.T) {
 		if second != nil {
 			_ = second.Release()
 		}
-		t.Fatalf("повторный budget fence = (%v, %v)", second, err)
+		t.Fatalf("duplicate budget fence = (%v, %v)", second, err)
 	}
 	other, err := AcquireBudgetFence(common.HexToAddress("0x00000000000000000000000000000000000000a2"))
 	if err != nil {
@@ -43,10 +43,10 @@ func TestCanonicalBudgetPathDependsOnlyOnSponsor(t *testing.T) {
 		t.Fatalf("canonical paths = %q, %q, error=%v", first, second, err)
 	}
 	if !strings.HasPrefix(first, "/var/lib/guard-daemon/") {
-		t.Fatalf("canonical budget path is not durable: %q", first)
+		t.Fatalf("canonical budget path is not stable: %q", first)
 	}
 	other, err := CanonicalBudgetPath(common.HexToAddress("0x00000000000000000000000000000000000000b2"))
 	if err != nil || other == first {
-		t.Fatalf("other sponsor path = %q, error=%v", other, err)
+		t.Fatalf("different sponsor path = %q, error=%v", other, err)
 	}
 }

@@ -23,7 +23,7 @@ type ERC20Codec struct {
 func NewERC20Codec() (*ERC20Codec, error) {
 	contractABI, err := abi.JSON(strings.NewReader(erc20ABI))
 	if err != nil {
-		return nil, fmt.Errorf("parse ERC-20 ABI: %w", err)
+		return nil, fmt.Errorf("failed to parse ERC-20 ABI: %w", err)
 	}
 	return &ERC20Codec{contractABI: contractABI}, nil
 }

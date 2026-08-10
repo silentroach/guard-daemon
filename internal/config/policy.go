@@ -31,7 +31,7 @@ const (
 	defaultReadTimeout                  = "10s"
 )
 
-// ArtifactTrust закрепляет происхождение и идентичность contract artifact.
+// ArtifactTrust фиксирует источник и идентификатор артефакта контракта.
 type ArtifactTrust struct {
 	Path            string
 	SHA256          string
@@ -40,12 +40,13 @@ type ArtifactTrust struct {
 	CompilerVersion string
 }
 
-// Format исключает локальный путь из случайного форматирования.
+// Format исключает локальный путь из форматированного вывода.
 func (ArtifactTrust) Format(state fmt.State, _ rune) {
-	_, _ = io.WriteString(state, "ArtifactTrust{закреплён}")
+	_, _ = io.WriteString(state, "ArtifactTrust{pinned}")
 }
 
-// RuntimePolicy содержит проверенные global ограничения расходов и abuse.
+// RuntimePolicy содержит проверенные глобальные ограничения расходов и меры
+// против злоупотреблений.
 type RuntimePolicy struct {
 	MaxTransactionCostWei        *big.Int
 	HourlyBudgetWei              *big.Int
@@ -61,7 +62,7 @@ type RuntimePolicy struct {
 	AlertCooldown                time.Duration
 }
 
-// Clone возвращает независимую копию policy со своими big.Int.
+// Clone возвращает независимую копию политики с отдельными копиями значений big.Int.
 func (policy RuntimePolicy) Clone() RuntimePolicy {
 	result := policy
 	result.MaxTransactionCostWei = cloneBigInt(policy.MaxTransactionCostWei)
@@ -78,7 +79,7 @@ func loadArtifactTrust(lookup func(string) (string, bool)) (ArtifactTrust, error
 		path = defaultArtifactPath
 	}
 	if path == "" {
-		return ArtifactTrust{}, fmt.Errorf("переменная RESCUER_ARTIFACT не должна быть пустой")
+		return ArtifactTrust{}, fmt.Errorf("RESCUER_ARTIFACT must not be empty")
 	}
 	return ArtifactTrust{
 		Path:            path,
@@ -116,13 +117,13 @@ func loadRuntimePolicy(lookup func(string) (string, bool)) (RuntimePolicy, error
 		return RuntimePolicy{}, err
 	}
 	if maxCost.Cmp(hourly) > 0 {
-		return RuntimePolicy{}, fmt.Errorf("переменная HOURLY_BUDGET_WEI не должна быть меньше MAX_TRANSACTION_COST_WEI")
+		return RuntimePolicy{}, fmt.Errorf("HOURLY_BUDGET_WEI must not be less than MAX_TRANSACTION_COST_WEI")
 	}
 	if hourly.Cmp(daily) > 0 {
-		return RuntimePolicy{}, fmt.Errorf("переменная DAILY_BUDGET_WEI не должна быть меньше HOURLY_BUDGET_WEI")
+		return RuntimePolicy{}, fmt.Errorf("DAILY_BUDGET_WEI must not be less than HOURLY_BUDGET_WEI")
 	}
 	if daily.Cmp(cumulative) > 0 {
-		return RuntimePolicy{}, fmt.Errorf("переменная CUMULATIVE_BUDGET_WEI не должна быть меньше DAILY_BUDGET_WEI")
+		return RuntimePolicy{}, fmt.Errorf("CUMULATIVE_BUDGET_WEI must not be less than DAILY_BUDGET_WEI")
 	}
 	minimumBalance, err := loadPositiveDecimal(lookup, "SPONSOR_MIN_BALANCE_WEI", defaultSponsorMinimumBalanceWei)
 	if err != nil {
@@ -197,9 +198,9 @@ func loadDecimal(lookup func(string) (string, bool), name, defaultValue string, 
 
 func decimalError(name string, allowZero bool) error {
 	if allowZero {
-		return fmt.Errorf("переменная %s должна быть неотрицательным целым десятичным числом uint256", name)
+		return fmt.Errorf("environment variable %s must be a non-negative decimal uint256 integer", name)
 	}
-	return fmt.Errorf("переменная %s должна быть положительным целым десятичным числом uint256", name)
+	return fmt.Errorf("environment variable %s must be a positive decimal uint256 integer", name)
 }
 
 func loadPositiveUint32(lookup func(string) (string, bool), name, defaultValue string) (uint32, error) {
@@ -208,11 +209,11 @@ func loadPositiveUint32(lookup func(string) (string, bool), name, defaultValue s
 		value = defaultValue
 	}
 	if !decimalDigits(value) {
-		return 0, fmt.Errorf("переменная %s должна быть положительным целым десятичным числом", name)
+		return 0, fmt.Errorf("environment variable %s must be a positive decimal integer", name)
 	}
 	result, err := strconv.ParseUint(value, 10, 32)
 	if err != nil || result == 0 {
-		return 0, fmt.Errorf("переменная %s должна быть положительным целым десятичным числом", name)
+		return 0, fmt.Errorf("environment variable %s must be a positive decimal integer", name)
 	}
 	return uint32(result), nil
 }
@@ -223,11 +224,11 @@ func loadPositiveUint64(lookup func(string) (string, bool), name, defaultValue s
 		value = defaultValue
 	}
 	if !decimalDigits(value) {
-		return 0, fmt.Errorf("переменная %s должна быть положительным целым десятичным числом", name)
+		return 0, fmt.Errorf("environment variable %s must be a positive decimal integer", name)
 	}
 	result, err := strconv.ParseUint(value, 10, 64)
 	if err != nil || result == 0 {
-		return 0, fmt.Errorf("переменная %s должна быть положительным целым десятичным числом", name)
+		return 0, fmt.Errorf("environment variable %s must be a positive decimal integer", name)
 	}
 	return result, nil
 }
@@ -238,11 +239,11 @@ func loadPositiveDuration(lookup func(string) (string, bool), name, defaultValue
 		value = defaultValue
 	}
 	if value == "" || strings.TrimSpace(value) != value || value[0] == '+' || value[0] == '-' {
-		return 0, fmt.Errorf("переменная %s должна задавать положительную длительность", name)
+		return 0, fmt.Errorf("environment variable %s must specify a positive duration", name)
 	}
 	duration, err := time.ParseDuration(value)
 	if err != nil || duration <= 0 {
-		return 0, fmt.Errorf("переменная %s должна задавать положительную длительность", name)
+		return 0, fmt.Errorf("environment variable %s must specify a positive duration", name)
 	}
 	return duration, nil
 }
@@ -258,7 +259,7 @@ func loadStrictBoolean(lookup func(string) (string, bool), name, defaultValue st
 	case "false":
 		return false, nil
 	default:
-		return false, fmt.Errorf("переменная %s должна быть равна true или false", name)
+		return false, fmt.Errorf("environment variable %s must be true or false", name)
 	}
 }
 

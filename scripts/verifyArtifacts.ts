@@ -12,7 +12,7 @@ export const verifyCanonicalArtifact = async (
   try {
     const [generatedPath] = compileContracts(temporaryDirectory);
     if (!generatedPath) {
-      throw new Error("Компилятор не создал canonical artifact");
+      throw new Error("Compiler did not create the canonical artifact");
     }
     const [generated, tracked] = await Promise.all([
       readFile(generatedPath),
@@ -20,7 +20,7 @@ export const verifyCanonicalArtifact = async (
     ]);
     if (!generated.equals(tracked)) {
       throw new Error(
-        "Canonical artifact не совпадает с pinned source/compiler/settings",
+        "Canonical artifact does not match the pinned source, compiler, and settings",
       );
     }
   } finally {
@@ -31,5 +31,7 @@ export const verifyCanonicalArtifact = async (
 const scriptPath = process.argv[1];
 if (scriptPath && import.meta.url === pathToFileURL(resolve(scriptPath)).href) {
   await verifyCanonicalArtifact();
-  console.log("Canonical artifact воспроизводим и соответствует source tree.");
+  console.log(
+    "Canonical artifact is reproducible and matches the source tree.",
+  );
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
-var ErrInvalidDeadlineWrapper = errors.New("некорректная RPC deadline-обёртка")
+var ErrInvalidDeadlineWrapper = errors.New("invalid RPC deadline wrapper")
 
 type DeadlineReader struct {
 	reader  Reader

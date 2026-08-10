@@ -28,22 +28,22 @@ type Runtime struct {
 	LiveSecrets    LiveSecrets
 }
 
-// Format исключает секреты, RPC URL и локальные пути из случайного форматирования.
+// Format исключает секреты, RPC URL и локальные пути из форматированного вывода.
 func (runtime Runtime) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "Runtime{Mode:"+runtime.Mode.String()+" Networks:"+strconv.Itoa(len(runtime.Networks))+"}")
 }
 
-// Load загружает необязательный .env, сохраняя приоритет окружения процесса.
+// Load загружает необязательный файл .env, сохраняя приоритет окружения процесса.
 func Load() (Runtime, error) {
 	return loadRuntime(nil, false)
 }
 
-// LoadWithSecrets загружает public config, принимая live-ключи только из
-// уже защищённого источника credentials.
+// LoadWithSecrets загружает открытую часть конфигурации, а ключи рабочего режима
+// принимает только из уже защищённого источника учётных данных.
 func LoadWithSecrets(secrets map[string]string) (Runtime, error) {
 	for _, name := range []string{"SOURCE_PRIVATE_KEY", "SPONSOR_PRIVATE_KEY"} {
 		if _, present := os.LookupEnv(name); present {
-			return Runtime{}, fmt.Errorf("переменная окружения %s запрещена; используйте systemd credentials", name)
+			return Runtime{}, fmt.Errorf("environment variable %s is forbidden; use the systemd credentials mechanism", name)
 		}
 	}
 	runtime, err := loadRuntime(secrets, true)
@@ -53,7 +53,7 @@ func LoadWithSecrets(secrets map[string]string) (Runtime, error) {
 	if runtime.Mode.IsDryRun() || runtime.Policy.EmergencyStop {
 		for _, name := range []string{"SOURCE_PRIVATE_KEY", "SPONSOR_PRIVATE_KEY"} {
 			if secrets[name] != "" {
-				return Runtime{}, fmt.Errorf("credential %s должен быть пуст в режиме без подписания", name)
+				return Runtime{}, fmt.Errorf("credential %s must be empty when signing is disabled", name)
 			}
 		}
 	}
@@ -93,10 +93,11 @@ func LoadFrom(lookup func(string) (string, bool)) (Runtime, error) {
 	return loadFrom(lookup, nil)
 }
 
-// LoadFromMap разбирает map и fail-closed проверяет зарезервированные имена.
+// LoadFromMap разбирает конфигурацию из map и отклоняет неподдерживаемые имена
+// с зарезервированными префиксами.
 func LoadFromMap(values map[string]string) (Runtime, error) {
 	if values == nil {
-		return Runtime{}, fmt.Errorf("набор переменных окружения не задан")
+		return Runtime{}, fmt.Errorf("environment variables are not provided")
 	}
 	names := make([]string, 0, len(values))
 	for name := range values {
@@ -110,7 +111,7 @@ func LoadFromMap(values map[string]string) (Runtime, error) {
 
 func loadFrom(lookup func(string) (string, bool), names []string) (Runtime, error) {
 	if lookup == nil {
-		return Runtime{}, fmt.Errorf("функция чтения окружения не задана")
+		return Runtime{}, fmt.Errorf("environment lookup function is not provided")
 	}
 	if err := rejectUnsupportedFields(lookup); err != nil {
 		return Runtime{}, err
@@ -185,7 +186,7 @@ func readPublicDotEnv(path string) (map[string]string, []string, error) {
 		if os.IsNotExist(err) {
 			return map[string]string{}, nil, nil
 		}
-		return nil, nil, fmt.Errorf("не удалось безопасно прочитать файл .env")
+		return nil, nil, fmt.Errorf("failed to read .env file safely")
 	}
 	defer file.Close()
 
@@ -196,7 +197,7 @@ func readPublicDotEnv(path string) (map[string]string, []string, error) {
 		line := scanner.Text()
 		name, present, valid := strictDotEnvField(line)
 		if !valid {
-			return nil, nil, fmt.Errorf("файл .env содержит некорректные данные")
+			return nil, nil, fmt.Errorf(".env file contains invalid data")
 		}
 		if !present {
 			public.WriteString(line)
@@ -213,11 +214,11 @@ func readPublicDotEnv(path string) (map[string]string, []string, error) {
 		public.WriteByte('\n')
 	}
 	if scanner.Err() != nil {
-		return nil, nil, fmt.Errorf("не удалось безопасно прочитать файл .env")
+		return nil, nil, fmt.Errorf("failed to read .env file safely")
 	}
 	values, err := godotenv.Unmarshal(public.String())
 	if err != nil {
-		return nil, nil, fmt.Errorf("файл .env содержит некорректные данные")
+		return nil, nil, fmt.Errorf(".env file contains invalid data")
 	}
 	return values, names, nil
 }

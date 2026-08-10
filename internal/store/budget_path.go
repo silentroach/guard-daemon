@@ -10,8 +10,8 @@ import (
 
 const budgetLedgerRoot = "/var/lib/guard-daemon"
 
-// CanonicalBudgetPath binds one sponsor to one host-wide ledger independently
-// of operator-selected state directories.
+// CanonicalBudgetPath возвращает единый для хоста путь к реестру спонсора независимо
+// от каталогов состояния, выбранных оператором.
 func CanonicalBudgetPath(sponsor common.Address) (string, error) {
 	if sponsor == (common.Address{}) {
 		return "", errInvalidInput

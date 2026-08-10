@@ -30,7 +30,7 @@ func TestEstimateEIP7702GasUsesExactCallShapeAndContext(t *testing.T) {
 
 	estimate, err := EstimateEIP7702Gas(ctx, estimator, request)
 	if err != nil || estimate != 180_000 {
-		t.Fatalf("EstimateEIP7702Gas() = %d, %v", estimate, err)
+		t.Fatalf("EstimateEIP7702Gas() returned %d, %v", estimate, err)
 	}
 	want := ethereum.CallMsg{
 		From: sponsor, To: &source, Gas: 220_000, GasTipCap: big.NewInt(10), GasFeeCap: big.NewInt(30),
@@ -46,7 +46,7 @@ func TestEstimateEIP7702GasUsesExactCallShapeAndContext(t *testing.T) {
 	request.GasTipCap.SetInt64(99)
 	request.AuthorizationList[0].Nonce = 99
 	if !reflect.DeepEqual(estimator.call, want) {
-		t.Fatalf("captured CallMsg changed with request mutation: %#v", estimator.call)
+		t.Fatalf("captured CallMsg changed after request mutation: %#v", estimator.call)
 	}
 }
 
@@ -55,7 +55,7 @@ func TestEstimateEIP7702GasPropagatesEstimateFailure(t *testing.T) {
 	estimator := &capturingGasEstimator{err: cause}
 	_, err := EstimateEIP7702Gas(context.Background(), estimator, validSimulationRequestForTest())
 	if !errors.Is(err, ErrEstimateGasFailed) || !errors.Is(err, cause) || estimator.calls != 1 {
-		t.Fatalf("EstimateEIP7702Gas() error = %v, calls = %d", err, estimator.calls)
+		t.Fatalf("EstimateEIP7702Gas() returned error %v, calls = %d", err, estimator.calls)
 	}
 }
 
@@ -65,7 +65,7 @@ func TestEstimateEIP7702GasRejectsZeroAndExcessiveEstimate(t *testing.T) {
 			estimator := &capturingGasEstimator{estimate: estimate}
 			_, err := EstimateEIP7702Gas(context.Background(), estimator, validSimulationRequestForTest())
 			if !errors.Is(err, ErrInvalidGasEstimate) || estimator.calls != 1 {
-				t.Fatalf("EstimateEIP7702Gas() error = %v, calls = %d", err, estimator.calls)
+				t.Fatalf("EstimateEIP7702Gas() returned error %v, calls = %d", err, estimator.calls)
 			}
 		})
 	}
@@ -77,7 +77,7 @@ func TestEstimateEIP7702GasRejectsMalformedRequestWithoutRPC(t *testing.T) {
 	request.AuthorizationList = nil
 	_, err := EstimateEIP7702Gas(context.Background(), estimator, request)
 	if !errors.Is(err, ErrInvalidSimulationRequest) || estimator.calls != 0 {
-		t.Fatalf("EstimateEIP7702Gas() error = %v, calls = %d", err, estimator.calls)
+		t.Fatalf("EstimateEIP7702Gas() returned error %v, calls = %d", err, estimator.calls)
 	}
 }
 

@@ -145,7 +145,7 @@ func TestWatcherReadinessClearsRPCDegradedOnlyThroughCallback(t *testing.T) {
 	defer process.shutdown(nil)
 	chainID := network.ChainID
 	if !process.health.Snapshot().Chains[chainID].Conditions.RPCDegraded {
-		t.Fatal("initial health не начался с degraded RPC")
+		t.Fatal("initial health did not start with degraded RPC state")
 	}
 	if _, err := process.alerts.Raise(chainID, observability.AlertRPCDegraded); err != nil {
 		t.Fatal(err)
@@ -155,20 +155,20 @@ func TestWatcherReadinessClearsRPCDegradedOnlyThroughCallback(t *testing.T) {
 		t.Fatalf("runGeneration() error = %v", err)
 	}
 	if watcherDependencies.Ready == nil {
-		t.Fatal("watcher dependencies не содержат readiness callback")
+		t.Fatal("watcher dependencies do not include a readiness callback")
 	}
 	if !process.health.Snapshot().Chains[chainID].Conditions.RPCDegraded {
-		t.Fatal("runGeneration очистил degraded RPC до initial watcher scan")
+		t.Fatal("runGeneration cleared degraded RPC state before the initial watcher scan")
 	}
 	if err := watcherDependencies.Ready(); err != nil {
 		t.Fatalf("Ready() error = %v", err)
 	}
 	if process.health.Snapshot().Chains[chainID].Conditions.RPCDegraded {
-		t.Fatal("Ready() не очистил degraded RPC")
+		t.Fatal("Ready() did not clear degraded RPC state")
 	}
 	for _, alert := range process.alerts.Snapshot() {
 		if alert.ChainID == chainID && alert.Code == observability.AlertRPCDegraded && alert.Active {
-			t.Fatal("Ready() оставил активный degraded RPC alert")
+			t.Fatal("Ready() left an active degraded RPC alert")
 		}
 	}
 }
@@ -299,7 +299,7 @@ func TestGenerationUsesDeadlineQuorumAndClosesRuntimeState(t *testing.T) {
 		observer:     observability.Discard{},
 		dial: func(ctx context.Context, _ string, _ uint64) (generationClient, error) {
 			if _, ok := ctx.Deadline(); !ok {
-				t.Error("generation dial не получил deadline")
+				t.Error("generation dial has no deadline")
 			}
 			return client, nil
 		},
@@ -314,7 +314,7 @@ func TestGenerationUsesDeadlineQuorumAndClosesRuntimeState(t *testing.T) {
 		},
 		newSession: func(_ context.Context, _ *networkProcess, client generationClient, got runtimeQuorum) (candidateSession, error) {
 			if got != quorum {
-				t.Fatal("rescue session не получил runtime quorum поколения")
+				t.Fatal("rescue session did not receive the generation runtime quorum")
 			}
 			return &idleHandler{generation: client.Generation()}, nil
 		},
@@ -395,7 +395,7 @@ func TestDaemonSurfacesGracefulLeaseReleaseFailure(t *testing.T) {
 	testClock := newSupervisorClock()
 	started := make(chan struct{}, 1)
 	handoff := newLeaseLifecycleHandoff(network.ChainID, testClock)
-	handoff.releaseError = errors.New("тестовая ошибка release")
+	handoff.releaseError = errors.New("test release error")
 	dependencies := daemonDependencies{
 		serviceClock: testClock,
 		observer:     observability.Discard{},
@@ -525,7 +525,7 @@ func TestLeaseMaintenanceLossCancelsWorkersAndBlocksSigning(t *testing.T) {
 	}
 	receiveWithin(t, stopped)
 	if attempts == nil || attempts.AuthorizationSignatures() != 0 || attempts.TransactionSignatures() != 0 || attempts.Broadcasts() != 0 {
-		t.Fatal("lease loss допустил signing или broadcast")
+		t.Fatal("lease loss allowed signing or broadcast")
 	}
 	_, err = process.networks[0].coordinator.NewSession(
 		context.Background(),

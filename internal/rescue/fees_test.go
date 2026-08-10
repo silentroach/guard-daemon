@@ -27,14 +27,14 @@ func TestBuildFeeQuoteScenarios(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			quote, err := BuildFeeQuote(policy, test.asset, big.NewInt(test.base), big.NewInt(test.suggested))
 			if err != nil {
-				t.Fatalf("BuildFeeQuote() error = %v", err)
+				t.Fatalf("BuildFeeQuote() returned an error: %v", err)
 			}
 			if quote.TipCap.Cmp(big.NewInt(test.wantTip)) != 0 || quote.FeeCap.Cmp(big.NewInt(test.wantFee)) != 0 {
 				t.Fatalf("BuildFeeQuote() fees = (%s, %s), want (%d, %d)", quote.TipCap, quote.FeeCap, test.wantTip, test.wantFee)
 			}
 			wantMaximum := new(uint256.Int).SetUint64(uint64(test.wantFee)*test.wantGas + 7)
 			if quote.Network != policy.Network || quote.Asset != test.asset || quote.GasLimit != test.wantGas || quote.MaximumCost.Cmp(wantMaximum) != 0 {
-				t.Fatalf("BuildFeeQuote() metadata = %#v, want network=%d asset=%d gas=%d maximum=%s", quote, policy.Network, test.asset, test.wantGas, wantMaximum)
+				t.Fatalf("BuildFeeQuote() metadata = %#v, want network=%d, asset=%d, gas=%d, maximum=%s", quote, policy.Network, test.asset, test.wantGas, wantMaximum)
 			}
 		})
 	}
@@ -44,7 +44,7 @@ func TestBuildFeeQuoteRejectsUnderpricedCap(t *testing.T) {
 	policy := testFeePolicy()
 	_, err := BuildFeeQuote(policy, FeeAssetToken, big.NewInt(590), big.NewInt(620))
 	if !errors.Is(err, ErrFeeUnderpriced) {
-		t.Fatalf("BuildFeeQuote() error = %v, want ErrFeeUnderpriced", err)
+		t.Fatalf("BuildFeeQuote() returned error %v, want ErrFeeUnderpriced", err)
 	}
 }
 
@@ -69,7 +69,7 @@ func TestBuildFeeQuoteRejectsMalformedInputs(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := BuildFeeQuote(test.policy, test.asset, test.base, test.suggested)
 			if !errors.Is(err, test.want) {
-				t.Fatalf("BuildFeeQuote() error = %v, want %v", err, test.want)
+				t.Fatalf("BuildFeeQuote() returned error %v, want %v", err, test.want)
 			}
 		})
 	}
@@ -85,7 +85,7 @@ func TestBuildFeeQuoteRejectsMaximumCostOverflow(t *testing.T) {
 
 	_, err := BuildFeeQuote(policy, FeeAssetNative, base, suggested)
 	if !errors.Is(err, ErrFeeCostOverflow) {
-		t.Fatalf("BuildFeeQuote() error = %v, want ErrFeeCostOverflow", err)
+		t.Fatalf("BuildFeeQuote() returned error %v, want ErrFeeCostOverflow", err)
 	}
 }
 
@@ -96,26 +96,26 @@ func TestEvaluateMinimumValue(t *testing.T) {
 
 	native, err := EvaluateMinimumValue(policy, FeeAssetNative, big.NewInt(125), minimum, maximum)
 	if err != nil || !native.Allowed || !native.Trusted || native.Required.Uint64() != 125 {
-		t.Fatalf("EvaluateMinimumValue(native) = %#v, %v", native, err)
+		t.Fatalf("EvaluateMinimumValue(native asset) returned %#v, %v", native, err)
 	}
 	native, err = EvaluateMinimumValue(policy, FeeAssetNative, big.NewInt(124), minimum, maximum)
 	if err != nil || native.Allowed || !native.Trusted || native.Required.Uint64() != 125 {
-		t.Fatalf("EvaluateMinimumValue(insufficient native) = %#v, %v", native, err)
+		t.Fatalf("EvaluateMinimumValue(insufficient native asset) returned %#v, %v", native, err)
 	}
 
 	unknown, err := EvaluateMinimumValue(policy, FeeAssetUnknownToken, nil, uint256.Int{}, maximum)
 	if err != nil || !unknown.Allowed || unknown.Trusted {
-		t.Fatalf("EvaluateMinimumValue(unknown) = %#v, %v", unknown, err)
+		t.Fatalf("EvaluateMinimumValue(unknown asset) returned %#v, %v", unknown, err)
 	}
 	overCap := *uint256.NewInt(101)
 	unknown, err = EvaluateMinimumValue(policy, FeeAssetUnknownToken, nil, uint256.Int{}, overCap)
 	if err != nil || unknown.Allowed || unknown.Trusted {
-		t.Fatalf("EvaluateMinimumValue(over-cap unknown) = %#v, %v", unknown, err)
+		t.Fatalf("EvaluateMinimumValue(unknown asset over limit) returned %#v, %v", unknown, err)
 	}
 
 	_, err = EvaluateMinimumValue(policy, FeeAssetToken, nil, uint256.Int{}, maximum)
 	if !errors.Is(err, ErrTrustedTokenValueNeeded) {
-		t.Fatalf("EvaluateMinimumValue(known token) error = %v", err)
+		t.Fatalf("EvaluateMinimumValue(known token) returned an error: %v", err)
 	}
 }
 
@@ -125,7 +125,7 @@ func TestEvaluateMinimumValueRejectsOverflow(t *testing.T) {
 	maximum.SetAllOne()
 	_, err := EvaluateMinimumValue(policy, FeeAssetNative, new(big.Int).Set(maximum.ToBig()), *uint256.NewInt(1), maximum)
 	if !errors.Is(err, ErrMinimumValueOverflow) {
-		t.Fatalf("EvaluateMinimumValue() error = %v, want ErrMinimumValueOverflow", err)
+		t.Fatalf("EvaluateMinimumValue() returned error %v, want ErrMinimumValueOverflow", err)
 	}
 }
 

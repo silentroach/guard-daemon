@@ -32,7 +32,7 @@ import (
 func TestDryRunStartupHasNoProductionSigningOrBroadcastGraph(t *testing.T) {
 	production := newProductionDependencies(observability.Discard{}, config.ModeDryRun)
 	if production.newSigners != nil || production.dialSubmission != nil || production.attestNetwork != nil || production.acquireFence != nil {
-		t.Fatal("dry-run production dependencies содержат live capability")
+		t.Fatal("dry-run production dependencies include live capability")
 	}
 
 	runtimeConfig := testRuntime(t, []domain.Network{testNetwork("dry-network", 401)})
@@ -42,12 +42,12 @@ func TestDryRunStartupHasNoProductionSigningOrBroadcastGraph(t *testing.T) {
 		serviceClock: clock.Real{},
 		observer:     observability.Discard{},
 		lstatRestoreMarker: func(string) (os.FileInfo, error) {
-			t.Fatal("dry-run проверяет restore marker")
+			t.Fatal("dry-run checked the restore marker")
 			return nil, nil
 		},
 		dial: func(context.Context, string, uint64) (generationClient, error) {
 			networkCalls.Add(1)
-			return nil, errors.New("неожиданный network access")
+			return nil, errors.New("unexpected network access")
 		},
 		loadManifest: func(config.Runtime, config.Network) (contracts.DeploymentManifest, error) {
 			return contracts.DeploymentManifest{Address: testProcessAddress(4)}, nil
@@ -65,27 +65,27 @@ func TestDryRunStartupHasNoProductionSigningOrBroadcastGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	if networkCalls.Load() != 0 {
-		t.Fatalf("network calls during dry startup = %d, нужно 0", networkCalls.Load())
+		t.Fatalf("network calls during dry startup = %d, want 0", networkCalls.Load())
 	}
 	if len(process.networks) != 1 {
-		t.Fatalf("network process count = %d, нужно 1", len(process.networks))
+		t.Fatalf("network process count = %d, want 1", len(process.networks))
 	}
 	network := process.networks[0]
 	if network.coordinator != nil || network.dryAuthorizer == nil || network.dryTransactioner == nil || network.dryBroadcaster == nil || network.dryAttempts == nil {
-		t.Fatal("dry-run graph содержит coordinator или не содержит fail-closed guards")
+		t.Fatal("dry-run graph includes a coordinator or lacks fail-closed guards")
 	}
 	handoff := network.handoff.(*legacyMemoryHandoff)
 	handoff.mu.Lock()
 	leaseCount := len(handoff.leases)
 	handoff.mu.Unlock()
 	if leaseCount != 0 {
-		t.Fatalf("dry-run startup получил leases: %d", leaseCount)
+		t.Fatalf("dry-run startup acquired leases: %d", leaseCount)
 	}
 	if fenceAcquisitions.Load() != 0 || network.fence != nil {
-		t.Fatalf("dry-run startup получил process fence: acquisitions=%d fence=%v", fenceAcquisitions.Load(), network.fence)
+		t.Fatalf("dry-run startup acquired a process fence: acquisitions=%d fence=%v", fenceAcquisitions.Load(), network.fence)
 	}
 	if network.dryAttempts.AuthorizationSignatures() != 0 || network.dryAttempts.TransactionSignatures() != 0 || network.dryAttempts.Broadcasts() != 0 {
-		t.Fatal("dry-run startup вызвал signing или broadcast guard")
+		t.Fatal("dry-run startup invoked a signing or broadcast guard")
 	}
 }
 
@@ -122,13 +122,13 @@ func TestEmergencyStopBuildsReadOnlyLiveGraphWithoutPrivateSigners(t *testing.T)
 	runtimeConfig.Policy.EmergencyStop = true
 	dependencies := startupDependencies(t)
 	dependencies.lstatRestoreMarker = func(string) (os.FileInfo, error) {
-		t.Fatal("emergency stop проверяет restore marker")
+		t.Fatal("emergency stop checked the restore marker")
 		return nil, nil
 	}
 	var signerCalls atomic.Int32
 	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
 		signerCalls.Add(1)
-		return nil, nil, errors.New("private signer не должен создаваться")
+		return nil, nil, errors.New("private signer must not be constructed")
 	}
 	process, err := newDaemon(context.Background(), runtimeConfig, dependencies)
 	if err != nil {
@@ -147,8 +147,8 @@ func TestRestoreMarkerOfAnyTypeBlocksSignerConstruction(t *testing.T) {
 		name   string
 		create func(string) error
 	}{
-		{name: "обычный файл", create: func(path string) error { return os.WriteFile(path, nil, 0o444) }},
-		{name: "каталог", create: func(path string) error { return os.Mkdir(path, 0o755) }},
+		{name: "regular file", create: func(path string) error { return os.WriteFile(path, nil, 0o444) }},
+		{name: "directory", create: func(path string) error { return os.Mkdir(path, 0o755) }},
 		{name: "dangling symlink", create: func(path string) error { return os.Symlink("missing-target", path) }},
 	}
 	for index, test := range tests {
@@ -161,7 +161,7 @@ func TestRestoreMarkerOfAnyTypeBlocksSignerConstruction(t *testing.T) {
 			dependencies := startupDependencies(t)
 			dependencies.lstatRestoreMarker = func(path string) (os.FileInfo, error) {
 				if path != restoreMarkerPath {
-					t.Fatalf("restore marker path = %q, нужен %q", path, restoreMarkerPath)
+					t.Fatalf("restore marker path = %q, want %q", path, restoreMarkerPath)
 				}
 				return os.Lstat(marker)
 			}
@@ -172,7 +172,7 @@ func TestRestoreMarkerOfAnyTypeBlocksSignerConstruction(t *testing.T) {
 			}
 
 			_, err := newDaemon(context.Background(), runtimeConfig, dependencies)
-			if err == nil || !strings.Contains(startupOperatorMessage(err), "восстановленное состояние") {
+			if err == nil || !strings.Contains(startupOperatorMessage(err), "restored state") {
 				t.Fatalf("restore marker error = %v", err)
 			}
 			if signerCalls.Load() != 0 {
@@ -188,7 +188,7 @@ func TestRestoreMarkerLstatFailureFailsClosed(t *testing.T) {
 	var signerCalls atomic.Int32
 	dependencies.lstatRestoreMarker = func(path string) (os.FileInfo, error) {
 		if path != restoreMarkerPath {
-			t.Fatalf("restore marker path = %q, нужен %q", path, restoreMarkerPath)
+			t.Fatalf("restore marker path = %q, want %q", path, restoreMarkerPath)
 		}
 		return nil, &os.PathError{Op: "lstat", Path: path, Err: os.ErrPermission}
 	}
@@ -198,7 +198,7 @@ func TestRestoreMarkerLstatFailureFailsClosed(t *testing.T) {
 	}
 
 	_, err := newDaemon(context.Background(), runtimeConfig, dependencies)
-	if err == nil || !strings.Contains(startupOperatorMessage(err), "восстановленное состояние") {
+	if err == nil || !strings.Contains(startupOperatorMessage(err), "restored state") {
 		t.Fatalf("lstat failure was not fail-closed: %v", err)
 	}
 	if signerCalls.Load() != 0 {
@@ -242,7 +242,7 @@ func TestLiveStartupAttestsEveryNetworkBeforeConstructingSigners(t *testing.T) {
 	}
 	dependencies.attestNetwork = func(_ context.Context, network config.Network, _ contracts.DeploymentManifest, timeout time.Duration) error {
 		if timeout != runtimeConfig.ReadTimeout {
-			t.Fatalf("attestation timeout = %s, нужен %s", timeout, runtimeConfig.ReadTimeout)
+			t.Fatalf("attestation timeout = %s, want %s", timeout, runtimeConfig.ReadTimeout)
 		}
 		events = append(events, "attest:"+network.Name)
 		return nil
@@ -286,7 +286,7 @@ func TestLiveStartupAttestsEveryNetworkBeforeConstructingSigners(t *testing.T) {
 		"signers",
 	}
 	if !reflect.DeepEqual(events, want) {
-		t.Fatalf("startup order = %v, нужен %v", events, want)
+		t.Fatalf("startup order = %v, want %v", events, want)
 	}
 }
 
@@ -342,7 +342,7 @@ func TestLeaseContentionBlocksSignerConstruction(t *testing.T) {
 	dependencies := startupDependencies(t)
 	handoff := newLeaseLifecycleHandoff(runtimeConfig.Networks[0].ChainID, dependencies.serviceClock)
 	key := store.LeaseKey{Network: runtimeConfig.Networks[0].ChainID, Sponsor: runtimeConfig.SponsorAddress}
-	if _, err := handoff.legacyMemoryHandoff.Acquire(context.Background(), key, "другой-тестовый-процесс", processLeaseTTL); err != nil {
+	if _, err := handoff.legacyMemoryHandoff.Acquire(context.Background(), key, "other-test-process", processLeaseTTL); err != nil {
 		t.Fatal(err)
 	}
 	dependencies.openStore = func(config.Runtime, config.Network, domain.Network) (store.HandoffStore, error) {
@@ -359,7 +359,7 @@ func TestLeaseContentionBlocksSignerConstruction(t *testing.T) {
 		t.Fatalf("contention error = %v", err)
 	}
 	if signerConstructions.Load() != 0 {
-		t.Fatalf("signer constructions = %d, нужен 0", signerConstructions.Load())
+		t.Fatalf("signer constructions = %d, want 0", signerConstructions.Load())
 	}
 	if got := handoff.snapshot(); !reflect.DeepEqual(got, []string{"acquire", "close"}) {
 		t.Fatalf("contention lifecycle = %v", got)
@@ -378,11 +378,11 @@ func TestStartupFailureReleasesAcquiredLeaseBeforeClosingStore(t *testing.T) {
 		return &testProcessFence{onRelease: func() { handoff.record("fence-release") }}, nil
 	}
 	dependencies.newSigners = func(config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
-		return nil, nil, errors.New("тестовая ошибка создания signer")
+		return nil, nil, errors.New("test signer construction error")
 	}
 
 	if _, err := newDaemon(context.Background(), runtimeConfig, dependencies); err == nil {
-		t.Fatal("newDaemon() не вернул ошибку signer")
+		t.Fatal("newDaemon() did not return a signer error")
 	}
 	if got := handoff.snapshot(); !reflect.DeepEqual(got, []string{"fence-acquire", "acquire", "release", "fence-release", "close"}) {
 		t.Fatalf("startup rollback lifecycle = %v", got)
@@ -433,7 +433,7 @@ func TestAttestationFailureBlocksSignerConstruction(t *testing.T) {
 	}
 
 	if _, err := newDaemon(context.Background(), runtimeConfig, dependencies); err == nil {
-		t.Fatal("newDaemon() не отклонил расхождение quorum")
+		t.Fatal("newDaemon() did not reject quorum disagreement")
 	}
 	if attestations.Load() != 2 || signerConstructions.Load() != 0 {
 		t.Fatalf("attestations=%d signer constructions=%d", attestations.Load(), signerConstructions.Load())
@@ -469,10 +469,10 @@ func TestSignerAddressMismatchFailsBeforeSigningOrBroadcast(t *testing.T) {
 			}
 
 			if _, err := newDaemon(context.Background(), runtimeConfig, dependencies); err == nil {
-				t.Fatal("newDaemon() не отклонил адрес signer")
+				t.Fatal("newDaemon() did not reject the signer address")
 			}
 			if attempts == nil || attempts.AuthorizationSignatures() != 0 || attempts.TransactionSignatures() != 0 || attempts.Broadcasts() != 0 || broadcastDials.Load() != 0 {
-				t.Fatalf("mismatch вызвал side effect: attempts=%v broadcast dials=%d", attempts, broadcastDials.Load())
+				t.Fatalf("mismatch caused a side effect: attempts=%v broadcast dials=%d", attempts, broadcastDials.Load())
 			}
 		})
 	}
@@ -510,14 +510,14 @@ func TestLiveSessionUsesSeparateConfiguredBroadcastRPC(t *testing.T) {
 		t.Fatal(err)
 	}
 	if dialedEndpoint != network.configured.BroadcastHTTP {
-		t.Fatalf("broadcast endpoint = %q, нужен configured override", dialedEndpoint)
+		t.Fatalf("broadcast endpoint = %q, want configured override", dialedEndpoint)
 	}
 	if attempts == nil || attempts.AuthorizationSignatures() != 0 || attempts.TransactionSignatures() != 0 || submission.broadcasts.Load() != 0 {
-		t.Fatal("создание live session вызвало подпись или отправку при активной делегации")
+		t.Fatal("constructing a live session caused signing or submission while delegation was active")
 	}
 	session.Close()
 	if submission.closed.Load() != 1 {
-		t.Fatalf("broadcast client close count = %d, нужен 1", submission.closed.Load())
+		t.Fatalf("broadcast client close count = %d, want 1", submission.closed.Load())
 	}
 }
 
@@ -528,7 +528,7 @@ func TestConfiguredAttestationUsesBothHTTPOverridesAndProviderIdentity(t *testin
 	var endpoints []string
 	dial := func(ctx context.Context, endpoint string) (attestationClient, error) {
 		if _, ok := ctx.Deadline(); !ok {
-			t.Fatal("attestation dial не получил deadline")
+			t.Fatal("attestation dial has no deadline")
 		}
 		endpoints = append(endpoints, endpoint)
 		return clients[len(endpoints)-1], nil
@@ -548,7 +548,7 @@ func TestConfiguredAttestationUsesBothHTTPOverridesAndProviderIdentity(t *testin
 			for index, provider := range providers {
 				configured := network.ReadProviders[index]
 				if provider.ID != configured.ID || provider.EndpointFingerprint != configured.EndpointFingerprint || provider.TrustDomain != configured.TrustDomain || provider.Reader != clients[index] {
-					t.Fatalf("provider %d не совпал с config override", index)
+					t.Fatalf("provider %d does not match the configuration override", index)
 				}
 			}
 			return nil
@@ -580,7 +580,7 @@ func TestReleaseR2KeepsExplicitR1ManifestIdentity(t *testing.T) {
 	runtimeConfig.Networks[0].ManifestSourceValue = releaseR1
 	expectations := configuredManifestExpectations(runtimeConfig, runtimeConfig.Networks[0])
 	if expectations.SourceProvenance.Kind != "git-commit" || expectations.SourceProvenance.Value != releaseR1 {
-		t.Fatalf("R2 заменил ожидаемую identity manifest R1: %#v", expectations.SourceProvenance)
+		t.Fatalf("R2 replaced the expected R1 manifest identity: %#v", expectations.SourceProvenance)
 	}
 }
 
@@ -599,7 +599,7 @@ func TestDryRunSessionPlansWithoutCallingGuards(t *testing.T) {
 			return contracts.DeploymentManifest{Address: testProcessAddress(4)}, nil
 		},
 		newSession: func(context.Context, *networkProcess, generationClient, runtimeQuorum) (candidateSession, error) {
-			t.Fatal("dry run вызвал injected session factory")
+			t.Fatal("dry run invoked the injected session factory")
 			return nil, nil
 		},
 	}
@@ -625,10 +625,10 @@ func TestDryRunSessionPlansWithoutCallingGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(reader.estimates) != 1 {
-		t.Fatalf("EstimateGas calls = %d, нужен 1", len(reader.estimates))
+		t.Fatalf("EstimateGas calls = %d, want 1", len(reader.estimates))
 	}
 	if network.dryAttempts.AuthorizationSignatures() != 0 || network.dryAttempts.TransactionSignatures() != 0 || network.dryAttempts.Broadcasts() != 0 {
-		t.Fatal("обычный dry-run путь вызвал signing или broadcast guard")
+		t.Fatal("normal dry-run path invoked a signing or broadcast guard")
 	}
 }
 
@@ -655,7 +655,7 @@ func TestSessionTokenPolicyRejectsInjectedCandidateBeforeHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	if base.handles.Load() != 1 {
-		t.Fatalf("all-token handler calls = %d, нужен 1", base.handles.Load())
+		t.Fatalf("all-token handler calls = %d, want 1", base.handles.Load())
 	}
 }
 
@@ -671,7 +671,7 @@ func startupDependencies(t *testing.T) daemonDependencies {
 		serviceClock: clock.Real{},
 		observer:     observability.Discard{},
 		dial: func(context.Context, string, uint64) (generationClient, error) {
-			return nil, errors.New("неожиданный watcher dial")
+			return nil, errors.New("unexpected watcher dial")
 		},
 		loadManifest: func(config.Runtime, config.Network) (contracts.DeploymentManifest, error) {
 			return contracts.DeploymentManifest{Address: testProcessAddress(4)}, nil
@@ -799,7 +799,7 @@ func (handoff *leaseLifecycleHandoff) lastReleaseError() error {
 	handoff.mu.Lock()
 	defer handoff.mu.Unlock()
 	if len(handoff.releaseResults) == 0 {
-		return errors.New("release не вызывался")
+		return errors.New("release was not called")
 	}
 	return handoff.releaseResults[len(handoff.releaseResults)-1]
 }

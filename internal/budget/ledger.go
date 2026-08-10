@@ -54,7 +54,8 @@ type aggregateUsage struct {
 	sponsors map[sponsorKey]uint256.Int
 }
 
-// BudgetLedger хранит все сети в отдельном ACID bbolt-файле.
+// BudgetLedger хранит данные всех сетей в отдельном файле bbolt с транзакционными
+// гарантиями ACID.
 type BudgetLedger struct {
 	db         *bolt.DB
 	policy     Policy
@@ -69,8 +70,8 @@ type BudgetLedger struct {
 
 var _ Ledger = (*BudgetLedger)(nil)
 
-// Open открывает либо атомарно инициализирует ledger, привязанный к policy и
-// внешнему fingerprint. Существующий непустой файл никогда не переинициализируется.
+// Open открывает либо атомарно инициализирует реестр, привязанный к политике и
+// предоставленному извне отпечатку. Существующий непустой файл не переинициализируется.
 func Open(path string, options OpenOptions) (*BudgetLedger, error) {
 	policy, networks, err := validateAndNormalizePolicy(options.Policy)
 	if path == "" || err != nil || options.Now == nil || options.PolicyFingerprint == ([32]byte{}) {
@@ -470,8 +471,9 @@ func (ledger *BudgetLedger) ReleaseProvenUnused(ctx context.Context, id Reservat
 	})
 }
 
-// CheckSponsorCapacity revalidates the latest quorum balance against every
-// open reservation for the network+sponsor immediately before a paid action.
+// CheckSponsorCapacity непосредственно перед платным действием повторно сверяет
+// последний подтверждённый кворумом баланс с резервом спонсора и всеми открытыми
+// резервированиями для заданных сети и спонсора.
 func (ledger *BudgetLedger) CheckSponsorCapacity(ctx context.Context, id ReservationID, balance uint256.Int) error {
 	if id == (ReservationID{}) || balance.IsZero() {
 		return ErrInvalidRequest

@@ -102,7 +102,7 @@ func runtimeBudgetPolicy(runtimeConfig config.Runtime) (budget.Policy, error) {
 		overhead, overheadOverflow := uint256.FromBig(economic.TransactionOverheadWei)
 		reserve, reserveOverflow := uint256.FromBig(economic.SponsorMinimumBalanceWei)
 		if overheadOverflow || reserveOverflow || reserve.IsZero() {
-			return budget.Policy{}, errors.New("некорректная budget policy сети")
+			return budget.Policy{}, errors.New("invalid network budget policy")
 		}
 		policy.Networks = append(policy.Networks, budget.NetworkPolicy{
 			Network: network.ChainID, Sponsor: runtimeConfig.SponsorAddress, Limits: limits,
@@ -117,12 +117,12 @@ func budgetLimits(perTransaction, perHour, perDay, cumulative *big.Int) (budget.
 	converted := make([]*uint256.Int, len(values))
 	for index, value := range values {
 		if value == nil || value.Sign() <= 0 {
-			return budget.Limits{}, errors.New("некорректные global budget limits")
+			return budget.Limits{}, errors.New("invalid global budget limits")
 		}
 		var overflow bool
 		converted[index], overflow = uint256.FromBig(value)
 		if overflow {
-			return budget.Limits{}, errors.New("budget limit не помещается в uint256")
+			return budget.Limits{}, errors.New("budget limit exceeds uint256")
 		}
 	}
 	return budget.Limits{PerTransaction: *converted[0], PerHour: *converted[1], PerDay: *converted[2], Cumulative: *converted[3]}, nil
@@ -166,12 +166,12 @@ func rescuePolicy(network config.Network) (rescue.FeePolicy, uint256.Int, map[co
 	converted := make([]*uint256.Int, len(values))
 	for index, value := range values {
 		if value == nil || value.Sign() < 0 {
-			return rescue.FeePolicy{}, uint256.Int{}, nil, errors.New("некорректная rescue policy сети")
+			return rescue.FeePolicy{}, uint256.Int{}, nil, errors.New("invalid network rescue policy")
 		}
 		var overflow bool
 		converted[index], overflow = uint256.FromBig(value)
 		if overflow {
-			return rescue.FeePolicy{}, uint256.Int{}, nil, errors.New("rescue policy не помещается в uint256")
+			return rescue.FeePolicy{}, uint256.Int{}, nil, errors.New("rescue policy value exceeds uint256")
 		}
 	}
 	policy := rescue.FeePolicy{
@@ -190,7 +190,7 @@ func rescuePolicy(network config.Network) (rescue.FeePolicy, uint256.Int, map[co
 		minimum, minimumOverflow := uint256.FromBig(rule.MinimumBalance)
 		maximum, maximumOverflow := uint256.FromBig(rule.MaxTransactionCostWei)
 		if minimumOverflow || maximumOverflow || minimum.IsZero() || maximum.IsZero() {
-			return rescue.FeePolicy{}, uint256.Int{}, nil, errors.New("некорректное правило ценности trusted token")
+			return rescue.FeePolicy{}, uint256.Int{}, nil, errors.New("invalid trusted-token value rule")
 		}
 		tokenValues[rule.Address] = rescue.TrustedTokenValuePolicy{MinimumBalance: *minimum, MaximumCost: *maximum}
 	}
@@ -213,13 +213,13 @@ func openRuntimeQuorum(ctx context.Context, network config.Network, timeout time
 func loadConfiguredManifest(runtimeConfig config.Runtime, network config.Network) (contracts.DeploymentManifest, error) {
 	manifestFile, err := os.Open(network.ManifestPath)
 	if err != nil {
-		return contracts.DeploymentManifest{}, errors.New("не удалось открыть deployment manifest")
+		return contracts.DeploymentManifest{}, errors.New("failed to open deployment manifest")
 	}
 	defer manifestFile.Close()
 
 	artifactFile, err := os.Open(runtimeConfig.Artifact.Path)
 	if err != nil {
-		return contracts.DeploymentManifest{}, errors.New("не удалось открыть canonical artifact")
+		return contracts.DeploymentManifest{}, errors.New("failed to open canonical artifact")
 	}
 	defer artifactFile.Close()
 
@@ -263,7 +263,7 @@ func attestConfiguredNetworkWith(
 	attest func(context.Context, contracts.DeploymentManifest, []contracts.ReadProvider, time.Duration) error,
 ) error {
 	if dial == nil || attest == nil {
-		return errors.New("не заданы зависимости аттестации")
+		return errors.New("attestation dependencies are missing")
 	}
 	providers := make([]contracts.ReadProvider, 0, len(network.ReadProviders))
 	clients := make([]attestationClient, 0, len(network.ReadProviders))
@@ -294,7 +294,7 @@ func attestConfiguredNetworkWith(
 func newPrivateKeySigners(secrets config.LiveSecrets) (rescue.AuthorizationSigner, rescue.TransactionSigner, error) {
 	sourceKey, sponsorKey, ok := secrets.PrivateKeys()
 	if !ok {
-		return nil, nil, errors.New("live private keys не заданы")
+		return nil, nil, errors.New("live private keys are missing")
 	}
 	authorizer, err := rescue.NewPrivateKeyAuthorizationSigner(sourceKey)
 	if err != nil {
@@ -318,7 +318,7 @@ func dialSubmissionClient(ctx context.Context, endpoint string) (submissionClien
 func newProcessLeaseOwner() (string, error) {
 	var opaque [32]byte
 	if _, err := rand.Read(opaque[:]); err != nil {
-		return "", errors.New("не удалось создать идентификатор владельца lease")
+		return "", errors.New("failed to generate lease owner identifier")
 	}
 	return hex.EncodeToString(opaque[:]), nil
 }
@@ -328,10 +328,10 @@ func (dependencies daemonDependencies) withDefaults(mode config.Mode) (daemonDep
 		dependencies.lstatRestoreMarker = os.Lstat
 	}
 	if dependencies.serviceClock == nil || dependencies.observer == nil || dependencies.dial == nil || dependencies.loadManifest == nil || dependencies.openStore == nil || dependencies.openQuorum == nil || dependencies.alertStatePath == nil {
-		return daemonDependencies{}, errors.New("не заданы обязательные зависимости процесса")
+		return daemonDependencies{}, errors.New("required process dependencies are missing")
 	}
 	if mode.IsLive() && (dependencies.dialSubmission == nil || dependencies.attestNetwork == nil || dependencies.newSigners == nil || dependencies.acquireFence == nil || dependencies.acquireBudgetFence == nil || dependencies.openBudget == nil || dependencies.openAdmission == nil) {
-		return daemonDependencies{}, errors.New("не заданы обязательные live-зависимости процесса")
+		return daemonDependencies{}, errors.New("required live process dependencies are missing")
 	}
 	if dependencies.newWatcher == nil {
 		dependencies.newWatcher = func(dependencies watcher.Dependencies) (generationRunner, error) {

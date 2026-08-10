@@ -23,7 +23,7 @@ func TestPolicyDefaultsAndOverrides(t *testing.T) {
 		wantTimeout       time.Duration
 	}{
 		{
-			name:              "безопасные defaults",
+			name:              "safe defaults",
 			wantLimits:        [5]string{"10000000000000000", "20000000000000000", "30000000000000000", "50000000000000000", "20000000000000000"},
 			wantRate:          6,
 			wantAbuseWindow:   time.Hour,
@@ -33,7 +33,7 @@ func TestPolicyDefaultsAndOverrides(t *testing.T) {
 			wantAlertCooldown: 15 * time.Minute,
 			wantTimeout:       10 * time.Second,
 		},
-		{name: "явные значения", configure: func(values map[string]string) {
+		{name: "explicit values", configure: func(values map[string]string) {
 			values["MAX_TRANSACTION_COST_WEI"] = "7000000000000000"
 			values["HOURLY_BUDGET_WEI"] = "8000000000000000"
 			values["DAILY_BUDGET_WEI"] = "9000000000000000"
@@ -62,7 +62,7 @@ func TestPolicyDefaultsAndOverrides(t *testing.T) {
 			policy := runtime.Policy
 			gotLimits := [5]string{policy.MaxTransactionCostWei.String(), policy.HourlyBudgetWei.String(), policy.DailyBudgetWei.String(), policy.CumulativeBudgetWei.String(), policy.SponsorMinimumBalanceWei.String()}
 			if gotLimits != test.wantLimits || policy.RateLimitPerMinute != test.wantRate || policy.AbuseWindow != test.wantAbuseWindow || policy.MaxNewUnknownTokensPerWindow != test.wantUnknown || policy.MaxAttemptsPerTokenWindow != test.wantTokenAttempts || policy.MaxAttemptsPerSourceEvent != test.wantEventAttempts || policy.EmergencyStop != test.wantEmergency || policy.AlertCooldown != test.wantAlertCooldown || runtime.ReadTimeout != test.wantTimeout {
-				t.Fatalf("получена неверная policy: limits=%v policy=%+v timeout=%s", gotLimits, policy, runtime.ReadTimeout)
+				t.Fatalf("incorrect policy: limits=%v, policy=%+v, timeout=%s", gotLimits, policy, runtime.ReadTimeout)
 			}
 		})
 	}
@@ -74,24 +74,24 @@ func TestPolicyRejectsInvalidValues(t *testing.T) {
 		field string
 		value string
 	}{
-		{name: "нулевая стоимость", field: "MAX_TRANSACTION_COST_WEI", value: "0"},
-		{name: "отрицательная стоимость", field: "MAX_TRANSACTION_COST_WEI", value: "-1"},
-		{name: "дробная стоимость", field: "MAX_TRANSACTION_COST_WEI", value: "1.5"},
-		{name: "hour меньше transaction", field: "HOURLY_BUDGET_WEI", value: "9999999999999999"},
-		{name: "day меньше hour", field: "DAILY_BUDGET_WEI", value: "19999999999999999"},
-		{name: "cumulative меньше day", field: "CUMULATIVE_BUDGET_WEI", value: "29999999999999999"},
-		{name: "переполнение uint256", field: "CUMULATIVE_BUDGET_WEI", value: "115792089237316195423570985008687907853269984665640564039457584007913129639936"},
-		{name: "нулевой минимум", field: "SPONSOR_MIN_BALANCE_WEI", value: "0"},
-		{name: "нулевой rate", field: "RATE_LIMIT_PER_MINUTE", value: "0"},
-		{name: "переполнение rate", field: "RATE_LIMIT_PER_MINUTE", value: "4294967296"},
-		{name: "нулевое abuse окно", field: "ABUSE_WINDOW", value: "0s"},
-		{name: "знак у abuse окна", field: "ABUSE_WINDOW", value: "+1h"},
-		{name: "нулевой лимит unknown", field: "MAX_NEW_UNKNOWN_TOKENS_PER_WINDOW", value: "0"},
-		{name: "нулевой лимит token attempts", field: "MAX_ATTEMPTS_PER_TOKEN_WINDOW", value: "0"},
-		{name: "нулевой лимит event attempts", field: "MAX_ATTEMPTS_PER_SOURCE_EVENT", value: "0"},
-		{name: "нулевой alert cooldown", field: "ALERT_COOLDOWN", value: "0s"},
-		{name: "нулевой timeout", field: "RPC_READ_TIMEOUT", value: "0s"},
-		{name: "повреждённый timeout", field: "RPC_READ_TIMEOUT", value: "test-only-timeout"},
+		{name: "zero cost", field: "MAX_TRANSACTION_COST_WEI", value: "0"},
+		{name: "negative cost", field: "MAX_TRANSACTION_COST_WEI", value: "-1"},
+		{name: "fractional cost", field: "MAX_TRANSACTION_COST_WEI", value: "1.5"},
+		{name: "hour below transaction", field: "HOURLY_BUDGET_WEI", value: "9999999999999999"},
+		{name: "day below hour", field: "DAILY_BUDGET_WEI", value: "19999999999999999"},
+		{name: "cumulative below day", field: "CUMULATIVE_BUDGET_WEI", value: "29999999999999999"},
+		{name: "uint256 overflow", field: "CUMULATIVE_BUDGET_WEI", value: "115792089237316195423570985008687907853269984665640564039457584007913129639936"},
+		{name: "zero minimum", field: "SPONSOR_MIN_BALANCE_WEI", value: "0"},
+		{name: "zero rate", field: "RATE_LIMIT_PER_MINUTE", value: "0"},
+		{name: "rate overflow", field: "RATE_LIMIT_PER_MINUTE", value: "4294967296"},
+		{name: "zero abuse window", field: "ABUSE_WINDOW", value: "0s"},
+		{name: "sign in abuse window", field: "ABUSE_WINDOW", value: "+1h"},
+		{name: "zero unknown limit", field: "MAX_NEW_UNKNOWN_TOKENS_PER_WINDOW", value: "0"},
+		{name: "zero token attempt limit", field: "MAX_ATTEMPTS_PER_TOKEN_WINDOW", value: "0"},
+		{name: "zero event attempt limit", field: "MAX_ATTEMPTS_PER_SOURCE_EVENT", value: "0"},
+		{name: "zero alert cooldown", field: "ALERT_COOLDOWN", value: "0s"},
+		{name: "zero timeout", field: "RPC_READ_TIMEOUT", value: "0s"},
+		{name: "malformed timeout", field: "RPC_READ_TIMEOUT", value: "test-only-timeout"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -124,7 +124,7 @@ func TestEmergencyStopLiveModeDoesNotRequireOrParsePrivateKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, ok := runtimeConfig.LiveSecrets.PrivateKeys(); ok {
-		t.Fatal("emergency stop сохранил private keys")
+		t.Fatal("emergency stop retained private keys")
 	}
 }
 
@@ -137,7 +137,7 @@ func TestRuntimePolicyCloneDoesNotAliasBigIntegers(t *testing.T) {
 	cloned.MaxTransactionCostWei.SetInt64(1)
 	cloned.HourlyBudgetWei.SetInt64(2)
 	if runtimeConfig.Policy.MaxTransactionCostWei.String() != defaultMaxTransactionCostWei || runtimeConfig.Policy.HourlyBudgetWei.String() != defaultHourlyBudgetWei {
-		t.Fatal("RuntimePolicy.Clone переиспользовал mutable big.Int")
+		t.Fatal("RuntimePolicy.Clone reused mutable big.Int")
 	}
 }
 
@@ -168,6 +168,6 @@ func TestArtifactTrustIgnoresEmbeddedBinaryCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if runtimeConfig.Artifact.SourceKind != pinnedArtifactSourceKind || runtimeConfig.Artifact.SourceValue != pinnedArtifactSourceValue {
-		t.Fatalf("artifact trust зависит от binary identity: %#v", runtimeConfig.Artifact)
+		t.Fatalf("artifact trust depends on binary identifier: %#v", runtimeConfig.Artifact)
 	}
 }

@@ -6,8 +6,8 @@ interface IERC20Balance {
 }
 
 /// @title RescuerV2
-/// @notice Переводит активы делегировавшего EOA только на неизменяемый безопасный адрес.
-/// @dev Код должен исполняться через EIP-7702 delegation designator, указывающий на `self`.
+/// @notice Переводит активы делегировавшего внешнего аккаунта (EOA) только на безопасный адрес, заданный при развёртывании.
+/// @dev Код должен исполняться через указатель делегирования EIP-7702, который ссылается на `self`.
 contract RescuerV2 {
     address public immutable destination;
     address public immutable self;
@@ -41,21 +41,21 @@ contract RescuerV2 {
         self = address(this);
     }
 
-    /// @notice Переводит полные балансы перечисленных токенов на `destination`.
-    /// @dev Permissionless-вызов безопасен относительно получателя: caller не задаёт адрес назначения.
+    /// @notice Переводит на `destination` весь баланс каждого из перечисленных токенов.
+    /// @dev Проверка прав не требуется: вызывающий не может изменить адрес назначения.
     function sweepAll(address[] calldata tokens) external {
         _verifyDelegation();
         _sweep(tokens);
     }
 
-    /// @notice Переводит полный ETH-баланс делегировавшего EOA на `destination`.
+    /// @notice Переводит на `destination` весь баланс ETH делегировавшего EOA.
     function sweepEth() external {
         _verifyDelegation();
         _sweepEth();
     }
 
-    /// @notice Выполняет доверенную sponsor-операцию и переводит полученные токены на `destination`.
-    /// @dev Sponsor является границей доверия для target и calldata; посторонний caller всегда отклоняется.
+    /// @notice По запросу `sponsor` выполняет доверенный вызов и переводит полученные токены на `destination`.
+    /// @dev Только `sponsor` вправе задавать `target` и `calldata`; вызовы с других адресов отклоняются.
     function executeAndSweep(address target, bytes calldata data, address[] calldata tokens)
         external
         payable

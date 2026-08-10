@@ -15,18 +15,18 @@ func TestCandidateIDIsStableAndVersionedByObservation(t *testing.T) {
 	first := NewLogCandidate(31337, source, token, blockHash, txHash, 10, 1)
 	duplicate := NewLogCandidate(31337, source, token, blockHash, txHash, 10, 1)
 	if first.ID != duplicate.ID {
-		t.Fatal("одинаковое наблюдение получило разные stable candidate ID")
+		t.Fatal("identical observation produced different stable candidate IDs")
 	}
 	if first.ID == NewLogCandidate(31337, source, token, blockHash, txHash, 10, 2).ID {
-		t.Fatal("разные log index получили одинаковый candidate ID")
+		t.Fatal("logs with different indexes produced the same candidate ID")
 	}
 
 	periodic := NewPeriodicCandidate(31337, source, 7, 1)
 	if periodic.ID != NewPeriodicCandidate(31337, source, 8, 1).ID {
-		t.Fatal("reconnect изменил stable ID одного periodic observation")
+		t.Fatal("reconnect changed the stable ID of the same polling observation")
 	}
 	if periodic.ID == NewPeriodicCandidate(31337, source, 7, 2).ID {
-		t.Fatal("последовательные periodic observations были ошибочно дедуплицированы")
+		t.Fatal("successive polling observations were incorrectly deduplicated")
 	}
 }
 
@@ -36,13 +36,13 @@ func TestCandidateValidationAndTokenReconciliationIdentity(t *testing.T) {
 	first := NewTokenReconciliationCandidate(31337, source, token, 1, 7)
 	second := NewTokenReconciliationCandidate(31337, source, token, 99, 7)
 	if first.ID != second.ID {
-		t.Fatal("RPC generation изменила stable reconciliation ID")
+		t.Fatal("RPC generation changed the stable reconciliation ID")
 	}
 	if err := ValidateCandidate(first); err != nil {
-		t.Fatalf("валидный candidate отклонён: %v", err)
+		t.Fatalf("valid candidate rejected: %v", err)
 	}
 	first.ID[0] ^= 1
 	if err := ValidateCandidate(first); err == nil {
-		t.Fatal("candidate с повреждённым ID принят")
+		t.Fatal("candidate with a corrupted ID accepted")
 	}
 }

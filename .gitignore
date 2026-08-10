@@ -39,7 +39,7 @@ dist/
 *.tsbuildinfo
 npm-debug.log*
 
-# Результаты компиляции и деплоя
+# Результаты компиляции и развёртывания
 artifacts/*
 !artifacts/contracts/
 artifacts/contracts/*

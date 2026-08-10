@@ -46,7 +46,7 @@ const requiredRecord = (
 ): Readonly<Record<string, unknown>> => {
   const field = value[name];
   if (!isRecord(field)) {
-    assert.fail(`Manifest не содержит object ${name}`);
+    assert.fail(`Manifest does not contain object ${name}`);
   }
   return field;
 };
@@ -57,7 +57,7 @@ const requiredString = (
 ): string => {
   const field = value[name];
   if (typeof field !== "string") {
-    assert.fail(`Manifest не содержит string ${name}`);
+    assert.fail(`Manifest does not contain string ${name}`);
   }
   return field;
 };
@@ -201,7 +201,7 @@ const freePort = async (): Promise<number> => {
   );
   const address = server.address();
   if (!address || typeof address === "string") {
-    assert.fail("Не удалось выделить локальный TCP-порт");
+    assert.fail("Failed to allocate a local TCP port");
   }
   await new Promise<void>((resolveClose, reject) =>
     server.close((error) => (error ? reject(error) : resolveClose())),
@@ -214,9 +214,7 @@ const waitForSpawn = async (process: ChildProcess): Promise<void> =>
     const onError = (): void => {
       process.off("spawn", onSpawn);
       rejectSpawn(
-        new Error(
-          "Не удалось запустить тестовый Anvil; проверьте установку Foundry",
-        ),
+        new Error("Failed to start test Anvil; check the Foundry installation"),
       );
     };
     const onSpawn = (): void => {
@@ -234,7 +232,7 @@ const waitForAnvil = async (
   for (let attempt = 0; attempt < 100; attempt++) {
     if (process.exitCode !== null || process.signalCode !== null) {
       throw new Error(
-        `Anvil завершился до готовности: код ${process.exitCode}, сигнал ${process.signalCode}`,
+        `Anvil exited before becoming ready: code ${process.exitCode}, signal ${process.signalCode}`,
       );
     }
     const response = await fetch(rpcURL, {
@@ -251,7 +249,7 @@ const waitForAnvil = async (
     if (response?.ok) return;
     await delay(50);
   }
-  throw new Error("Истёк таймаут запуска Anvil");
+  throw new Error("Timed out while starting Anvil");
 };
 
 const stopAnvil = async (process: ChildProcess): Promise<void> => {
@@ -274,7 +272,7 @@ const stopAnvil = async (process: ChildProcess): Promise<void> => {
     closed.then(() => true),
     delay(2_000).then(() => false),
   ]);
-  if (!killed) throw new Error("Не удалось остановить тестовый Anvil");
+  if (!killed) throw new Error("Failed to stop test Anvil");
 };
 
 type LocalAnvil = {
@@ -313,13 +311,11 @@ const startAnvil = async (): Promise<LocalAnvil> => {
       await stopAnvil(process);
     }
   }
-  throw new Error(
-    "Не удалось запустить тестовый Anvil на свободном локальном порту",
-  );
+  throw new Error("Failed to start test Anvil on an available local port");
 };
 
 test(
-  "локальное развёртывание сохраняет recovery и эксклюзивно публикует manifest",
+  "local deployment persists the recovery record and publishes the manifest exclusively",
   { timeout: 60_000 },
   async () => {
     const temporaryDirectory = await mkdtemp(
@@ -414,7 +410,7 @@ test(
       const manifestText = await readFile(manifestPath, "utf8");
       const manifestValue: unknown = JSON.parse(manifestText);
       if (!isRecord(manifestValue)) {
-        assert.fail("Manifest не является object");
+        assert.fail("Manifest is not an object");
       }
       const immutables = requiredRecord(manifestValue, "immutables");
       const runtime = requiredRecord(manifestValue, "runtime");
@@ -427,7 +423,7 @@ test(
       const recoveryText = await readFile(recoveryPath, "utf8");
       const recoveryValue: unknown = JSON.parse(recoveryText);
       if (!isRecord(recoveryValue)) {
-        assert.fail("Recovery record не является object");
+        assert.fail("Recovery record is not an object");
       }
       const recoveryTransaction = requiredRecord(recoveryValue, "transaction");
       const rawSignedTransaction = requiredString(
@@ -439,7 +435,7 @@ test(
       const code = await provider.getCode(address);
       const transaction = await provider.getTransaction(transactionHash);
       if (!transaction) {
-        assert.fail("Anvil не вернул deployment transaction");
+        assert.fail("Anvil did not return the deployment transaction");
       }
       assert.deepStrictEqual(
         {

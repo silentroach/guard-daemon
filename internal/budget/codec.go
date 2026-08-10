@@ -14,7 +14,7 @@ import (
 
 const reservationRecordVersion = byte(1)
 
-var errInvalidRecord = errors.New("budget ledger: некорректная запись")
+var errInvalidRecord = errors.New("budget ledger: invalid record")
 
 func encodePolicy(policy Policy) []byte {
 	networks := append([]NetworkPolicy(nil), policy.Networks...)

@@ -16,11 +16,11 @@ func TestLoadFromRejectsInvalidEnabledNetworks(t *testing.T) {
 		name  string
 		value string
 	}{
-		{name: "пустой список", value: ""},
-		{name: "пустое имя", value: "base,,ethereum"},
-		{name: "неизвестная сеть", value: "unknown"},
-		{name: "не нижний регистр", value: "Base"},
-		{name: "повтор", value: "base,base"},
+		{name: "empty list", value: ""},
+		{name: "empty name", value: "base,,ethereum"},
+		{name: "unknown network", value: "unknown"},
+		{name: "not lowercase", value: "Base"},
+		{name: "duplicate", value: "base,base"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -39,11 +39,11 @@ func TestNetworkRegistryHasPinnedChainIDs(t *testing.T) {
 	}
 	definitions := networkRegistry()
 	if len(definitions) != len(want) {
-		t.Fatalf("сетей в реестре = %d, нужно %d", len(definitions), len(want))
+		t.Fatalf("networks in registry = %d, want %d", len(definitions), len(want))
 	}
 	for _, definition := range definitions {
 		if int64(definition.chainID) != want[definition.name] {
-			t.Errorf("chain ID сети %s = %d", definition.name, definition.chainID)
+			t.Errorf("network ID %s = %d", definition.name, definition.chainID)
 		}
 	}
 }
@@ -58,24 +58,24 @@ func TestLoadFromUsesIndependentProviderOverrides(t *testing.T) {
 	}
 	network := runtime.Networks[0]
 	if len(network.ReadProviders) != 2 {
-		t.Fatalf("read providers = %d, нужно 2", len(network.ReadProviders))
+		t.Fatalf("read providers = %d, want 2", len(network.ReadProviders))
 	}
 	first, second := network.ReadProviders[0], network.ReadProviders[1]
 	if first.HTTPURL != values["RPC_READ_1_HTTP_BASE"] || second.HTTPURL != values["RPC_READ_2_HTTP_BASE"] || first.WSURL != values["RPC_READ_1_WS_BASE"] || second.WSURL != values["RPC_READ_2_WS_BASE"] {
-		t.Fatal("RPC overrides не сохранены независимо и без подмены")
+		t.Fatal("RPC overrides were not preserved independently and without substitution")
 	}
 	digest := sha256.Sum256([]byte("https://read-one.invalid/rpc?a=1&b=2"))
 	if first.EndpointFingerprint != hex.EncodeToString(digest[:]) || len(first.EndpointFingerprint) != 64 {
-		t.Fatalf("неверный безопасный fingerprint: %q", first.EndpointFingerprint)
+		t.Fatalf("incorrect safe fingerprint: %q", first.EndpointFingerprint)
 	}
 	if first.ID == second.ID || first.TrustDomain == second.TrustDomain {
-		t.Fatal("провайдеры не получили независимые идентификаторы")
+		t.Fatal("providers did not receive independent identifiers")
 	}
 
 	rescuer := common.HexToAddress(testAddress(9))
 	domainNetwork := network.Domain(rescuer)
 	if domainNetwork.HTTPURL != first.HTTPURL || domainNetwork.WSURL != first.WSURL || !domainNetwork.HasRescuer || domainNetwork.Rescuer != rescuer || domainNetwork.AllowUnknownTokens {
-		t.Fatal("Domain() не перенёс параметры daemon integration")
+		t.Fatal("Domain() did not propagate daemon integration parameters")
 	}
 }
 
@@ -85,14 +85,14 @@ func TestLoadFromRejectsIncompleteOrDependentProviders(t *testing.T) {
 		configure func(map[string]string)
 		wantField string
 	}{
-		{name: "нет первого HTTP", configure: func(values map[string]string) { delete(values, "RPC_READ_1_HTTP_BASE") }, wantField: "RPC_READ_1_HTTP_BASE"},
-		{name: "нет второго WS", configure: func(values map[string]string) { delete(values, "RPC_READ_2_WS_BASE") }, wantField: "RPC_READ_2_WS_BASE"},
-		{name: "HTTP имеет WS схему", configure: func(values map[string]string) { values["RPC_READ_1_HTTP_BASE"] = "wss://test-only-rpc.invalid" }, wantField: "RPC_READ_1_HTTP_BASE"},
-		{name: "WS имеет HTTP схему", configure: func(values map[string]string) { values["RPC_READ_1_WS_BASE"] = "https://test-only-rpc.invalid" }, wantField: "RPC_READ_1_WS_BASE"},
-		{name: "один endpoint", configure: func(values map[string]string) { values["RPC_READ_2_HTTP_BASE"] = "https://READ-ONE.invalid:443" }, wantField: "RPC_READ_2_HTTP_BASE"},
-		{name: "один WebSocket endpoint", configure: func(values map[string]string) { values["RPC_READ_2_WS_BASE"] = "wss://READ-ONE.invalid:443/ws" }, wantField: "RPC_READ_2_WS_BASE"},
-		{name: "один trust domain", configure: func(values map[string]string) { values["RPC_READ_2_TRUST_DOMAIN_BASE"] = "PROVIDER-ONE" }, wantField: "RPC_READ_2_TRUST_DOMAIN_BASE"},
-		{name: "нет manifest", configure: func(values map[string]string) { delete(values, "RESCUER_MANIFEST_BASE") }, wantField: "RESCUER_MANIFEST_BASE"},
+		{name: "missing first HTTP", configure: func(values map[string]string) { delete(values, "RPC_READ_1_HTTP_BASE") }, wantField: "RPC_READ_1_HTTP_BASE"},
+		{name: "missing second WS", configure: func(values map[string]string) { delete(values, "RPC_READ_2_WS_BASE") }, wantField: "RPC_READ_2_WS_BASE"},
+		{name: "HTTP has WS scheme", configure: func(values map[string]string) { values["RPC_READ_1_HTTP_BASE"] = "wss://test-only-rpc.invalid" }, wantField: "RPC_READ_1_HTTP_BASE"},
+		{name: "WS has HTTP scheme", configure: func(values map[string]string) { values["RPC_READ_1_WS_BASE"] = "https://test-only-rpc.invalid" }, wantField: "RPC_READ_1_WS_BASE"},
+		{name: "same endpoint", configure: func(values map[string]string) { values["RPC_READ_2_HTTP_BASE"] = "https://READ-ONE.invalid:443" }, wantField: "RPC_READ_2_HTTP_BASE"},
+		{name: "same WebSocket endpoint", configure: func(values map[string]string) { values["RPC_READ_2_WS_BASE"] = "wss://READ-ONE.invalid:443/ws" }, wantField: "RPC_READ_2_WS_BASE"},
+		{name: "same trust domain", configure: func(values map[string]string) { values["RPC_READ_2_TRUST_DOMAIN_BASE"] = "PROVIDER-ONE" }, wantField: "RPC_READ_2_TRUST_DOMAIN_BASE"},
+		{name: "missing manifest", configure: func(values map[string]string) { delete(values, "RESCUER_MANIFEST_BASE") }, wantField: "RESCUER_MANIFEST_BASE"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -116,8 +116,8 @@ func TestReleaseR2ConfigKeepsExplicitR1ManifestIdentity(t *testing.T) {
 		wantKind  string
 		wantValue string
 	}{
-		{name: "закреплённое дерево по умолчанию", wantKind: pinnedArtifactSourceKind, wantValue: pinnedArtifactSourceValue},
-		{name: "официальный commit R1", commit: strings.Repeat("1", 40), set: true, wantKind: "git-commit", wantValue: strings.Repeat("1", 40)},
+		{name: "default pinned tree", wantKind: pinnedArtifactSourceKind, wantValue: pinnedArtifactSourceValue},
+		{name: "official R1 commit", commit: strings.Repeat("1", 40), set: true, wantKind: "git-commit", wantValue: strings.Repeat("1", 40)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -151,7 +151,7 @@ func TestManifestReleaseCommitFailsClosed(t *testing.T) {
 func TestBroadcastIsRequiredOnlyInLiveMode(t *testing.T) {
 	values := validEnvironment()
 	if runtime, err := LoadFrom(mapLookup(values)); err != nil || runtime.Networks[0].BroadcastHTTP != "" {
-		t.Fatalf("dry run с пустым broadcast: runtime=%v error=%v", runtime, err)
+		t.Fatalf("dry run with empty sender: runtime=%v, error=%v", runtime, err)
 	}
 	values["RPC_BROADCAST_HTTP_BASE"] = "https://broadcast.invalid/rpc"
 	_, err := LoadFrom(mapLookup(values))
@@ -180,29 +180,29 @@ func TestTokenModes(t *testing.T) {
 		wantError   string
 		check       func(*testing.T, Network)
 	}{
-		{name: "known-only по умолчанию", wantTokens: 7, wantTrusted: 7},
+		{name: "default known-only", wantTokens: 7, wantTrusted: 7},
 		{name: "allowlist", mode: "allowlist", allowlist: knownAddress + "," + unknownAddress, wantTokens: 2, wantTrusted: 1, check: func(t *testing.T, network Network) {
 			if network.Tokens[0].Symbol != "USDC" || network.Tokens[0].Decimals != 6 {
-				t.Fatal("allowlist потерял metadata известного токена")
+				t.Fatal("allowlist lost known token metadata")
 			}
 			if network.Tokens[1].Symbol != "" || network.Tokens[1].Decimals != 0 || network.Tokens[1].Address != common.HexToAddress(unknownAddress) {
-				t.Fatal("неизвестный allowlisted токен получил недостоверную metadata")
+				t.Fatal("allowlisted unknown token received untrusted metadata")
 			}
 			if network.TrustedTokens[0] != common.HexToAddress(knownAddress) {
-				t.Fatal("пересечение allowlist с известными токенами потеряло trust")
+				t.Fatal("intersection of allowlist and known tokens lost trust")
 			}
 			domainNetwork := network.Domain(common.Address{})
 			if len(domainNetwork.Tokens) != 2 || domainNetwork.Tokens[1].Address != common.HexToAddress(unknownAddress) {
-				t.Fatal("watcher allowlist потерял разрешённый неизвестный адрес")
+				t.Fatal("watcher allowlist lost an allowed unknown address")
 			}
 		}},
 		{name: "all", mode: "all", wantTokens: 7, wantTrusted: 7, wantUnknown: true},
-		{name: "allowlist вне режима", mode: "known-only", allowlist: unknownAddress, wantError: "TOKEN_ALLOWLIST_BASE"},
-		{name: "пустой allowlist", mode: "allowlist", wantError: "TOKEN_ALLOWLIST_BASE"},
-		{name: "повтор в allowlist", mode: "allowlist", allowlist: unknownAddress + "," + unknownAddress, wantError: "TOKEN_ALLOWLIST_BASE"},
-		{name: "повреждённый токен", mode: "allowlist", allowlist: "test-only-token-address", wantError: "TOKEN_ALLOWLIST_BASE"},
-		{name: "нулевой токен", mode: "allowlist", allowlist: common.Address{}.Hex(), wantError: "TOKEN_ALLOWLIST_BASE"},
-		{name: "неизвестный режим", mode: "automatic", wantError: "TOKEN_MODE_BASE"},
+		{name: "allowlist outside mode", mode: "known-only", allowlist: unknownAddress, wantError: "TOKEN_ALLOWLIST_BASE"},
+		{name: "empty allowlist", mode: "allowlist", wantError: "TOKEN_ALLOWLIST_BASE"},
+		{name: "duplicate in allowlist", mode: "allowlist", allowlist: unknownAddress + "," + unknownAddress, wantError: "TOKEN_ALLOWLIST_BASE"},
+		{name: "malformed token", mode: "allowlist", allowlist: "test-only-token-address", wantError: "TOKEN_ALLOWLIST_BASE"},
+		{name: "zero token", mode: "allowlist", allowlist: common.Address{}.Hex(), wantError: "TOKEN_ALLOWLIST_BASE"},
+		{name: "unknown mode", mode: "automatic", wantError: "TOKEN_MODE_BASE"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -223,7 +223,7 @@ func TestTokenModes(t *testing.T) {
 			}
 			network := runtime.Networks[0]
 			if len(network.Tokens) != test.wantTokens || len(network.TrustedTokens) != test.wantTrusted || network.AllowUnknownTokens != test.wantUnknown {
-				t.Fatalf("политика токенов: count=%d trusted=%d allowUnknown=%t", len(network.Tokens), len(network.TrustedTokens), network.AllowUnknownTokens)
+				t.Fatalf("token policy: total=%d, trusted=%d, unknown allowed=%t", len(network.Tokens), len(network.TrustedTokens), network.AllowUnknownTokens)
 			}
 			if test.check != nil {
 				test.check(t, network)
@@ -244,10 +244,10 @@ func TestUnknownAllowlistedTokenIsAllowedButNotTrusted(t *testing.T) {
 	}
 	network := runtimeConfig.Networks[0]
 	if len(network.Tokens) != 2 || network.Tokens[1].Address != unknown {
-		t.Fatal("allowlist не сохранил unknown address для watcher")
+		t.Fatal("allowlist did not preserve unknown address for watcher")
 	}
 	if len(network.TrustedTokens) != 1 || network.TrustedTokens[0] != known {
-		t.Fatalf("trusted intersection = %v, нужен только известный токен", network.TrustedTokens)
+		t.Fatalf("trusted intersection = %v, want only known token", network.TrustedTokens)
 	}
 }
 
@@ -260,18 +260,18 @@ func TestSupportedEnvironmentFieldsIncludeEveryNetwork(t *testing.T) {
 		for _, template := range EnvironmentFieldTemplates() {
 			field := strings.ReplaceAll(template, "<N>", network)
 			if !supported[field] {
-				t.Errorf("не зарегистрировано динамическое поле %s", field)
+				t.Errorf("dynamic field %s is not registered", field)
 			}
 		}
 	}
 	for _, field := range []string{"SOURCE_PRIVATE_KEY", "SPONSOR_PRIVATE_KEY"} {
 		if !supported[field] {
-			t.Errorf("не зарегистрировано секретное поле %s", field)
+			t.Errorf("secret field %s is not registered", field)
 		}
 	}
 	for _, field := range removedEnvironmentFields {
 		if supported[field] {
-			t.Errorf("удалённое поле отмечено поддерживаемым: %s", field)
+			t.Errorf("removed field marked as supported: %s", field)
 		}
 	}
 }
@@ -299,7 +299,7 @@ func TestEveryRegisteredNetworkUsesItsDynamicFields(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(runtimeConfig.Networks) != 1 || runtimeConfig.Networks[0].Name != definition.name || runtimeConfig.Networks[0].ChainID != definition.chainID {
-				t.Fatalf("network config = %#v", runtimeConfig.Networks)
+				t.Fatalf("network configuration = %#v", runtimeConfig.Networks)
 			}
 		})
 	}

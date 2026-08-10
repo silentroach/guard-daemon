@@ -1,5 +1,5 @@
 [Unit]
-Description=Наблюдение и ограниченное спасение активов EIP-7702
+Description=EIP-7702 asset monitoring and bounded rescue
 After=network-online.target
 Wants=network-online.target
 

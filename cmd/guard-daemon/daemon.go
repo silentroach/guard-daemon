@@ -299,7 +299,7 @@ func (process *daemon) Run(ctx context.Context) error {
 		if !result.lease {
 			if runContext.Err() == nil && runError == nil {
 				if result.err == nil {
-					result.err = errors.New("network worker неожиданно остановлен")
+					result.err = errors.New("network worker stopped unexpectedly")
 				}
 				runError = processError("daemon.network", domain.ErrorInternal, errorWorkerStopped, false, result.err)
 				cancel()
@@ -310,7 +310,7 @@ func (process *daemon) Run(ctx context.Context) error {
 			continue
 		}
 		if result.err == nil {
-			result.err = errors.New("поддержание lease неожиданно остановлено")
+			result.err = errors.New("lease maintenance stopped unexpectedly")
 		}
 		runError = processError("daemon.lease_maintain", domain.ErrorInternal, errorLeaseMaintainFailed, false, result.err)
 		cancel()
@@ -399,8 +399,8 @@ func consumeCandidates(ctx context.Context, network domain.NetworkID, queue stor
 
 		handlingCandidate := candidate
 		if handlingCandidate.Generation != 0 && handlingCandidate.Generation != session.Generation() {
-			// The stable queued ID remains unchanged while replay is bound to the
-			// current immutable RPC generation.
+			// Неизменный ID кандидата в очереди сохраняется, а при повторной обработке
+			// кандидат привязывается к текущему поколению RPC.
 			handlingCandidate.Generation = session.Generation()
 		}
 		handleError := session.Handle(ctx, handlingCandidate)

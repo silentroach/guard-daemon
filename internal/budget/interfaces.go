@@ -15,20 +15,20 @@ import (
 )
 
 var (
-	ErrInvalidOptions     = errors.New("budget ledger: некорректные параметры")
-	ErrOpenFailed         = errors.New("budget ledger: не удалось открыть ledger")
-	ErrPolicyMismatch     = errors.New("budget ledger: сохранённая policy не совпадает")
-	ErrCorrupt            = errors.New("budget ledger: данные повреждены")
-	ErrClosed             = errors.New("budget ledger: закрыт")
-	ErrInvalidRequest     = errors.New("budget ledger: некорректный запрос")
-	ErrArithmeticOverflow = errors.New("budget ledger: переполнение стоимости")
-	ErrBudgetExceeded     = errors.New("budget ledger: исчерпан лимит")
-	ErrSponsorReserve     = errors.New("budget ledger: недостаточный emergency reserve sponsor")
-	ErrStateConflict      = errors.New("budget ledger: конфликт состояния reservation")
-	ErrCapacity           = errors.New("budget ledger: достигнут предел persistent records")
+	ErrInvalidOptions     = errors.New("budget ledger: invalid options")
+	ErrOpenFailed         = errors.New("budget ledger: failed to open ledger")
+	ErrPolicyMismatch     = errors.New("budget ledger: stored policy does not match")
+	ErrCorrupt            = errors.New("budget ledger: data is corrupt")
+	ErrClosed             = errors.New("budget ledger: closed")
+	ErrInvalidRequest     = errors.New("budget ledger: invalid request")
+	ErrArithmeticOverflow = errors.New("budget ledger: cost overflow")
+	ErrBudgetExceeded     = errors.New("budget ledger: budget exceeded")
+	ErrSponsorReserve     = errors.New("budget ledger: sponsor emergency reserve is insufficient")
+	ErrStateConflict      = errors.New("budget ledger: reservation state conflict")
+	ErrCapacity           = errors.New("budget ledger: persistent record capacity reached")
 )
 
-// Limits задаёт верхние границы расходов в wei. Нулевые границы запрещены.
+// Limits задаёт предельные суммы расходов в wei. Нулевые значения запрещены.
 type Limits struct {
 	PerTransaction uint256.Int
 	PerHour        uint256.Int
@@ -36,8 +36,8 @@ type Limits struct {
 	Cumulative     uint256.Int
 }
 
-// NetworkPolicy связывает бюджет сети с единственным sponsor и неизменяемыми
-// chain-specific накладными расходами.
+// NetworkPolicy связывает бюджет сети с единственным спонсором и неизменными
+// накладными расходами этой сети.
 type NetworkPolicy struct {
 	Network                 domain.NetworkID
 	Sponsor                 common.Address
@@ -46,21 +46,22 @@ type NetworkPolicy struct {
 	EmergencySponsorReserve uint256.Int
 }
 
-// Policy задаёт global limits и ограничения каждой обслуживаемой сети.
+// Policy задаёт глобальные лимиты и ограничения для каждой обслуживаемой сети.
 type Policy struct {
 	Global   Limits
 	Networks []NetworkPolicy
 }
 
-// CostQuote содержит только входы, полученные до signing. Maximum вычисляется
-// ledger с накладными расходами из привязанной NetworkPolicy.
+// CostQuote содержит только исходные данные, полученные до подписания. Метод Maximum
+// вычисляет максимальную стоимость с учётом накладных расходов из связанной NetworkPolicy.
 type CostQuote struct {
 	GasLimit     uint64
 	MaxFeePerGas uint256.Int
 	MaximumCost  uint256.Int
 }
 
-// Maximum возвращает gasLimit*maxFeePerGas+overhead без арифметики по модулю.
+// Maximum возвращает gasLimit*maxFeePerGas+overhead с проверкой переполнения, без
+// арифметики по модулю.
 func (quote CostQuote) Maximum(overhead uint256.Int) (uint256.Int, error) {
 	if quote.GasLimit == 0 || quote.MaxFeePerGas.IsZero() {
 		return uint256.Int{}, ErrInvalidRequest
@@ -82,19 +83,19 @@ func (quote CostQuote) Maximum(overhead uint256.Int) (uint256.Int, error) {
 	return maximum, nil
 }
 
-// Attempt является durable identity одной попытки rescue incident.
+// Attempt идентифицирует одну сохраняемую попытку устранения инцидента.
 type Attempt struct {
 	Incident domain.IncidentID
 	Number   uint32
 }
 
-// ReservationID детерминирован только Attempt и не зависит от времени или
+// ReservationID определяется только значением Attempt и не зависит от времени или
 // порядка конкурентных запросов.
 type ReservationID [sha256.Size]byte
 
 func (id ReservationID) String() string { return hex.EncodeToString(id[:]) }
 
-// NewReservationID возвращает стабильный ID для идемпотентного replay.
+// NewReservationID возвращает неизменный ID для идемпотентной повторной обработки.
 func NewReservationID(attempt Attempt) ReservationID {
 	hash := sha256.New()
 	_, _ = hash.Write([]byte("guard-daemon/budget-reservation/v1"))
@@ -126,8 +127,8 @@ const (
 	ReservationReleased
 )
 
-// Reservation хранит исходный запрос, вычисленный maximum и доказательства
-// переходов. Actual заполнен только для committed reservation.
+// Reservation хранит исходный запрос, вычисленный максимум и подтверждённые
+// переходы состояния. Поле Actual заполняется только после подтверждения окончательных расходов.
 type Reservation struct {
 	ID        ReservationID
 	Request   ReservationRequest
@@ -147,7 +148,7 @@ type FinalizedCharge struct {
 	ObservedAt    time.Time
 }
 
-// Totals содержит значения для rolling hour/day и lifetime cumulative окна.
+// Totals содержит суммы за скользящие часовой и суточный периоды, а также за всё время.
 type Totals struct {
 	PerHour    uint256.Int
 	PerDay     uint256.Int
@@ -160,13 +161,13 @@ type ScopeSnapshot struct {
 	Remaining Totals
 }
 
-// Blocked сообщает, что хотя бы одно rolling или cumulative окно полностью
-// исчерпано и новая ненулевая reservation невозможна.
+// Blocked сообщает, что хотя бы один часовой, суточный или накопительный лимит
+// исчерпан и новое ненулевое резервирование невозможно.
 func (snapshot ScopeSnapshot) Blocked() bool {
 	return snapshot.Remaining.PerHour.IsZero() || snapshot.Remaining.PerDay.IsZero() || snapshot.Remaining.Cumulative.IsZero()
 }
 
-// Snapshot является атомарным срезом global и всех per-network counters.
+// Snapshot содержит атомарный снимок глобальных и всех сетевых счётчиков.
 type Snapshot struct {
 	At       time.Time
 	Global   ScopeSnapshot
@@ -180,7 +181,7 @@ type OpenOptions struct {
 	MaxRecords        uint32
 }
 
-// Ledger является единым persistent ledger для coordinators всех сетей.
+// Ledger предоставляет координаторам всех сетей единый долговременный реестр.
 type Ledger interface {
 	Reserve(context.Context, ReservationRequest) (Reservation, error)
 	MarkExposed(context.Context, ReservationID, common.Hash) (Reservation, error)

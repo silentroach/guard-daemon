@@ -12,10 +12,10 @@ import (
 )
 
 var (
-	ErrInvalidAdmissionConfig  = errors.New("rescue admission: некорректная конфигурация")
-	ErrInvalidAdmissionRequest = errors.New("rescue admission: некорректный запрос")
-	ErrAdmissionDenied         = errors.New("rescue admission: попытка отклонена policy")
-	ErrAdmissionPersistence    = errors.New("rescue admission: persistent state недоступен")
+	ErrInvalidAdmissionConfig  = errors.New("rescue admission: invalid configuration")
+	ErrInvalidAdmissionRequest = errors.New("rescue admission: invalid request")
+	ErrAdmissionDenied         = errors.New("rescue admission: attempt denied by policy")
+	ErrAdmissionPersistence    = errors.New("rescue admission: persisted state is unavailable")
 )
 
 type AdmissionReason string
@@ -31,8 +31,8 @@ const (
 	AdmissionAttemptIdentityConflict AdmissionReason = "attempt_identity_conflict"
 )
 
-// AdmissionClock is deliberately smaller than the service clock: admission
-// performs no sleeps and starts no background work.
+// AdmissionClock предоставляет контроллеру допуска только текущее время: контроллер
+// не ожидает наступления срока и не запускает фоновую работу.
 type AdmissionClock interface {
 	Now() time.Time
 }
@@ -64,8 +64,9 @@ type AdmissionDecision struct {
 	RetryAt time.Time
 }
 
-// AdmissionError is retryable only for rolling-window limits. Invalid or
-// conflicting identities require caller intervention instead of a timed retry.
+// AdmissionError помечает ошибку как допускающую повторный запрос только при срабатывании
+// лимита скользящего окна. Некорректные или конфликтующие идентификаторы требуют
+// вмешательства вызывающей стороны, а не повторного запроса по таймеру.
 type AdmissionError struct {
 	Reason    AdmissionReason
 	RetryAt   time.Time
@@ -106,8 +107,8 @@ type admissionRecord struct {
 	admittedAt time.Time
 }
 
-// AdmissionController is an in-memory rolling-window guard. Its state is
-// bounded by Capacity and it never creates timers or goroutines.
+// AdmissionController реализует в памяти ограничитель частоты со скользящим окном.
+// Число хранимых записей не превышает Capacity; контроллер не создаёт таймеров и горутин.
 type AdmissionController struct {
 	mu          sync.Mutex
 	config      AdmissionConfig
@@ -143,8 +144,8 @@ func NewAdmissionController(config AdmissionConfig, clock AdmissionClock) (*Admi
 	}, nil
 }
 
-// Admit accepts an attempt at most once per network+incident+attempt key. An
-// accepted replay returns Allowed without consuming any additional quota.
+// Admit учитывает попытку для заданных сети, инцидента и номера только один раз.
+// Повторный запрос для уже разрешённой попытки возвращает Allowed и не расходует квоту.
 func (controller *AdmissionController) Admit(request AdmissionRequest) (AdmissionDecision, error) {
 	if controller == nil {
 		return admissionFailure(AdmissionInvalidRequest, time.Time{}, false, ErrInvalidAdmissionRequest)
@@ -236,8 +237,8 @@ type admissionPersistence interface {
 	Close() error
 }
 
-// TrackedAttempts returns current rolling-window state after synchronous
-// pruning. It is useful for bounded-state metrics and tests.
+// TrackedAttempts возвращает число записей в текущем скользящем окне после
+// синхронного удаления устаревших записей. Метод используется в метриках и тестах.
 func (controller *AdmissionController) TrackedAttempts() int {
 	if controller == nil {
 		return 0

@@ -152,7 +152,7 @@ type attestationReaderIdentity struct {
 func LoadTrustedManifest(manifestReader, artifactReader io.Reader, expectations ManifestExpectations) (DeploymentManifest, error) {
 	var empty DeploymentManifest
 	if manifestReader == nil || artifactReader == nil {
-		return empty, operatorError("не передан manifest или artifact")
+		return empty, operatorError("manifest or artifact is missing")
 	}
 	if err := validateExpectations(expectations); err != nil {
 		return empty, err
@@ -160,26 +160,26 @@ func LoadTrustedManifest(manifestReader, artifactReader io.Reader, expectations 
 
 	manifestBytes, err := readLimited(manifestReader, MaxDeploymentManifestBytes)
 	if err != nil {
-		return empty, operatorError("не удалось безопасно прочитать deployment manifest")
+		return empty, operatorError("failed to read deployment manifest safely")
 	}
 	artifactBytes, err := readLimited(artifactReader, MaxCanonicalArtifactBytes)
 	if err != nil {
-		return empty, operatorError("не удалось безопасно прочитать canonical artifact")
+		return empty, operatorError("failed to read canonical artifact safely")
 	}
 
 	var manifest DeploymentManifest
 	if err := decodeStrictJSON(manifestBytes, &manifest); err != nil || !validManifestJSONShape(manifestBytes) {
-		return empty, operatorError("deployment manifest содержит недопустимый JSON")
+		return empty, operatorError("deployment manifest contains invalid JSON")
 	}
 	var artifact canonicalArtifact
 	if err := decodeStrictJSON(artifactBytes, &artifact); err != nil || !validArtifactJSONShape(artifactBytes) {
-		return empty, operatorError("canonical artifact содержит недопустимый JSON")
+		return empty, operatorError("canonical artifact contains invalid JSON")
 	}
 
 	artifactDigest := sha256.Sum256(artifactBytes)
 	artifactSHA256 := "sha256:" + hex.EncodeToString(artifactDigest[:])
 	if manifest.Artifact.SHA256 != artifactSHA256 || expectations.ArtifactSHA256 != artifactSHA256 {
-		return empty, operatorError("SHA-256 artifact не совпадает с доверенным значением")
+		return empty, operatorError("artifact SHA-256 does not match the trusted value")
 	}
 	if err := validateManifestMetadata(manifest, artifact, expectations); err != nil {
 		return empty, err
@@ -187,11 +187,11 @@ func LoadTrustedManifest(manifestReader, artifactReader io.Reader, expectations 
 
 	template, err := decodeCanonicalBytecode(artifact.DeployedBytecode)
 	if err != nil || len(template) == 0 {
-		return empty, operatorError("deployed bytecode в artifact имеет недопустимый формат")
+		return empty, operatorError("artifact deployed bytecode has an invalid format")
 	}
 	creationCode, err := decodeCanonicalBytecode(artifact.Bytecode)
 	if err != nil || len(creationCode) == 0 {
-		return empty, operatorError("creation bytecode в artifact имеет недопустимый формат")
+		return empty, operatorError("artifact creation bytecode has an invalid format")
 	}
 
 	linkedRuntime, err := linkImmutableReferences(template, artifact.ImmutableReferences, manifest.Immutables)
@@ -199,18 +199,18 @@ func LoadTrustedManifest(manifestReader, artifactReader io.Reader, expectations 
 		return empty, err
 	}
 	if uint64(len(linkedRuntime)) != manifest.Runtime.ByteLength || manifest.Runtime.ByteLength == 0 {
-		return empty, operatorError("длина linked runtime не совпадает с manifest")
+		return empty, operatorError("linked runtime bytecode length does not match the manifest")
 	}
 	runtimeHash := crypto.Keccak256Hash(linkedRuntime).Hex()
 	if manifest.Runtime.Keccak256 != runtimeHash {
-		return empty, operatorError("Keccak-256 linked runtime не совпадает с manifest")
+		return empty, operatorError("linked runtime bytecode Keccak-256 does not match the manifest")
 	}
 
 	manifest.linkedRuntime = append([]byte(nil), linkedRuntime...)
 	manifest.deploymentData = buildDeploymentData(creationCode, expectations.Destination, expectations.Sponsor)
 	seal, err := deploymentManifestSeal(manifest)
 	if err != nil {
-		return empty, operatorError("не удалось зафиксировать доверенный manifest")
+		return empty, operatorError("failed to seal the trusted manifest")
 	}
 	manifest.trustedSeal = seal
 	return manifest, nil
@@ -218,10 +218,10 @@ func LoadTrustedManifest(manifestReader, artifactReader io.Reader, expectations 
 
 func AttestDeployment(ctx context.Context, manifest DeploymentManifest, providers []ReadProvider, readTimeout time.Duration) error {
 	if ctx == nil {
-		return attestationError("не передан context")
+		return attestationError("context is nil")
 	}
 	if readTimeout <= 0 {
-		return attestationError("таймаут чтения должен быть положительным")
+		return attestationError("read timeout must be positive")
 	}
 	if err := validateProviders(providers); err != nil {
 		return err
@@ -234,7 +234,7 @@ func AttestDeployment(ctx context.Context, manifest DeploymentManifest, provider
 	for _, provider := range providers {
 		chainID, ok := timedRead(ctx, readTimeout, provider.Reader.ChainID)
 		if !ok || chainID == nil || chainID.Cmp(expectedChainID) != 0 {
-			return attestationError("поставщик чтения не подтвердил ожидаемый chain ID")
+			return attestationError("read provider did not confirm the expected chain ID")
 		}
 	}
 
@@ -245,7 +245,7 @@ func AttestDeployment(ctx context.Context, manifest DeploymentManifest, provider
 			return provider.Reader.HeaderByNumber(callContext, new(big.Int).Set(finalizedNumber))
 		})
 		if !ok || !validHeader(header) {
-			return attestationError("не удалось получить корректный finalized header")
+			return attestationError("failed to retrieve a valid finalized header")
 		}
 		finalizedHeaders[index] = header
 	}
@@ -269,10 +269,10 @@ func AttestDeployment(ctx context.Context, manifest DeploymentManifest, provider
 				return provider.Reader.HeaderByNumber(callContext, new(big.Int).Set(commonNumber))
 			})
 			if !ok || !validHeader(header) || header.Number.Cmp(commonNumber) != 0 {
-				return attestationError("поставщик чтения не подтвердил общий finalized block")
+				return attestationError("read provider did not confirm the common finalized block")
 			}
 			if finalizedHeaders[index].Number.Cmp(commonNumber) == 0 && finalizedHeaders[index].Hash() != header.Hash() {
-				return attestationError("поставщик чтения изменил finalized block hash")
+				return attestationError("read provider changed the finalized block hash")
 			}
 			commonHeaders[index] = header
 		}
@@ -281,23 +281,23 @@ func AttestDeployment(ctx context.Context, manifest DeploymentManifest, provider
 	commonHash := commonHeaders[0].Hash()
 	for _, header := range commonHeaders {
 		if header.Number.Cmp(commonNumber) != 0 || header.Hash() != commonHash {
-			return attestationError("поставщики чтения расходятся по finalized block hash")
+			return attestationError("read providers disagree on the finalized block hash")
 		}
 	}
 
 	deploymentNumber, _ := parseDecimal(manifest.DeploymentBlockNumber, true)
 	if deploymentNumber.Cmp(commonNumber) > 0 {
-		return attestationError("deployment block ещё не finalized")
+		return attestationError("deployment block is not yet finalized")
 	}
 	if deploymentNumber.Cmp(commonNumber) == 0 && manifest.DeploymentBlockHash != commonHash {
-		return attestationError("deployment block hash не совпадает с общим finalized block")
+		return attestationError("deployment block hash does not match the common finalized block")
 	}
 	for _, provider := range providers {
 		header, ok := timedRead(ctx, readTimeout, func(callContext context.Context) (*types.Header, error) {
 			return provider.Reader.HeaderByNumber(callContext, new(big.Int).Set(deploymentNumber))
 		})
 		if !ok || !validHeader(header) || header.Number.Cmp(deploymentNumber) != 0 || header.Hash() != manifest.DeploymentBlockHash {
-			return attestationError("поставщик чтения не подтвердил deployment block hash")
+			return attestationError("read provider did not confirm the deployment block hash")
 		}
 	}
 	for _, provider := range providers {
@@ -306,31 +306,31 @@ func AttestDeployment(ctx context.Context, manifest DeploymentManifest, provider
 			return transactionLookup{transaction: transaction, pending: pending}, err
 		})
 		if !ok || lookup.pending || lookup.transaction == nil {
-			return attestationError("поставщик чтения не подтвердил mined deployment transaction")
+			return attestationError("read provider did not confirm the mined deployment transaction")
 		}
 		transaction := lookup.transaction
 		if transaction.Hash() != manifest.DeploymentTransactionHash || transaction.ChainId().Cmp(expectedChainID) != 0 || transaction.To() != nil {
-			return attestationError("deployment transaction не совпадает с trusted manifest")
+			return attestationError("deployment transaction does not match the trusted manifest")
 		}
 		if !bytes.Equal(transaction.Data(), manifest.deploymentData) {
-			return attestationError("deployment transaction содержит неожиданный creation input")
+			return attestationError("deployment transaction contains unexpected creation input")
 		}
 		sender, err := types.Sender(types.LatestSignerForChainID(expectedChainID), transaction)
 		if err != nil || sender != manifest.Immutables.Sponsor {
-			return attestationError("deployment transaction не подписана ожидаемым sponsor")
+			return attestationError("deployment transaction was not signed by the expected sponsor")
 		}
 		if crypto.CreateAddress(sender, transaction.Nonce()) != manifest.Address {
-			return attestationError("CREATE address не совпадает с deployment manifest")
+			return attestationError("CREATE address does not match the deployment manifest")
 		}
 
 		receipt, receiptOK := timedRead(ctx, readTimeout, func(callContext context.Context) (*types.Receipt, error) {
 			return provider.Reader.TransactionReceipt(callContext, manifest.DeploymentTransactionHash)
 		})
 		if !receiptOK || receipt == nil || receipt.Status != types.ReceiptStatusSuccessful {
-			return attestationError("поставщик чтения не подтвердил успешный deployment receipt")
+			return attestationError("read provider did not confirm a successful deployment receipt")
 		}
 		if receipt.TxHash != manifest.DeploymentTransactionHash || receipt.ContractAddress != manifest.Address || receipt.BlockNumber == nil || receipt.BlockNumber.Cmp(deploymentNumber) != 0 || receipt.BlockHash != manifest.DeploymentBlockHash {
-			return attestationError("deployment receipt не совпадает с trusted manifest")
+			return attestationError("deployment receipt does not match the trusted manifest")
 		}
 	}
 
@@ -349,7 +349,7 @@ func AttestDeployment(ctx context.Context, manifest DeploymentManifest, provider
 			return provider.Reader.CodeAtHash(callContext, manifest.Address, commonHash)
 		})
 		if !ok || !bytes.Equal(code, manifest.linkedRuntime) || crypto.Keccak256Hash(code).Hex() != manifest.Runtime.Keccak256 {
-			return attestationError("runtime code не совпадает с доверенным artifact")
+			return attestationError("runtime bytecode does not match the trusted artifact")
 		}
 
 		for _, getter := range getters {
@@ -359,7 +359,7 @@ func AttestDeployment(ctx context.Context, manifest DeploymentManifest, provider
 			})
 			address, decodeOK := decodeCanonicalAddress(result)
 			if !callOK || !decodeOK || address != getter.expected {
-				return attestationError("getter " + getter.name + " не подтвердил ожидаемый immutable address")
+				return attestationError("getter " + getter.name + " did not confirm the expected immutable address")
 			}
 		}
 	}
@@ -369,83 +369,83 @@ func AttestDeployment(ctx context.Context, manifest DeploymentManifest, provider
 
 func validateExpectations(expectations ManifestExpectations) error {
 	if _, ok := parseDecimal(expectations.ChainID, false); !ok {
-		return operatorError("ожидаемый chain ID имеет недопустимый формат")
+		return operatorError("expected chain ID has an invalid format")
 	}
 	if expectations.ContractRole != rescuerContractRole {
-		return operatorError("ожидаемая роль контракта не поддерживается")
+		return operatorError("expected contract role is unsupported")
 	}
 	if expectations.Destination == (common.Address{}) || expectations.Sponsor == (common.Address{}) {
-		return operatorError("ожидаемые destination и sponsor должны быть ненулевыми")
+		return operatorError("expected destination and sponsor addresses must be non-zero")
 	}
 	if expectations.Destination == expectations.Sponsor {
-		return operatorError("ожидаемые destination и sponsor должны различаться")
+		return operatorError("expected destination and sponsor addresses must differ")
 	}
 	if !validSHA256(expectations.ArtifactSHA256) {
-		return operatorError("ожидаемый SHA-256 artifact имеет недопустимый формат")
+		return operatorError("expected artifact SHA-256 has an invalid format")
 	}
 	if !validSourceProvenance(expectations.SourceProvenance) {
-		return operatorError("ожидаемое происхождение source имеет недопустимый формат")
+		return operatorError("expected source provenance has an invalid format")
 	}
 	if expectations.CompilerVersion == "" {
-		return operatorError("не зафиксирована ожидаемая версия compiler")
+		return operatorError("expected compiler version is not pinned")
 	}
 	return nil
 }
 
 func validateManifestMetadata(manifest DeploymentManifest, artifact canonicalArtifact, expectations ManifestExpectations) error {
 	if manifest.SchemaVersion != manifestSchemaVersion {
-		return operatorError("версия схемы deployment manifest не поддерживается")
+		return operatorError("deployment manifest schema version is unsupported")
 	}
 	if manifest.ContractRole != rescuerContractRole || manifest.ContractRole != expectations.ContractRole {
-		return operatorError("роль контракта не совпадает с доверенным значением")
+		return operatorError("contract role does not match the trusted value")
 	}
 	if _, ok := parseDecimal(manifest.ChainID, false); !ok || manifest.ChainID != expectations.ChainID {
-		return operatorError("chain ID в manifest не совпадает с доверенным значением")
+		return operatorError("manifest chain ID does not match the trusted value")
 	}
 	if _, ok := parseDecimal(manifest.DeploymentBlockNumber, true); !ok {
-		return operatorError("номер deployment block имеет недопустимый формат")
+		return operatorError("deployment block number has an invalid format")
 	}
 	if manifest.Address == (common.Address{}) || manifest.DeploymentTransactionHash == (common.Hash{}) || manifest.DeploymentBlockHash == (common.Hash{}) {
-		return operatorError("deployment manifest содержит нулевой адрес или hash")
+		return operatorError("deployment manifest contains a zero address or hash")
 	}
 	if manifest.Compiler.Version != expectations.CompilerVersion || artifact.CompilerVersion != expectations.CompilerVersion {
-		return operatorError("версия compiler не совпадает с доверенным значением")
+		return operatorError("compiler version does not match the trusted value")
 	}
 	if !validJSONObject(manifest.Compiler.Settings) || !validJSONObject(artifact.Settings) || !equalJSON(manifest.Compiler.Settings, artifact.Settings) {
-		return operatorError("настройки compiler в manifest и artifact не совпадают")
+		return operatorError("compiler settings in the manifest and artifact do not match")
 	}
 	if manifest.Source != expectations.SourceProvenance || !validSourceProvenance(manifest.Source) {
-		return operatorError("происхождение source не совпадает с доверенным значением")
+		return operatorError("source provenance does not match the trusted value")
 	}
 	if artifact.ArtifactVersion != artifactSchemaVersion || artifact.ContractName != rescuerContractName || artifact.SourceName != rescuerSourceName {
-		return operatorError("metadata canonical artifact не соответствует RescuerV2")
+		return operatorError("canonical artifact metadata does not match RescuerV2")
 	}
 	if !validSHA256(artifact.SourceTreeSHA256) || !validSHA256(artifact.CompilerInputSHA256) {
-		return operatorError("digest source или compiler input в artifact имеет недопустимый формат")
+		return operatorError("artifact source tree or compiler input digest has an invalid format")
 	}
 	if manifest.Source.Kind == "source-tree-sha256" && manifest.Source.Value != artifact.SourceTreeSHA256 {
-		return operatorError("source tree в artifact не совпадает с manifest")
+		return operatorError("artifact source tree does not match the manifest")
 	}
 	if !validJSONArray(artifact.ABI) {
-		return operatorError("ABI в canonical artifact имеет недопустимый формат")
+		return operatorError("canonical artifact ABI has an invalid format")
 	}
 	if manifest.ConstructorArguments.Destination != manifest.Immutables.Destination || manifest.ConstructorArguments.Sponsor != manifest.Immutables.Sponsor {
-		return operatorError("constructor arguments не совпадают с immutable values")
+		return operatorError("constructor arguments do not match the immutable values")
 	}
 	if manifest.Immutables.Destination != expectations.Destination || manifest.Immutables.Sponsor != expectations.Sponsor {
-		return operatorError("immutable values не совпадают с доверенными адресами")
+		return operatorError("immutable values do not match the trusted addresses")
 	}
 	if manifest.Immutables.Self != manifest.Address {
-		return operatorError("immutable self не совпадает с deployment address")
+		return operatorError("self immutable does not match the deployment address")
 	}
 	if manifest.Immutables.Destination == (common.Address{}) || manifest.Immutables.Sponsor == (common.Address{}) || manifest.Immutables.Self == (common.Address{}) {
-		return operatorError("immutable addresses должны быть ненулевыми")
+		return operatorError("immutable addresses must be non-zero")
 	}
 	if manifest.Immutables.Destination == manifest.Immutables.Sponsor {
-		return operatorError("immutable destination и sponsor должны различаться")
+		return operatorError("immutable destination and sponsor addresses must differ")
 	}
 	if !validKeccak256(manifest.Runtime.Keccak256) || manifest.Runtime.ByteLength == 0 {
-		return operatorError("runtime identity имеет недопустимый формат")
+		return operatorError("runtime bytecode identifier has an invalid format")
 	}
 	return nil
 }
@@ -457,36 +457,36 @@ func linkImmutableReferences(template []byte, references map[string][]immutableR
 		"sponsor":     values.Sponsor,
 	}
 	if len(references) != len(expected) {
-		return nil, operatorError("immutable references должны содержать только destination, self и sponsor")
+		return nil, operatorError("immutable references must contain only destination, self, and sponsor")
 	}
 
 	ranges := make([]immutableRange, 0)
 	for name, value := range expected {
 		entries, ok := references[name]
 		if !ok || len(entries) == 0 {
-			return nil, operatorError("artifact не содержит обязательную immutable reference")
+			return nil, operatorError("artifact is missing a required immutable reference")
 		}
 		for _, entry := range entries {
 			if entry.Length != 32 || entry.Start > uint64(len(template)) || entry.Length > uint64(len(template))-entry.Start {
-				return nil, operatorError("immutable reference выходит за границы runtime template")
+				return nil, operatorError("immutable reference is outside the runtime bytecode template")
 			}
 			end := entry.Start + entry.Length
 			if !allZero(template[entry.Start:end]) {
-				return nil, operatorError("immutable placeholder в runtime template должен быть нулевым")
+				return nil, operatorError("immutable slot in the runtime bytecode template must be zero-filled")
 			}
 			ranges = append(ranges, immutableRange{start: entry.Start, end: end, value: value})
 		}
 	}
 	for name := range references {
 		if _, ok := expected[name]; !ok {
-			return nil, operatorError("artifact содержит неизвестную immutable reference")
+			return nil, operatorError("artifact contains an unknown immutable reference")
 		}
 	}
 
 	sort.Slice(ranges, func(i, j int) bool { return ranges[i].start < ranges[j].start })
 	for index := 1; index < len(ranges); index++ {
 		if ranges[index].start < ranges[index-1].end {
-			return nil, operatorError("immutable references пересекаются")
+			return nil, operatorError("immutable references overlap")
 		}
 	}
 
@@ -499,7 +499,7 @@ func linkImmutableReferences(template []byte, references map[string][]immutableR
 
 func validateProviders(providers []ReadProvider) error {
 	if len(providers) < 2 {
-		return attestationError("требуются минимум два независимых поставщика чтения")
+		return attestationError("at least two independent read providers are required")
 	}
 	ids := make(map[string]struct{}, len(providers))
 	endpointFingerprints := make(map[string]struct{}, len(providers))
@@ -510,30 +510,30 @@ func validateProviders(providers []ReadProvider) error {
 		endpointFingerprint := strings.TrimSpace(provider.EndpointFingerprint)
 		trustDomain := strings.TrimSpace(provider.TrustDomain)
 		if id == "" {
-			return attestationError("идентификатор поставщика чтения не должен быть пустым")
+			return attestationError("read provider identifier must not be empty")
 		}
 		if endpointFingerprint == "" || trustDomain == "" {
-			return attestationError("не заданы обязательные атрибуты независимости поставщика чтения")
+			return attestationError("required read provider independence attributes are missing")
 		}
 		if _, exists := ids[id]; exists {
-			return attestationError("идентификаторы поставщиков чтения должны быть уникальными")
+			return attestationError("read provider identifiers must be unique")
 		}
 		ids[id] = struct{}{}
 		if _, exists := endpointFingerprints[endpointFingerprint]; exists {
-			return attestationError("поставщики чтения не имеют уникальных endpoint identity")
+			return attestationError("read providers do not have unique endpoint identifiers")
 		}
 		endpointFingerprints[endpointFingerprint] = struct{}{}
 		if _, exists := trustDomains[trustDomain]; exists {
-			return attestationError("поставщики чтения не принадлежат независимым trust domain")
+			return attestationError("read providers do not belong to independent trust domains")
 		}
 		trustDomains[trustDomain] = struct{}{}
 
 		identity, ok := readerIdentity(provider.Reader)
 		if !ok {
-			return attestationError("identity поставщика чтения нельзя надёжно сравнить")
+			return attestationError("read provider identity cannot be compared reliably")
 		}
 		if _, exists := readerIdentities[identity]; exists {
-			return attestationError("повторно использован один экземпляр поставщика чтения")
+			return attestationError("the same read provider instance was reused")
 		}
 		readerIdentities[identity] = struct{}{}
 	}
@@ -543,22 +543,22 @@ func validateProviders(providers []ReadProvider) error {
 func validateLoadedManifest(manifest DeploymentManifest) error {
 	seal, err := deploymentManifestSeal(manifest)
 	if err != nil || seal != manifest.trustedSeal || manifest.trustedSeal == ([sha256.Size]byte{}) {
-		return attestationError("manifest не был доверенно загружен или изменён после проверки")
+		return attestationError("manifest was not loaded as trusted or was modified after validation")
 	}
 	if len(manifest.linkedRuntime) == 0 || uint64(len(manifest.linkedRuntime)) != manifest.Runtime.ByteLength {
-		return attestationError("trusted manifest не содержит linked runtime")
+		return attestationError("trusted manifest is missing linked runtime bytecode")
 	}
 	if len(manifest.deploymentData) <= 64 {
-		return attestationError("trusted manifest не содержит deployment input")
+		return attestationError("trusted manifest is missing deployment input")
 	}
 	if crypto.Keccak256Hash(manifest.linkedRuntime).Hex() != manifest.Runtime.Keccak256 {
-		return attestationError("linked runtime в trusted manifest повреждён")
+		return attestationError("linked runtime bytecode in the trusted manifest is corrupt")
 	}
 	if _, ok := parseDecimal(manifest.ChainID, false); !ok {
-		return attestationError("chain ID в trusted manifest повреждён")
+		return attestationError("chain ID in the trusted manifest is corrupt")
 	}
 	if _, ok := parseDecimal(manifest.DeploymentBlockNumber, true); !ok {
-		return attestationError("номер deployment block в trusted manifest повреждён")
+		return attestationError("deployment block number in the trusted manifest is corrupt")
 	}
 	return nil
 }
@@ -600,7 +600,7 @@ func methodSelector(signature string) []byte {
 func readLimited(reader io.Reader, limit int64) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil || int64(len(data)) > limit || len(data) == 0 {
-		return nil, errors.New("invalid bounded input")
+		return nil, errors.New("invalid size-bounded input")
 	}
 	return data, nil
 }
@@ -616,7 +616,7 @@ func decodeStrictJSON(data []byte, destination any) error {
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return errors.New("trailing JSON")
+		return errors.New("trailing data after JSON")
 	}
 	return nil
 }
@@ -704,7 +704,7 @@ func rejectDuplicateJSONKeys(data []byte) error {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return errors.New("trailing JSON")
+		return errors.New("trailing data after JSON")
 	}
 	return nil
 }
@@ -882,9 +882,9 @@ func readerIdentity(reader AttestationReader) (attestationReaderIdentity, bool) 
 }
 
 func operatorError(reason string) error {
-	return fmt.Errorf("доверенная загрузка deployment manifest отклонена: %s", reason)
+	return fmt.Errorf("trusted deployment manifest load rejected: %s", reason)
 }
 
 func attestationError(reason string) error {
-	return fmt.Errorf("аттестация deployment заблокирована: %s", reason)
+	return fmt.Errorf("deployment attestation blocked: %s", reason)
 }

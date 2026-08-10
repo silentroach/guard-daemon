@@ -15,14 +15,14 @@ import (
 const MaxAlertEntries = 4096
 
 var (
-	ErrInvalidAlertConfig = errors.New("настройки alert manager недопустимы")
-	ErrInvalidAlert       = errors.New("alert имеет недопустимый chain ID или код")
-	ErrAlertCapacity      = errors.New("достигнут предел записей alert manager")
-	ErrAlertPersistence   = errors.New("persistent alert state недоступен")
-	ErrAlertDelivery      = errors.New("доставка alert не подтверждена")
+	ErrInvalidAlertConfig = errors.New("invalid alert manager configuration")
+	ErrInvalidAlert       = errors.New("alert has an invalid chain ID or code")
+	ErrAlertCapacity      = errors.New("alert manager capacity reached")
+	ErrAlertPersistence   = errors.New("persisted alert state is unavailable")
+	ErrAlertDelivery      = errors.New("alert delivery was not acknowledged")
 )
 
-// AlertCode является закрытым набором причин operator alert.
+// AlertCode перечисляет все допустимые причины оповещения оператора.
 type AlertCode uint8
 
 const (
@@ -60,7 +60,7 @@ const (
 	AlertResolved
 )
 
-// Alert не содержит свободного message и поэтому безопасен для внешнего sink.
+// Alert не содержит произвольного текста и поэтому безопасен для внешнего приёмника.
 type Alert struct {
 	ChainID domain.NetworkID
 	Code    AlertCode
@@ -114,8 +114,9 @@ type committedAlertPersistenceError struct{}
 func (committedAlertPersistenceError) Error() string { return ErrAlertPersistence.Error() }
 func (committedAlertPersistenceError) Unwrap() error { return ErrAlertPersistence }
 
-// AlertManager дедуплицирует alerts по chain+code. Sink всегда вызывается без
-// удержания внутренней блокировки и может безопасно читать/resolve manager.
+// AlertManager объединяет повторные оповещения с одинаковыми сетью и кодом. Приёмник
+// всегда вызывается без удержания внутренней блокировки и может безопасно читать
+// состояние диспетчера или снимать оповещения.
 type AlertManager struct {
 	mu        sync.RWMutex
 	clock     AlertClock
@@ -150,8 +151,8 @@ func NewAlertManager(config AlertManagerConfig, clock AlertClock, sink AlertSink
 	return manager, nil
 }
 
-// Raise активирует alert и возвращает true, только если sink получил initial
-// notification либо cooldown reminder.
+// Raise активирует оповещение и возвращает true, только если приёмник получил первое
+// уведомление или повторное напоминание после заданного интервала.
 func (manager *AlertManager) Raise(chainID domain.NetworkID, code AlertCode) (bool, error) {
 	if chainID <= 0 || !validAlertCode(code) {
 		return false, ErrInvalidAlert
@@ -202,7 +203,7 @@ func (manager *AlertManager) Raise(chainID domain.NetworkID, code AlertCode) (bo
 	return emit, nil
 }
 
-// Resolve посылает ровно одно resolved notification для активной записи.
+// Resolve отправляет ровно одно уведомление о снятии активного оповещения.
 func (manager *AlertManager) Resolve(chainID domain.NetworkID, code AlertCode) (bool, error) {
 	if chainID <= 0 || !validAlertCode(code) {
 		return false, ErrInvalidAlert
@@ -321,7 +322,8 @@ func (manager *AlertManager) Active(chainID domain.NetworkID, code AlertCode) bo
 	return exists && entry.active
 }
 
-// Snapshot возвращает упорядоченную копию bounded alert state.
+// Snapshot возвращает упорядоченную копию состояния оповещений, число которых
+// ограничено настройками диспетчера.
 func (manager *AlertManager) Snapshot() []AlertStatus {
 	manager.mu.RLock()
 	snapshot := make([]AlertStatus, 0, len(manager.entries))

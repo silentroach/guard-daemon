@@ -17,7 +17,7 @@ SHA = "1" * 40
 
 
 def workflow_fixture(extra_step: str = "", comments: str = "") -> str:
-    return f"""name: Проверка fixture
+    return f"""name: Example Check
 {comments}
 on:
   pull_request:
@@ -30,10 +30,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   test:
-    name: Проверка fixture
+    name: Example Check
     runs-on: ubuntu-24.04
     steps:
-      - name: Получить код
+      - name: Check out source
         uses: actions/checkout@{SHA}
         with:
           persist-credentials: false
@@ -47,10 +47,10 @@ class StructuralYamlTests(unittest.TestCase):
             workflow_fixture(
                 comments="# pull_request_target: ${{secrets.KEY}}\n# uses: bad/action@main"
             ),
-            "fixture",
+            "example",
         )
         self.assertIn("on", document)
-        self.assertEqual(validate_workflow(document, "fixture"), [])
+        self.assertEqual(validate_workflow(document, "example"), [])
 
     def test_comments_cannot_supply_missing_structure(self) -> None:
         document = parse_yaml(
@@ -59,18 +59,18 @@ class StructuralYamlTests(unittest.TestCase):
             )
             .replace("  pull_request:\n", "")
             .replace("permissions:\n  contents: read\n", ""),
-            "fixture",
+            "example",
         )
         self.assertTrue(
-            any("обязательны triggers" in issue for issue in validate_workflow(document, "fixture"))
+            any("triggers are required" in issue for issue in validate_workflow(document, "example"))
         )
         self.assertTrue(
-            any("top-level permissions" in issue for issue in validate_workflow(document, "fixture"))
+            any("root `permissions`" in issue for issue in validate_workflow(document, "example"))
         )
 
     def test_duplicate_keys_and_merge_keys_fail_closed(self) -> None:
         with self.assertRaises(PolicyError):
-            parse_yaml("name: один\nname: два\n", "duplicate")
+            parse_yaml("name: one\nname: two\n", "duplicate")
         with self.assertRaises(PolicyError):
             parse_yaml(
                 "defaults: &defaults\n  value: one\nroot:\n  <<: *defaults\n",
@@ -81,58 +81,58 @@ class StructuralYamlTests(unittest.TestCase):
         for expression in ("${{secrets.KEY}}", "${{ secrets['KEY'] }}"):
             document = parse_yaml(
                 workflow_fixture(
-                    extra_step=f"""      - name: Опасный шаг
+                    extra_step=f"""      - name: Dangerous step
         run: command
         env:
           VALUE: "{expression}"
 """
                 ),
-                "fixture",
+                "example",
             )
             self.assertTrue(
-                any("secrets expression" in issue for issue in validate_workflow(document, "fixture"))
+                any("`secrets` expression" in issue for issue in validate_workflow(document, "example"))
             )
         document = parse_yaml(
             workflow_fixture().replace(
                 "runs-on: ubuntu-24.04", "environment: production\n    runs-on: ubuntu-24.04"
             ),
-            "fixture",
+            "example",
         )
-        self.assertTrue(any("environment" in issue for issue in validate_workflow(document, "fixture")))
+        self.assertTrue(any("environment" in issue for issue in validate_workflow(document, "example")))
 
     def test_floating_action_and_checkout_credentials_are_rejected(self) -> None:
         document = parse_yaml(
             workflow_fixture().replace(f"actions/checkout@{SHA}", "actions/checkout@main"),
-            "fixture",
+            "example",
         )
-        issues = validate_workflow(document, "fixture")
-        self.assertTrue(any("40-символьный SHA" in issue for issue in issues))
+        issues = validate_workflow(document, "example")
+        self.assertTrue(any("40-character SHA" in issue for issue in issues))
 
         document = parse_yaml(
             workflow_fixture().replace(
                 "persist-credentials: false", "persist-credentials: true"
             ),
-            "fixture",
+            "example",
         )
         self.assertTrue(
             any(
                 "persist-credentials: false" in issue
-                for issue in validate_workflow(document, "fixture")
+                for issue in validate_workflow(document, "example")
             )
         )
 
     def test_unsafe_trigger_concurrency_and_rpc_input_are_rejected(self) -> None:
-        document = parse_yaml(workflow_fixture(), "fixture")
+        document = parse_yaml(workflow_fixture(), "example")
         document["on"]["pull_request_target"] = ""
         document["concurrency"]["cancel-in-progress"] = "false"
         document["jobs"]["test"]["steps"].append(
             {
-                "name": "Опасный RPC",
+                "name": "Dangerous RPC",
                 "run": "command ${{ vars['RPC_URL'] }} --rpc-url https://mainnet.invalid",
             }
         )
-        issues = validate_workflow(document, "fixture")
-        self.assertTrue(any("запрещённые triggers" in issue for issue in issues))
+        issues = validate_workflow(document, "example")
+        self.assertTrue(any("forbidden triggers" in issue for issue in issues))
         self.assertTrue(any("cancel-in-progress" in issue for issue in issues))
         self.assertTrue(any("RPC" in issue for issue in issues))
 
@@ -179,12 +179,17 @@ class DependabotTests(unittest.TestCase):
         )
         self.assertEqual(validate_dependabot(config, "dependabot"), [])
         config["updates"][0]["auto-merge"] = "true"
-        self.assertTrue(any("auto-merge" in issue for issue in validate_dependabot(config, "dependabot")))
+        self.assertTrue(
+            any(
+                "automatic merge" in issue
+                for issue in validate_dependabot(config, "dependabot")
+            )
+        )
         config["updates"][1]["directory"] = "/nested"
         config["updates"][2]["package-ecosystem"] = "npm"
         issues = validate_dependabot(config, "dependabot")
         self.assertTrue(any("root directory" in issue for issue in issues))
-        self.assertTrue(any("уникальным" in issue for issue in issues))
+        self.assertTrue(any("unique" in issue for issue in issues))
 
 
 class DependencyReviewPolicyTests(unittest.TestCase):
@@ -201,7 +206,7 @@ class DependencyReviewPolicyTests(unittest.TestCase):
         review["with"]["deny-licenses"] = "GPL-3.0-only"
         self.assertTrue(
             any(
-                "options должны быть fail-closed" in issue
+                "dependency review options must fail closed" in issue
                 for issue in validate_dependency_review(changed, "security")
             )
         )

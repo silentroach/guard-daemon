@@ -10,13 +10,13 @@ import (
 )
 
 var (
-	ErrInvalidFeePolicy        = errors.New("rescue fee policy: некорректная конфигурация")
-	ErrInvalidFeeInput         = errors.New("rescue fee policy: некорректные fee inputs")
-	ErrFeeUnderpriced          = errors.New("rescue fee policy: max fee ниже base fee и priority fee")
-	ErrFeeCostOverflow         = errors.New("rescue fee policy: переполнение максимальной стоимости")
-	ErrInvalidMinimumValue     = errors.New("rescue value policy: некорректные входные данные")
-	ErrMinimumValueOverflow    = errors.New("rescue value policy: переполнение минимальной стоимости")
-	ErrTrustedTokenValueNeeded = errors.New("rescue value policy: для известного token требуется доверенная оценка")
+	ErrInvalidFeePolicy        = errors.New("rescue fee policy: invalid configuration")
+	ErrInvalidFeeInput         = errors.New("rescue fee policy: invalid fee input")
+	ErrFeeUnderpriced          = errors.New("rescue fee policy: maximum fee is below the sum of base and priority fees")
+	ErrFeeCostOverflow         = errors.New("rescue fee policy: maximum cost overflow")
+	ErrInvalidMinimumValue     = errors.New("rescue value policy: invalid input")
+	ErrMinimumValueOverflow    = errors.New("rescue value policy: minimum value overflow")
+	ErrTrustedTokenValueNeeded = errors.New("rescue value policy: known token requires a trusted valuation")
 )
 
 type FeeAsset uint8
@@ -27,8 +27,8 @@ const (
 	FeeAssetUnknownToken
 )
 
-// FeePolicy contains only chain-specific limits. Overhead and
-// UnknownTokenCostCap are wei amounts, not gas units.
+// FeePolicy содержит только лимиты, зависящие от сети. Overhead и UnknownTokenCostCap
+// задаются в wei, а не в единицах gas.
 type FeePolicy struct {
 	Network                 domain.NetworkID
 	MaxFeePerGas            uint256.Int
@@ -50,8 +50,9 @@ type FeeQuote struct {
 	MaximumCost uint256.Int
 }
 
-// BuildFeeQuote derives the priority fee from the suggested legacy gas price
-// and base fee, then applies only the supplied network policy caps.
+// BuildFeeQuote вычисляет приоритетную комиссию из предложенной цены gas для
+// транзакций прежнего формата и базовой комиссии, затем применяет лимиты переданной
+// политики сети.
 func BuildFeeQuote(policy FeePolicy, asset FeeAsset, baseFee, suggestedPrice *big.Int) (FeeQuote, error) {
 	if !validFeePolicy(policy) {
 		return FeeQuote{}, ErrInvalidFeePolicy
@@ -150,9 +151,10 @@ type MinimumValueDecision struct {
 	Required uint256.Int
 }
 
-// EvaluateMinimumValue compares native value in wei. Unknown token value is
-// never trusted; opt-in can only bound the sponsor's maximum cost. Known-token
-// valuation must be supplied by a separate trusted valuation policy.
+// EvaluateMinimumValue сравнивает стоимость нативного актива в wei. Оценка стоимости
+// неизвестного токена никогда не считается доверенной; явное разрешение такого токена
+// лишь ограничивает максимальные затраты спонсора. Стоимость известного токена должна
+// задаваться отдельной доверенной политикой оценки.
 func EvaluateMinimumValue(policy FeePolicy, asset FeeAsset, sourceValue *big.Int, minimumNativeNetValue, maximumCost uint256.Int) (MinimumValueDecision, error) {
 	if !validFeePolicy(policy) || maximumCost.IsZero() {
 		return MinimumValueDecision{}, ErrInvalidMinimumValue

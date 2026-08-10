@@ -126,18 +126,18 @@ const requiredValue = (
 ): string => {
   const value = values.get(name);
   if (!value) {
-    throw new DeploymentInputError(`Не задан обязательный аргумент ${name}`);
+    throw new DeploymentInputError(`Required argument ${name} is missing`);
   }
   return value;
 };
 
 const parsePositiveInteger = (value: string, name: string): number => {
   if (!/^[1-9][0-9]*$/.test(value)) {
-    throw new DeploymentInputError(`${name} должен быть положительным целым`);
+    throw new DeploymentInputError(`${name} must be a positive integer`);
   }
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) {
-    throw new DeploymentInputError(`${name} выходит за безопасный диапазон`);
+    throw new DeploymentInputError(`${name} is outside the safe range`);
   }
   return parsed;
 };
@@ -152,12 +152,12 @@ const parseDecimalBigInt = (
   const pattern = allowZero ? /^(?:0|[1-9][0-9]*)$/ : /^[1-9][0-9]*$/;
   if (!pattern.test(value)) {
     throw new DeploymentInputError(
-      `${name} должен быть ${allowZero ? "неотрицательным" : "положительным"} decimal bigint`,
+      `${name} must be a ${allowZero ? "nonnegative" : "positive"} decimal bigint`,
     );
   }
   const parsed = BigInt(value);
   if (parsed > maximumUint256) {
-    throw new DeploymentInputError(`${name} выходит за диапазон uint256`);
+    throw new DeploymentInputError(`${name} is outside the uint256 range`);
   }
   return parsed;
 };
@@ -171,21 +171,25 @@ export const parseCLIOptions = (
   for (let index = 0; index < args.length; index++) {
     const name = args[index];
     if (!name || !optionNames.has(name)) {
-      throw new DeploymentInputError(`Неизвестный аргумент ${name ?? ""}`);
+      throw new DeploymentInputError(`Unknown argument ${name ?? ""}`);
     }
     if (name === "--broadcast") {
       if (broadcast) {
-        throw new DeploymentInputError("Аргумент --broadcast указан повторно");
+        throw new DeploymentInputError(
+          "Argument --broadcast was specified more than once",
+        );
       }
       broadcast = true;
       continue;
     }
     if (values.has(name)) {
-      throw new DeploymentInputError(`Аргумент ${name} указан повторно`);
+      throw new DeploymentInputError(
+        `Argument ${name} was specified more than once`,
+      );
     }
     const value = args[index + 1];
     if (!value || value.startsWith("--")) {
-      throw new DeploymentInputError(`Для ${name} не задано значение`);
+      throw new DeploymentInputError(`No value was specified for ${name}`);
     }
     values.set(name, value);
     index++;
@@ -194,7 +198,7 @@ export const parseCLIOptions = (
   const chainIDValue = requiredValue(values, "--chain-id");
   if (!/^[1-9][0-9]*$/.test(chainIDValue)) {
     throw new DeploymentInputError(
-      "--chain-id должен быть положительным decimal",
+      "--chain-id must be a positive decimal value",
     );
   }
   const chainId = BigInt(chainIDValue);
@@ -206,7 +210,7 @@ export const parseCLIOptions = (
   const recoveryDirectoryValue = values.get("--recovery-directory");
   if (productionChainIDs.has(chainId) && recoveryDirectoryValue) {
     throw new DeploymentInputError(
-      "--recovery-directory разрешён только для локальной chain ID 31337",
+      "--recovery-directory is allowed only for local chain ID 31337",
     );
   }
   if (!broadcast) {
@@ -222,7 +226,7 @@ export const parseCLIOptions = (
   const releaseCandidatePath = requiredValue(values, "--release-candidate");
   if (!broadcastChainIDs.has(chainId)) {
     throw new DeploymentInputError(
-      "Broadcast разрешён только для chain ID 1, 56, 137 и локальной 31337",
+      "Broadcast is allowed only for chain IDs 1, 56, 137, and local chain ID 31337",
     );
   }
   const rpcURLArgument = values.get("--rpc-url");
@@ -232,13 +236,13 @@ export const parseCLIOptions = (
   } else {
     if (rpcURLArgument) {
       throw new DeploymentInputError(
-        "Production RPC задаётся только через DEPLOYMENT_RPC_URL, а не --rpc-url",
+        "Production RPC must be specified through DEPLOYMENT_RPC_URL, not --rpc-url",
       );
     }
     const deploymentRPCURL = environment["DEPLOYMENT_RPC_URL"];
     if (!deploymentRPCURL) {
       throw new DeploymentInputError(
-        "Для production --broadcast не задан DEPLOYMENT_RPC_URL",
+        "DEPLOYMENT_RPC_URL is not set for production --broadcast",
       );
     }
     rpcURL = deploymentRPCURL;
@@ -269,12 +273,12 @@ export const parseCLIOptions = (
   );
   if (maxPriorityFeePerGas > maxFeePerGas) {
     throw new DeploymentInputError(
-      "--max-priority-fee-per-gas-wei превышает --max-fee-per-gas-wei",
+      "--max-priority-fee-per-gas-wei exceeds --max-fee-per-gas-wei",
     );
   }
   if (gasLimit * maxFeePerGas > maxTotalCost) {
     throw new DeploymentInputError(
-      "Предел gasLimit * maxFeePerGas превышает --max-total-cost-wei",
+      "gasLimit * maxFeePerGas limit exceeds --max-total-cost-wei",
     );
   }
   return {
@@ -361,15 +365,13 @@ const canonicalPath = async (path: string): Promise<string> => {
     return await realpath(path);
   } catch (error) {
     if (!hasFileSystemCode(error, "ENOENT")) {
-      throw new DeploymentError("Не удалось проверить путь вывода");
+      throw new DeploymentError("Failed to inspect output path");
     }
   }
   try {
     return resolve(await realpath(dirname(path)), basename(path));
   } catch {
-    throw new DeploymentError(
-      "Родительский каталог вывода должен существовать",
-    );
+    throw new DeploymentError("Output parent directory must exist");
   }
 };
 
@@ -386,7 +388,7 @@ const pathIdentity = async (path: string): Promise<PathIdentity> => {
     if (hasFileSystemCode(error, "ENOENT")) {
       return { canonical };
     }
-    throw new DeploymentError("Не удалось проверить путь вывода");
+    throw new DeploymentError("Failed to inspect output path");
   }
 };
 
@@ -404,7 +406,7 @@ const verifyDistinctPaths = async (paths: readonly string[]): Promise<void> => {
           a.inode === b.inode)
       ) {
         throw new DeploymentInputError(
-          "Artifact, release candidate, recovery record и manifest должны быть разными файлами",
+          "Artifact, release candidate, recovery record, and manifest must be different files",
         );
       }
     }
@@ -421,10 +423,10 @@ const requireAbsentOutput = async (
     if (hasFileSystemCode(error, "ENOENT")) {
       return;
     }
-    throw new DeploymentError(`Не удалось проверить ${subject}`);
+    throw new DeploymentError(`Failed to inspect ${subject}`);
   }
   throw new DeploymentInputError(
-    `${subject} уже существует; автоматическая перезапись запрещена`,
+    `${subject} already exists; automatic overwrite is forbidden`,
   );
 };
 
@@ -436,20 +438,20 @@ const validateDirectoryMetadata = (
   const mode = Number(metadata.mode & 0o7777n);
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
     throw new DeploymentInputError(
-      `${subject} должен быть обычным каталогом, а не символической ссылкой`,
+      `${subject} must be a regular directory, not a symbolic link`,
     );
   }
   if (requirements.exactMode !== undefined && mode !== requirements.exactMode) {
     throw new DeploymentInputError(
-      `${subject} должен иметь режим ${requirements.exactMode.toString(8).padStart(4, "0")}`,
+      `${subject} must have mode ${requirements.exactMode.toString(8).padStart(4, "0")}`,
     );
   }
   if (requirements.rootOwned && (metadata.uid !== 0n || metadata.gid !== 0n)) {
-    throw new DeploymentInputError(`${subject} должен принадлежать root:root`);
+    throw new DeploymentInputError(`${subject} must be owned by root:root`);
   }
   if (requirements.rejectGroupOrWorldWrite && (mode & 0o022) !== 0) {
     throw new DeploymentInputError(
-      `${subject} не должен быть доступен для записи группе или остальным`,
+      `${subject} must not be writable by group or others`,
     );
   }
 };
@@ -463,7 +465,7 @@ const readDirectoryMetadata = async (
   try {
     metadata = await lstat(path, { bigint: true });
   } catch {
-    throw new DeploymentInputError(`${subject} должен заранее существовать`);
+    throw new DeploymentInputError(`${subject} must already exist`);
   }
   validateDirectoryMetadata(metadata, subject, requirements);
   return metadata;
@@ -479,7 +481,7 @@ const requireDirectory = async (
   try {
     canonical = await realpath(path);
   } catch {
-    throw new DeploymentInputError(`Не удалось канонизировать ${subject}`);
+    throw new DeploymentInputError(`Failed to canonicalize ${subject}`);
   }
   const [current, canonicalMetadata] = await Promise.all([
     readDirectoryMetadata(path, subject, requirements),
@@ -492,7 +494,7 @@ const requireDirectory = async (
     current.ino !== canonicalMetadata.ino
   ) {
     throw new DeploymentInputError(
-      `${subject} изменился во время проверки identity`,
+      `${subject} changed during identity verification`,
     );
   }
   return {
@@ -521,7 +523,7 @@ const requireStableDirectory = async (
     current.inode !== expected.inode
   ) {
     throw new DeploymentInputError(
-      `${subject} изменился после предварительной проверки`,
+      `${subject} changed after the preliminary check`,
     );
   }
 };
@@ -533,7 +535,7 @@ const requireFixedDirectory = async (
 ): Promise<void> => {
   const directory = await requireDirectory(path, subject, requirements);
   if (directory.canonical !== path) {
-    throw new DeploymentInputError(`${subject} должен иметь канонический путь`);
+    throw new DeploymentInputError(`${subject} must have a canonical path`);
   }
 };
 
@@ -554,7 +556,7 @@ const prepareManifestPath = async (
     : localOutputDirectoryRequirements;
   const parent = await requireDirectory(
     dirname(path),
-    "Родитель manifest",
+    "Manifest parent",
     requirements,
   );
   const canonical = resolve(parent.canonical, basename(path));
@@ -576,7 +578,7 @@ const prepareRecoveryDirectory = async (
   );
   if (production && directory.canonical !== productionRecoveryDirectory) {
     throw new DeploymentInputError(
-      `Production recovery registry должен быть каноническим ${productionRecoveryDirectory}`,
+      `Production recovery registry must be canonical ${productionRecoveryDirectory}`,
     );
   }
   if (options.chainId === 31337n) {
@@ -585,7 +587,7 @@ const prepareRecoveryDirectory = async (
       temporaryRoot = await realpath(tmpdir());
     } catch {
       throw new DeploymentInputError(
-        "Не удалось проверить корень временных каталогов",
+        "Failed to inspect temporary directory root",
       );
     }
     if (
@@ -593,7 +595,7 @@ const prepareRecoveryDirectory = async (
       !isWithin(temporaryRoot, directory.canonical)
     ) {
       throw new DeploymentInputError(
-        "Локальный recovery registry должен быть отдельным временным каталогом",
+        "Local recovery registry must be a separate temporary directory",
       );
     }
   }
@@ -611,7 +613,7 @@ const requireOutputContainment = async (
     realpath(repositoryRoot),
   ]).catch(() => {
     throw new DeploymentInputError(
-      "Не удалось проверить границы candidate и Git worktree",
+      "Failed to inspect candidate and Git worktree boundaries",
     );
   });
   const manifestParent = dirname(manifestPath);
@@ -622,7 +624,7 @@ const requireOutputContainment = async (
       isWithin(root, recoveryDirectory)
     ) {
       throw new DeploymentInputError(
-        "Manifest и recovery registry должны находиться вне candidate и Git worktree",
+        "Manifest and recovery registry must be outside the candidate and Git worktree",
       );
     }
   }
@@ -651,7 +653,7 @@ const scanRecoveryRegistry = async (
   try {
     names = (await readdir(directory)).sort();
   } catch {
-    throw new DeploymentError("Не удалось прочитать recovery registry");
+    throw new DeploymentError("Failed to read recovery registry");
   }
   const blockingLock = recoveryLockName(chainId, sponsor);
   const lockPattern = /^\.rescuer-v2-[1-9][0-9]*-0x[0-9a-f]{40}\.lock$/;
@@ -665,25 +667,25 @@ const scanRecoveryRegistry = async (
       metadata = await lstat(path);
     } catch {
       throw new DeploymentInputError(
-        "Recovery registry содержит непроверяемую запись",
+        "Recovery registry contains an unverifiable entry",
       );
     }
     if (metadata.isSymbolicLink() || !metadata.isFile()) {
       throw new DeploymentInputError(
-        "Recovery registry содержит не обычный файл",
+        "Recovery registry contains a non-regular file",
       );
     }
     if (lockPattern.test(name)) {
       if (name === blockingLock) {
         throw new DeploymentInputError(
-          "Незавершённый recovery для этой chain и sponsor блокирует deployment",
+          "Incomplete recovery for this chain and sponsor blocks deployment",
         );
       }
       continue;
     }
     if (metadata.size > maximumRecoveryRecordBytes) {
       throw new DeploymentInputError(
-        "Recovery registry содержит слишком большую запись",
+        "Recovery registry contains an oversized entry",
       );
     }
     let value: unknown;
@@ -691,12 +693,12 @@ const scanRecoveryRegistry = async (
       value = JSON.parse(await readFile(path, "utf8"));
     } catch {
       throw new DeploymentInputError(
-        "Recovery registry содержит повреждённую запись",
+        "Recovery registry contains a corrupted entry",
       );
     }
     if (!isRecord(value)) {
       throw new DeploymentInputError(
-        "Recovery registry содержит повреждённую запись",
+        "Recovery registry contains a corrupted entry",
       );
     }
     const recordChainId = value["chainId"];
@@ -726,12 +728,12 @@ const scanRecoveryRegistry = async (
         )
     ) {
       throw new DeploymentInputError(
-        "Recovery registry содержит неканоническую запись",
+        "Recovery registry contains a noncanonical entry",
       );
     }
     if (recordChainId === chainId.toString() && normalizedSponsor === sponsor) {
       throw new DeploymentInputError(
-        "Незавершённый recovery для этой chain и sponsor блокирует deployment",
+        "Incomplete recovery for this chain and sponsor blocks deployment",
       );
     }
   }
@@ -769,7 +771,7 @@ const acquireRecoveryLock = async (
   } catch (error) {
     if (hasFileSystemCode(error, "EEXIST")) {
       throw new DeploymentInputError(
-        "Незавершённый recovery для этой chain и sponsor блокирует deployment",
+        "Incomplete recovery for this chain and sponsor blocks deployment",
       );
     }
     if (created) {
@@ -777,9 +779,7 @@ const acquireRecoveryLock = async (
         .then(() => rm(path, { force: true }))
         .catch(() => undefined);
     }
-    throw new DeploymentError(
-      "Не удалось получить блокировку recovery registry",
-    );
+    throw new DeploymentError("Failed to acquire recovery registry lock");
   } finally {
     await handle?.close().catch(() => undefined);
   }
@@ -796,7 +796,7 @@ const releaseRecoveryLock = async (
     await requireStableDirectory(directory, "Recovery registry", requirements);
     await syncDirectory(directory.canonical);
   } catch {
-    throw new DeploymentError("Не удалось снять блокировку recovery registry");
+    throw new DeploymentError("Failed to release recovery registry lock");
   }
 };
 
@@ -833,10 +833,10 @@ const atomicExclusiveWrite = async (
   const directory = parent.canonical;
   if (dirname(path) !== directory) {
     throw new DeploymentInputError(
-      `${subject} не находится в проверенном родительском каталоге`,
+      `${subject} is not in the verified parent directory`,
     );
   }
-  await requireStableDirectory(parent, `Родитель ${subject}`, requirements);
+  await requireStableDirectory(parent, `${subject} parent`, requirements);
   const temporary = resolve(
     directory,
     `.${basename(path)}.tmp.${process.pid}.${randomUUID()}`,
@@ -849,22 +849,22 @@ const atomicExclusiveWrite = async (
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await requireStableDirectory(parent, `Родитель ${subject}`, requirements);
+    await requireStableDirectory(parent, `${subject} parent`, requirements);
     try {
       await link(temporary, path);
     } catch (error) {
       if (hasFileSystemCode(error, "EEXIST")) {
         throw new DeploymentInputError(
-          `${subject} уже существует; автоматическая перезапись запрещена`,
+          `${subject} already exists; automatic overwrite is forbidden`,
         );
       }
       throw error;
     }
-    await requireStableDirectory(parent, `Родитель ${subject}`, requirements);
+    await requireStableDirectory(parent, `${subject} parent`, requirements);
     await syncDirectory(directory);
   } finally {
     await handle?.close().catch(() => undefined);
-    await requireStableDirectory(parent, `Родитель ${subject}`, requirements)
+    await requireStableDirectory(parent, `${subject} parent`, requirements)
       .then(() => rm(temporary, { force: true }))
       .catch(() => undefined);
   }
@@ -872,7 +872,7 @@ const atomicExclusiveWrite = async (
 
 const decodeGetter = (data: string, name: string): string => {
   if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(data)) {
-    throw new DeploymentError(`Getter ${name} вернул неканонический адрес`);
+    throw new DeploymentError(`Getter ${name} returned a noncanonical address`);
   }
   return getAddress(`0x${data.slice(-40)}`);
 };
@@ -894,13 +894,13 @@ export const runDeployment = async (
       options.sponsor,
     );
     if (!planned.data) {
-      throw new DeploymentError("Artifact не сформировал deployment data");
+      throw new DeploymentError("Artifact did not produce deployment data");
     }
     const planDigest = createHash("sha256")
       .update(getBytes(planned.data))
       .digest("hex");
     sourceProvenance(loaded.artifact);
-    console.log("Локальный план RescuerV2 проверен; отправка отключена.");
+    console.log("Local RescuerV2 plan verified; broadcast is disabled.");
     console.log(`SHA-256 deployment data: ${planDigest}`);
     return;
   }
@@ -915,7 +915,7 @@ export const runDeployment = async (
     manifestOutput.parent.canonical !== productionManifestDirectory
   ) {
     throw new DeploymentInputError(
-      `Production manifest должен создаваться непосредственно в ${productionManifestDirectory}`,
+      `Production manifest must be created directly in ${productionManifestDirectory}`,
     );
   }
   const manifestPath = manifestOutput.path;
@@ -959,13 +959,13 @@ export const runDeployment = async (
       candidate.repositoryRoot !== expectedRepositoryRoot
     ) {
       throw new DeploymentInputError(
-        "Production deployment требует аутентифицированные root-owned candidate и tooling",
+        "Production deployment requires authenticated root-owned candidate and tooling",
       );
     }
     await Promise.all([
       requireFixedDirectory(
         productionCandidateRoot,
-        "Корень production candidate",
+        "Production candidate root",
         productionInstalledRootRequirements,
       ),
       requireFixedDirectory(
@@ -975,7 +975,7 @@ export const runDeployment = async (
       ),
       requireFixedDirectory(
         productionToolingRoot,
-        "Корень production tooling",
+        "Production tooling root",
         productionInstalledRootRequirements,
       ),
       requireFixedDirectory(
@@ -1017,7 +1017,7 @@ export const runDeployment = async (
     options.sponsor,
   );
   if (!planned.data) {
-    throw new DeploymentError("Artifact не сформировал deployment data");
+    throw new DeploymentError("Artifact did not produce deployment data");
   }
 
   const recoveryLockPath = await acquireRecoveryLock(
@@ -1041,27 +1041,25 @@ export const runDeployment = async (
       const network = await provider.getNetwork();
       if (network.chainId !== options.chainId) {
         throw new DeploymentError(
-          "RPC вернул chain ID, отличный от ожидаемого",
+          "RPC returned a chain ID different from the expected value",
         );
       }
 
       const privateKey = environment["DEPLOYER_PRIVATE_KEY"];
       if (!privateKey) {
         throw new DeploymentError(
-          "Для явного --broadcast не задан DEPLOYER_PRIVATE_KEY",
+          "DEPLOYER_PRIVATE_KEY is not set for explicit --broadcast",
         );
       }
       let wallet: Wallet;
       try {
         wallet = new Wallet(privateKey);
       } catch {
-        throw new DeploymentError(
-          "DEPLOYER_PRIVATE_KEY имеет недопустимый формат",
-        );
+        throw new DeploymentError("DEPLOYER_PRIVATE_KEY has an invalid format");
       }
       if (wallet.address !== options.sponsor) {
         throw new DeploymentError(
-          "Адрес deployment signer не совпадает со sponsor",
+          "Deployment signer address does not match sponsor",
         );
       }
       const nonce = await provider.getTransactionCount(
@@ -1094,7 +1092,7 @@ export const runDeployment = async (
         signedTransaction.maxPriorityFeePerGas !== options.maxPriorityFeePerGas
       ) {
         throw new DeploymentError(
-          "Подписанная транзакция не совпадает с точным deployment plan",
+          "Signed transaction does not match the exact deployment plan",
         );
       }
       const recoveryRecord: DeploymentRecoveryRecord = {
@@ -1127,22 +1125,26 @@ export const runDeployment = async (
         await provider.broadcastTransaction(rawSignedTransaction);
       if (transaction.hash !== signedTransaction.hash) {
         throw new DeploymentError(
-          "RPC вернул hash, не соответствующий recovery record",
+          "RPC returned a hash that does not match the recovery record",
         );
       }
       const receipt = await withDeadline(
         transaction.wait(options.confirmations),
         options.receiptTimeoutMS,
-        "Истёк таймаут receipt deployment",
+        "Timed out waiting for the deployment receipt",
       );
       if (!receipt || receipt.status !== 1 || !receipt.contractAddress) {
-        throw new DeploymentError("Deployment не получил успешный receipt");
+        throw new DeploymentError(
+          "Deployment did not receive a successful receipt",
+        );
       }
 
       const address = getAddress(receipt.contractAddress);
       const block = await provider.getBlock(receipt.blockHash);
       if (!block || block.hash !== receipt.blockHash) {
-        throw new DeploymentError("RPC не подтвердил deployment block hash");
+        throw new DeploymentError(
+          "RPC did not confirm the deployment block hash",
+        );
       }
       const values = normalizeRoles(
         options.destination,
@@ -1153,7 +1155,7 @@ export const runDeployment = async (
       const actualRuntime = await provider.getCode(address, receipt.blockHash);
       if (actualRuntime.toLowerCase() !== expectedRuntime.toLowerCase()) {
         throw new DeploymentError(
-          "Deployed runtime не совпадает с canonical artifact",
+          "Deployed runtime does not match the canonical artifact",
         );
       }
 
@@ -1169,7 +1171,7 @@ export const runDeployment = async (
           to: address,
         });
         if (decodeGetter(result, name) !== expected) {
-          throw new DeploymentError(`Getter ${name} не совпадает с планом`);
+          throw new DeploymentError(`Getter ${name} does not match the plan`);
         }
       }
 
@@ -1191,9 +1193,9 @@ export const runDeployment = async (
         manifestOutput.parent,
         manifestRequirements,
       );
-      console.log("Deployment, runtime и immutable параметры проверены.");
+      console.log("Deployment, runtime, and immutable parameters verified.");
       console.log(
-        "Manifest опубликован атомарно; live defaults не изменялись.",
+        "Manifest published atomically; live defaults were not changed.",
       );
     } finally {
       await provider.destroy();
@@ -1217,7 +1219,7 @@ const main = async (): Promise<void> => {
     ) {
       console.error(error.message);
     } else {
-      console.error("Критическая ошибка deployment; результат не опубликован");
+      console.error("Critical deployment error; result was not published");
     }
     process.exitCode = 1;
   }

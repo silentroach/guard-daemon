@@ -60,9 +60,9 @@ const (
 	codeMinimumValue         domain.ErrorCode = "rescue_minimum_value"
 	codePaidActionsStopped   domain.ErrorCode = "rescue_paid_actions_stopped"
 
-	// CodeLeaseLost is safe to expose through health and operator APIs.
+	// CodeLeaseLost можно безопасно раскрывать через API состояния службы и интерфейс оператора.
 	CodeLeaseLost domain.ErrorCode = "rescue_lease_lost"
-	// CodeLeaseReleaseFailed is safe to expose through shutdown diagnostics.
+	// CodeLeaseReleaseFailed можно безопасно раскрывать в диагностике завершения работы.
 	CodeLeaseReleaseFailed domain.ErrorCode = "rescue_lease_release_failed"
 )
 
@@ -90,21 +90,24 @@ const (
 	maxReconciliationInterval = 5 * time.Minute
 )
 
-// ErrLeaseLost is a redacted sentinel for lost exclusive signing ownership,
-// whether detected by the persistent lease or the host-local process fence.
-var ErrLeaseLost = errors.New("rescue coordinator lease lost")
+// ErrLeaseLost служит маркером потери исключительного права на подписание и не
+// раскрывает подробностей. Ошибка не зависит от того, обнаружила потерю аренда
+// в хранилище или локальная блокировка процесса.
+var ErrLeaseLost = errors.New("rescue coordinator: lease lost")
 
-// ErrLeaseReleaseFailed is a redacted sentinel suitable for shutdown logs.
-var ErrLeaseReleaseFailed = errors.New("rescue coordinator lease release failed")
+// ErrLeaseReleaseFailed служит маркером ошибки освобождения аренды, не раскрывает
+// подробностей и безопасна для журналов завершения работы.
+var ErrLeaseReleaseFailed = errors.New("rescue coordinator: failed to release lease")
 
-// IsLeaseLost reports whether signing was stopped because exclusive ownership
-// is no longer valid. Store implementation details are intentionally hidden.
+// IsLeaseLost сообщает, остановлено ли подписание из-за потери исключительного
+// права. Подробности реализации хранилища намеренно скрыты.
 func IsLeaseLost(err error) bool {
 	return errors.Is(err, ErrLeaseLost)
 }
 
-// RPCReader is the primary, non-quorum RPC surface used for chain identity,
-// pending nonces, and fee inputs. It is never used to prove an outcome.
+// RPCReader предоставляет основные операции RPC без кворума: определение сети,
+// чтение неподтверждённых nonce и исходных данных комиссий. Полученные через него
+// данные не служат доказательством результата.
 type RPCReader interface {
 	ChainID(context.Context) (*big.Int, error)
 	PendingNonceAt(context.Context, common.Address) (uint64, error)
@@ -113,8 +116,9 @@ type RPCReader interface {
 	EstimateGas(context.Context, ethereum.CallMsg) (uint64, error)
 }
 
-// FinalityReader exposes only hash-pinned quorum reads. Receipt must return a
-// finalized receipt whose block is still canonical.
+// FinalityReader предоставляет только привязанные к хешу данные, подтверждённые
+// кворумом. Receipt должен возвращать финализированную квитанцию из блока, который
+// остаётся каноническим.
 type FinalityReader interface {
 	Finalized(context.Context) (rpc.BlockRef, error)
 	Header(context.Context, uint64) (rpc.BlockRef, error)
@@ -124,8 +128,8 @@ type FinalityReader interface {
 	Receipt(context.Context, common.Hash) (*types.Receipt, error)
 }
 
-// Config contains immutable values used by one network coordinator. Lease and
-// ProcessFence are acquired by the daemon before construction.
+// Config содержит неизменяемые значения одного координатора сети. Lease и
+// ProcessFence приобретаются службой до создания координатора.
 type Config struct {
 	Network            domain.Network
 	Source             common.Address
@@ -160,8 +164,8 @@ type TrustedTokenValuePolicy struct {
 	MaximumCost    uint256.Int
 }
 
-// Coordinator serializes nonce allocation, signing, and submission for one
-// chain+sponsor pair.
+// Coordinator последовательно выделяет nonce, подписывает и отправляет транзакции
+// для заданных сети и спонсора.
 type Coordinator struct {
 	network                domain.Network
 	source                 common.Address
@@ -209,8 +213,8 @@ type Coordinator struct {
 	leaseLostOnce sync.Once
 }
 
-// Session binds a coordinator to one primary RPC generation and one quorum
-// finality reader.
+// Session связывает координатор с одним поколением основного RPC и одним поставщиком
+// финализированных данных, подтверждённых кворумом.
 type Session struct {
 	coordinator   *Coordinator
 	generation    uint64
@@ -352,8 +356,8 @@ func durationDefault(value, fallback time.Duration) time.Duration {
 	return value
 }
 
-// MaintainLease renews the process lease every TTL/3. Any renewal failure or
-// loss notification permanently closes this coordinator to further signing.
+// MaintainLease продлевает аренду процесса каждые TTL/3. Любая ошибка продления
+// или сигнал о потере аренды навсегда запрещает координатору дальнейшее подписание.
 func (coordinator *Coordinator) MaintainLease(ctx context.Context) error {
 	if ctx == nil {
 		return newError("rescue.lease", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
@@ -416,8 +420,8 @@ func (coordinator *Coordinator) MaintainLease(ctx context.Context) error {
 	}
 }
 
-// ReleaseLease permanently stops signing and releases the latest renewed
-// lease. A release failure is redacted but remains safely classifiable.
+// ReleaseLease навсегда останавливает подписание и освобождает последнюю продлённую
+// аренду. Подробности ошибки освобождения скрываются, а безопасная классификация сохраняется.
 func (coordinator *Coordinator) ReleaseLease(ctx context.Context) error {
 	if ctx == nil {
 		return newError("rescue.lease_release", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
@@ -435,9 +439,9 @@ func (coordinator *Coordinator) ReleaseLease(ctx context.Context) error {
 	return nil
 }
 
-// NewSession verifies chain identity and the configured destination through
-// finalized quorum state, then reconciles persisted signed transactions before
-// accepting new candidates.
+// NewSession проверяет идентификатор сети и настроенный адрес назначения по данным
+// финализированного состояния, подтверждённым кворумом, а затем проверяет состояние
+// сохранённых подписанных транзакций перед приёмом новых кандидатов.
 func (coordinator *Coordinator) NewSession(ctx context.Context, generation uint64, reader RPCReader, finality FinalityReader, broadcaster rpc.Broadcaster) (*Session, error) {
 	if ctx == nil || reader == nil || finality == nil || broadcaster == nil {
 		return nil, newError("rescue.session", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
@@ -472,8 +476,8 @@ func (session *Session) Generation() uint64 {
 	return session.generation
 }
 
-// Handle waits for the coordinator mutex. No valid candidate is dropped merely
-// because another candidate currently owns sponsor nonce allocation.
+// Handle дожидается доступа к координатору. Корректный кандидат не отбрасывается
+// из-за того, что другому кандидату в этот момент выделяется nonce спонсора.
 func (session *Session) Handle(ctx context.Context, candidate domain.RescueCandidate) error {
 	coordinator := session.coordinator
 	if ctx == nil || domain.ValidateCandidate(candidate) != nil || candidate.Network != coordinator.network.ChainID || candidate.Source != coordinator.source ||
@@ -514,8 +518,9 @@ func (session *Session) Handle(ctx context.Context, candidate domain.RescueCandi
 	return err
 }
 
-// RunReconciliation sparsely checks expired ambiguous operations for late
-// finalized receipts. Expired operations are never signed or broadcast again.
+// RunReconciliation периодически ищет поздние финализированные квитанции для операций
+// с неопределённым результатом и истёкшим сроком ожидания. Такие операции не подписываются
+// и не отправляются повторно.
 func (session *Session) RunReconciliation(ctx context.Context) error {
 	if ctx == nil {
 		return newError("rescue.reconciliation", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)

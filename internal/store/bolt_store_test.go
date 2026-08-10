@@ -35,13 +35,13 @@ func TestBoltStorePersistsCrashBoundariesAndCheckpoint(t *testing.T) {
 	store := openTestStore(t, path, options)
 	result, err := store.Put(ctx, candidate)
 	if err != nil || result != PutInserted {
-		t.Fatalf("Put = (%v, %v), want (%v, nil)", result, err, PutInserted)
+		t.Fatalf("Put returned (%v, %v), want (%v, nil)", result, err, PutInserted)
 	}
 	store = reopenTestStore(t, store, path, options)
 	assertReplay(t, store, candidate)
 
 	if err := store.CommitCanonicalBlock(ctx, block); err != nil {
-		t.Fatalf("CommitCanonicalBlock: %v", err)
+		t.Fatalf("CommitCanonicalBlock returned an error: %v", err)
 	}
 	assertCheckpoint(t, store, true, block.Checkpoint)
 	assertCheckpoint(t, store, false, Checkpoint{})
@@ -49,16 +49,16 @@ func TestBoltStorePersistsCrashBoundariesAndCheckpoint(t *testing.T) {
 	assertReplay(t, store, candidate)
 
 	if err := store.PutIncident(ctx, incident); err != nil {
-		t.Fatalf("PutIncident: %v", err)
+		t.Fatalf("PutIncident returned an error: %v", err)
 	}
 	store = reopenTestStore(t, store, path, options)
 	persisted, found, err := store.IncidentByCandidate(ctx, candidate.ID)
 	if err != nil || !found || persisted != incident {
-		t.Fatalf("IncidentByCandidate = (%v, %v, %v), want (%v, true, nil)", persisted, found, err, incident)
+		t.Fatalf("IncidentByCandidate returned (%v, %v, %v), want (%v, true, nil)", persisted, found, err, incident)
 	}
 
 	if err := store.Ack(ctx, candidate.ID, incident.ID); err != nil {
-		t.Fatalf("Ack: %v", err)
+		t.Fatalf("Ack returned an error: %v", err)
 	}
 	store = reopenTestStore(t, store, path, options)
 	defer store.Close()
@@ -66,13 +66,13 @@ func TestBoltStorePersistsCrashBoundariesAndCheckpoint(t *testing.T) {
 	assertReplay(t, store)
 	result, err = store.Put(ctx, candidate)
 	if err != nil || result != PutAlreadyAcknowledged {
-		t.Fatalf("duplicate Put after Ack = (%v, %v), want (%v, nil)", result, err, PutAlreadyAcknowledged)
+		t.Fatalf("duplicate Put after Ack returned (%v, %v), want (%v, nil)", result, err, PutAlreadyAcknowledged)
 	}
 	if err := store.PutIncident(ctx, Incident{ID: incident.ID, Candidate: incident.Candidate, Network: incident.Network, CreatedAt: incident.CreatedAt.Add(time.Hour)}); err != nil {
-		t.Fatalf("duplicate PutIncident: %v", err)
+		t.Fatalf("duplicate PutIncident returned an error: %v", err)
 	}
 	if err := store.Ack(ctx, candidate.ID, incident.ID); err != nil {
-		t.Fatalf("duplicate Ack: %v", err)
+		t.Fatalf("duplicate Ack returned an error: %v", err)
 	}
 }
 
@@ -89,7 +89,7 @@ func TestBoltStoreEmptyAndMultiCandidateBlocksAdvanceContiguously(t *testing.T) 
 		ParentHash: testHash(99),
 	}
 	if err := store.CommitCanonicalBlock(ctx, empty); err != nil {
-		t.Fatalf("commit baseline empty block: %v", err)
+		t.Fatalf("committing base empty block: %v", err)
 	}
 	assertCheckpoint(t, store, true, empty.Checkpoint)
 	assertCheckpoint(t, store, false, empty.Checkpoint)
@@ -102,7 +102,7 @@ func TestBoltStoreEmptyAndMultiCandidateBlocksAdvanceContiguously(t *testing.T) 
 		Candidates: []domain.RescueCandidate{second, first},
 	}
 	if err := store.CommitCanonicalBlock(ctx, multi); err != nil {
-		t.Fatalf("commit multi-candidate block: %v", err)
+		t.Fatalf("committing block with multiple candidates: %v", err)
 	}
 	assertCheckpoint(t, store, true, multi.Checkpoint)
 	assertCheckpoint(t, store, false, empty.Checkpoint)
@@ -110,10 +110,10 @@ func TestBoltStoreEmptyAndMultiCandidateBlocksAdvanceContiguously(t *testing.T) 
 	for index, candidate := range []domain.RescueCandidate{first, second} {
 		incident := testIncident(candidate, time.Duration(index+1))
 		if err := store.PutIncident(ctx, incident); err != nil {
-			t.Fatalf("PutIncident %d: %v", index, err)
+			t.Fatalf("PutIncident %d returned an error: %v", index, err)
 		}
 		if err := store.Ack(ctx, candidate.ID, incident.ID); err != nil {
-			t.Fatalf("Ack %d: %v", index, err)
+			t.Fatalf("Ack %d returned an error: %v", index, err)
 		}
 		if index == 0 {
 			assertCheckpoint(t, store, false, empty.Checkpoint)
@@ -126,20 +126,20 @@ func TestBoltStoreEmptyAndMultiCandidateBlocksAdvanceContiguously(t *testing.T) 
 		ParentHash: multi.BlockHash,
 	}
 	if err := store.CommitCanonicalBlock(ctx, emptyAfter); err != nil {
-		t.Fatalf("commit trailing empty block: %v", err)
+		t.Fatalf("committing trailing empty block: %v", err)
 	}
 	assertCheckpoint(t, store, false, emptyAfter.Checkpoint)
 
 	alreadyAcked := testBlockCandidate(options, 103, testHash(103))
 	if _, err := store.Put(ctx, alreadyAcked); err != nil {
-		t.Fatalf("Put pre-ack candidate: %v", err)
+		t.Fatalf("Put candidate before confirmation: %v", err)
 	}
 	incident := testIncident(alreadyAcked, 4)
 	if err := store.PutIncident(ctx, incident); err != nil {
-		t.Fatalf("PutIncident pre-ack candidate: %v", err)
+		t.Fatalf("PutIncident candidate before confirmation: %v", err)
 	}
 	if err := store.Ack(ctx, alreadyAcked.ID, incident.ID); err != nil {
-		t.Fatalf("Ack pre-commit candidate: %v", err)
+		t.Fatalf("Ack candidate before commit: %v", err)
 	}
 	alreadyAckedBlock := CanonicalBlock{
 		Checkpoint: Checkpoint{Network: options.Network, BlockNumber: 103, BlockHash: testHash(103)},
@@ -147,7 +147,7 @@ func TestBoltStoreEmptyAndMultiCandidateBlocksAdvanceContiguously(t *testing.T) 
 		Candidates: []domain.RescueCandidate{alreadyAcked},
 	}
 	if err := store.CommitCanonicalBlock(ctx, alreadyAckedBlock); err != nil {
-		t.Fatalf("commit already-acknowledged block: %v", err)
+		t.Fatalf("committing already acknowledged block: %v", err)
 	}
 	assertCheckpoint(t, store, false, alreadyAckedBlock.Checkpoint)
 }
@@ -164,7 +164,7 @@ func TestBoltStoreCommitFailureDoesNotMoveScanCursor(t *testing.T) {
 		ParentHash: testHash(49),
 	}
 	if err := store.CommitCanonicalBlock(ctx, baseline); err != nil {
-		t.Fatalf("commit baseline: %v", err)
+		t.Fatalf("committing base state: %v", err)
 	}
 
 	wrongMember := testBlockCandidate(options, 502, testHash(52))
@@ -174,24 +174,24 @@ func TestBoltStoreCommitFailureDoesNotMoveScanCursor(t *testing.T) {
 		Candidates: []domain.RescueCandidate{wrongMember},
 	}
 	if err := store.CommitCanonicalBlock(ctx, failed); err == nil {
-		t.Fatal("commit with FilterLogs-equivalent incomplete membership succeeded")
+		t.Fatal("commit with incomplete FilterLogs-equivalent membership succeeded")
 	}
 	assertCheckpoint(t, store, true, baseline.Checkpoint)
 
 	validMember := testBlockCandidate(options, 501, testHash(51))
 	if _, err := store.Put(ctx, validMember); err != nil {
-		t.Fatalf("Put before incomplete seal: %v", err)
+		t.Fatalf("Put before incomplete commit: %v", err)
 	}
 	failed.Candidates = nil
 	if err := store.CommitCanonicalBlock(ctx, failed); err == nil {
-		t.Fatal("empty seal omitted trusted ready work from the same block")
+		t.Fatal("empty commit skipped trusted ready work from the same block")
 	}
 	assertCheckpoint(t, store, true, baseline.Checkpoint)
 
 	failed.Candidates = []domain.RescueCandidate{validMember}
 	failed.ParentHash = testHash(1)
 	if err := store.CommitCanonicalBlock(ctx, failed); err == nil {
-		t.Fatal("commit with wrong parent succeeded")
+		t.Fatal("commit with incorrect parent block succeeded")
 	}
 	assertCheckpoint(t, store, true, baseline.Checkpoint)
 
@@ -214,19 +214,19 @@ func TestBoltStoreCanonicalSealDeletesSameHashObservedNonMember(t *testing.T) {
 	hash := testHash(0x61)
 	fake := testLogCandidate(options, 61, hash, 1, 1)
 	if _, err := store.PutObserved(ctx, fake); err != nil {
-		t.Fatalf("PutObserved fake log: %v", err)
+		t.Fatalf("PutObserved spoofed log: %v", err)
 	}
 	block := CanonicalBlock{
 		Checkpoint: Checkpoint{Network: options.Network, BlockNumber: 61, BlockHash: hash},
 		ParentHash: testHash(0x60),
 	}
 	if err := store.CommitCanonicalBlock(ctx, block); err != nil {
-		t.Fatalf("CommitCanonicalBlock: %v", err)
+		t.Fatalf("CommitCanonicalBlock returned an error: %v", err)
 	}
 	assertCheckpoint(t, store, true, block.Checkpoint)
 	assertCheckpoint(t, store, false, block.Checkpoint)
 	if data := candidateData(t, store, fake.ID); data != nil {
-		t.Fatal("same-hash provisional non-member survived canonical seal")
+		t.Fatal("preliminary item with the same hash outside membership survived canonical commit")
 	}
 	if err := store.db.View(func(tx *bolt.Tx) error {
 		record, err := decodeBlock(tx.Bucket(blocksBucket).Get(blockNumberKey(block.BlockNumber)), store.journalCapacity)
@@ -238,7 +238,7 @@ func TestBoltStoreCanonicalSealDeletesSameHashObservedNonMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result, err := store.PutObserved(ctx, fake); err != nil || result != PutAlreadyAcknowledged {
-		t.Fatalf("late fake coalescing = (%v, %v), want acknowledged", result, err)
+		t.Fatalf("late merge of spoofed event = (%v, %v), want confirmation", result, err)
 	}
 }
 
@@ -254,12 +254,12 @@ func TestBoltStoreRejectsCandidateAfterBlockSeal(t *testing.T) {
 		ParentHash: testHash(9),
 	}
 	if err := store.CommitCanonicalBlock(ctx, sealed); err != nil {
-		t.Fatalf("CommitCanonicalBlock: %v", err)
+		t.Fatalf("CommitCanonicalBlock returned an error: %v", err)
 	}
 	late := testLogCandidate(options, 10, sealed.BlockHash, 1, 1)
 	result, err := store.PutObserved(ctx, late)
 	if err != nil || result != PutAlreadyAcknowledged {
-		t.Fatalf("late PutObserved = (%v, %v), want acknowledged coalescing", result, err)
+		t.Fatalf("late PutObserved returned (%v, %v), want merge with confirmed event", result, err)
 	}
 	assertReplay(t, store)
 	assertCheckpoint(t, store, true, sealed.Checkpoint)
@@ -279,7 +279,7 @@ func TestBoltStoreDuplicateAfterRestartPreservesFirstPayload(t *testing.T) {
 
 	store := openTestStore(t, path, options)
 	if _, err := store.Put(ctx, original); err != nil {
-		t.Fatalf("Put: %v", err)
+		t.Fatalf("Put returned an error: %v", err)
 	}
 	store = reopenTestStore(t, store, path, options)
 	defer store.Close()
@@ -289,7 +289,7 @@ func TestBoltStoreDuplicateAfterRestartPreservesFirstPayload(t *testing.T) {
 	duplicate.Generation = 99
 	result, err := store.Put(ctx, duplicate)
 	if err != nil || result != PutAlreadyPending {
-		t.Fatalf("duplicate Put = (%v, %v), want (%v, nil)", result, err, PutAlreadyPending)
+		t.Fatalf("duplicate Put returned (%v, %v), want (%v, nil)", result, err, PutAlreadyPending)
 	}
 	assertReplay(t, store, original)
 
@@ -299,15 +299,15 @@ func TestBoltStoreDuplicateAfterRestartPreservesFirstPayload(t *testing.T) {
 		Candidates: []domain.RescueCandidate{duplicate},
 	}
 	if err := store.CommitCanonicalBlock(ctx, block); err != nil {
-		t.Fatalf("CommitCanonicalBlock: %v", err)
+		t.Fatalf("CommitCanonicalBlock returned an error: %v", err)
 	}
 	if err := store.CommitCanonicalBlock(ctx, block); err != nil {
-		t.Fatalf("idempotent CommitCanonicalBlock: %v", err)
+		t.Fatalf("idempotent CommitCanonicalBlock returned an error: %v", err)
 	}
 	conflict := block
 	conflict.Candidates = nil
 	if err := store.CommitCanonicalBlock(ctx, conflict); err == nil {
-		t.Fatal("conflicting duplicate canonical block succeeded")
+		t.Fatal("conflicting canonical block replay succeeded")
 	}
 	assertCheckpoint(t, store, true, block.Checkpoint)
 }
@@ -325,31 +325,31 @@ func TestBoltStoreDelayedRetryUsesClockWithoutBlockingReady(t *testing.T) {
 
 	for index, candidate := range []domain.RescueCandidate{delayed, ready} {
 		if _, err := store.Put(ctx, candidate); err != nil {
-			t.Fatalf("Put %d: %v", index, err)
+			t.Fatalf("Put %d returned an error: %v", index, err)
 		}
 		incident := testIncident(candidate, time.Duration(index+1))
 		if err := store.PutIncident(ctx, incident); err != nil {
-			t.Fatalf("PutIncident %d: %v", index, err)
+			t.Fatalf("PutIncident %d returned an error: %v", index, err)
 		}
 	}
 	delayedIncident := testIncident(delayed, 1)
 	if err := store.Nack(ctx, delayed.ID, delayedIncident.ID, clock.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("Nack: %v", err)
+		t.Fatalf("Nack returned an error: %v", err)
 	}
 	store = reopenTestStore(t, store, path, options)
 	defer store.Close()
 	next, err := store.Next(ctx, options.Network)
 	if err != nil || next != ready {
-		t.Fatalf("Next with poison delayed item = (%v, %v), want ready candidate", next, err)
+		t.Fatalf("Next with deferred failing item returned (%v, %v), want ready candidate", next, err)
 	}
 	readyIncident := testIncident(ready, 2)
 	if err := store.Ack(ctx, ready.ID, readyIncident.ID); err != nil {
-		t.Fatalf("Ack ready: %v", err)
+		t.Fatalf("Ack ready candidate: %v", err)
 	}
 	clock.Advance(time.Hour)
 	next, err = store.Next(ctx, options.Network)
 	if err != nil || next != delayed {
-		t.Fatalf("Next after fake clock advance = (%v, %v), want delayed candidate", next, err)
+		t.Fatalf("Next after advancing test clock returned (%v, %v), want deferred candidate", next, err)
 	}
 }
 
@@ -364,11 +364,11 @@ func TestBoltStoreObservationSaturationIsImmediateAndCanonicalCommitProgresses(t
 	provisional := testBlockCandidate(options, 1, testHash(1))
 	blocked := testBlockCandidate(options, 2, testHash(2))
 	if _, err := store.PutObserved(ctx, provisional); err != nil {
-		t.Fatalf("PutObserved: %v", err)
+		t.Fatalf("PutObserved returned an error: %v", err)
 	}
 
 	if result, err := store.PutObserved(ctx, blocked); result != 0 || !errors.Is(err, ErrObservationSaturated) {
-		t.Fatalf("saturated PutObserved = (%v, %v), want immediate ErrObservationSaturated", result, err)
+		t.Fatalf("PutObserved at capacity returned (%v, %v), want immediate ErrObservationSaturated", result, err)
 	}
 	assertReplay(t, store)
 	assertCheckpoint(t, store, true, Checkpoint{})
@@ -379,11 +379,11 @@ func TestBoltStoreObservationSaturationIsImmediateAndCanonicalCommitProgresses(t
 		Candidates: []domain.RescueCandidate{provisional},
 	}
 	if err := store.CommitCanonicalBlock(ctx, block); err != nil {
-		t.Fatalf("canonical commit after provisional saturation: %v", err)
+		t.Fatalf("canonical commit after preliminary saturation: %v", err)
 	}
 	assertCheckpoint(t, store, true, block.Checkpoint)
 	if data := candidateData(t, store, blocked.ID); data != nil {
-		t.Fatal("saturated observation was persisted")
+		t.Fatal("observation at capacity was persisted")
 	}
 }
 
@@ -407,7 +407,7 @@ func TestBoltStoreCanonicalBlockStagesBeyondReadyCapacityAndAckPromotes(t *testi
 		Candidates: candidates,
 	}
 	if err := store.CommitCanonicalBlock(ctx, block); err != nil {
-		t.Fatalf("CommitCanonicalBlock(MaxPending+1): %v", err)
+		t.Fatalf("CommitCanonicalBlock(MaxPending+1) returned an error: %v", err)
 	}
 	assertCheckpoint(t, store, true, block.Checkpoint)
 	assertStatusCounts(t, store, map[CandidateStatus]int{CandidateReady: 2, CandidateStaged: 1})
@@ -416,10 +416,10 @@ func TestBoltStoreCanonicalBlockStagesBeyondReadyCapacityAndAckPromotes(t *testi
 	ready := candidateWithStatus(t, store, candidates, CandidateReady)
 	incident := testIncident(ready, 1)
 	if err := store.PutIncident(ctx, incident); err != nil {
-		t.Fatalf("PutIncident: %v", err)
+		t.Fatalf("PutIncident returned an error: %v", err)
 	}
 	if err := store.Ack(ctx, ready.ID, incident.ID); err != nil {
-		t.Fatalf("Ack: %v", err)
+		t.Fatalf("Ack returned an error: %v", err)
 	}
 	assertStatusCounts(t, store, map[CandidateStatus]int{CandidateReady: 2, CandidateAcknowledged: 1})
 }
@@ -439,14 +439,14 @@ func TestBoltStoreFutureDelayedWindowDoesNotStarveStagedAfterRestart(t *testing.
 	}
 	for index, candidate := range poison {
 		if _, err := store.Put(ctx, candidate); err != nil {
-			t.Fatalf("Put poison %d: %v", index, err)
+			t.Fatalf("Put failing candidate %d: %v", index, err)
 		}
 		incident := testIncident(candidate, time.Duration(index+1))
 		if err := store.PutIncident(ctx, incident); err != nil {
-			t.Fatalf("PutIncident poison %d: %v", index, err)
+			t.Fatalf("PutIncident failing candidate %d: %v", index, err)
 		}
 		if err := store.Nack(ctx, candidate.ID, incident.ID, clock.Now().Add(time.Hour)); err != nil {
-			t.Fatalf("Nack poison %d: %v", index, err)
+			t.Fatalf("Nack failing candidate %d: %v", index, err)
 		}
 	}
 	valid := testBlockCandidate(options, 90, testHash(0x90))
@@ -464,7 +464,7 @@ func TestBoltStoreFutureDelayedWindowDoesNotStarveStagedAfterRestart(t *testing.
 	assertStatusCounts(t, store, map[CandidateStatus]int{CandidateDelayed: 2, CandidateReady: 1})
 	next, err := store.Next(ctx, options.Network)
 	if err != nil || next != valid {
-		t.Fatalf("Next with delayed poison window = (%v, %v), want staged canonical candidate", next, err)
+		t.Fatalf("Next with a window of deferred failing items returned (%v, %v), want prepared canonical candidate", next, err)
 	}
 }
 
@@ -500,7 +500,7 @@ func TestBoltStoreRoundRobinPreventsDueDelayedStarvation(t *testing.T) {
 	}
 	clock.Advance(time.Hour)
 	if next, err := store.Next(ctx, options.Network); err != nil || next != first {
-		t.Fatalf("first Next = (%v, %v)", next, err)
+		t.Fatalf("first Next returned (%v, %v)", next, err)
 	}
 	firstIncident := testIncident(first, 2)
 	if err := store.PutIncident(ctx, firstIncident); err != nil {
@@ -513,7 +513,7 @@ func TestBoltStoreRoundRobinPreventsDueDelayedStarvation(t *testing.T) {
 	store = reopenTestStore(t, store, path, options)
 	defer store.Close()
 	if next, err := store.Next(ctx, options.Network); err != nil || next != second {
-		t.Fatalf("second Next = (%v, %v)", next, err)
+		t.Fatalf("second Next returned (%v, %v)", next, err)
 	}
 	if _, err := store.Put(ctx, third); err != nil {
 		t.Fatal(err)
@@ -526,7 +526,7 @@ func TestBoltStoreRoundRobinPreventsDueDelayedStarvation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if next, err := store.Next(ctx, options.Network); err != nil || next != poison {
-		t.Fatalf("due delayed candidate starved by staged backlog: Next = (%v, %v)", next, err)
+		t.Fatalf("ready deferred candidate starved by prepared queue: Next returned (%v, %v)", next, err)
 	}
 }
 
@@ -566,14 +566,14 @@ func TestBoltStoreFIFODispatchPreservesFairPromotionWithMultipleSlots(t *testing
 		}
 	}
 	if lowerID == (domain.RescueCandidate{}) {
-		t.Fatal("не найден deterministic lower-ID candidate")
+		t.Fatal("deterministic candidate with lower ID not found")
 	}
 	if _, err := store.Put(ctx, lowerID); err != nil {
 		t.Fatal(err)
 	}
 	clock.Advance(time.Hour)
 	if next, err := store.Next(ctx, options.Network); err != nil || next != filler {
-		t.Fatalf("first FIFO Next = (%v, %v), want filler", next, err)
+		t.Fatalf("first FIFO Next returned (%v, %v), want filler", next, err)
 	}
 	fillerIncident := testIncident(filler, 2)
 	if err := store.PutIncident(ctx, fillerIncident); err != nil {
@@ -583,7 +583,7 @@ func TestBoltStoreFIFODispatchPreservesFairPromotionWithMultipleSlots(t *testing
 		t.Fatal(err)
 	}
 	if next, err := store.Next(ctx, options.Network); err != nil || next != stagedFirst {
-		t.Fatalf("second FIFO Next = (%v, %v), want first staged", next, err)
+		t.Fatalf("second FIFO Next returned (%v, %v), want first prepared candidate", next, err)
 	}
 	stagedIncident := testIncident(stagedFirst, 3)
 	if err := store.PutIncident(ctx, stagedIncident); err != nil {
@@ -596,7 +596,7 @@ func TestBoltStoreFIFODispatchPreservesFairPromotionWithMultipleSlots(t *testing
 	store = reopenTestStore(t, store, path, options)
 	defer store.Close()
 	if next, err := store.Next(ctx, options.Network); err != nil || next != poison {
-		t.Fatalf("FIFO lost round-robin order to lower ID: Next = (%v, %v), lower=%s", next, err, lowerID.ID)
+		t.Fatalf("FIFO violated round-robin order due to lower ID: Next returned (%v, %v), lower=%s", next, err, lowerID.ID)
 	}
 }
 
@@ -620,7 +620,7 @@ func TestBoltStoreJournalSaturationCancelsWithoutCursorAndRecoversAfterAck(t *te
 		Candidates: firstCandidates,
 	}
 	if err := store.CommitCanonicalBlock(ctx, firstBlock); err != nil {
-		t.Fatalf("commit full journal: %v", err)
+		t.Fatalf("committing full journal: %v", err)
 	}
 	secondCandidate := testLogCandidate(options, 101, testHash(0xa2), 3, 3)
 	secondBlock := CanonicalBlock{
@@ -638,24 +638,24 @@ func TestBoltStoreJournalSaturationCancelsWithoutCursorAndRecoversAfterAck(t *te
 	<-started
 	cancel()
 	if err := <-cancelResult; !errors.Is(err, context.Canceled) {
-		t.Fatalf("saturated canceled commit error = %v, want context.Canceled", err)
+		t.Fatalf("canceled commit at capacity error = %v, want context.Canceled", err)
 	}
 	assertCheckpoint(t, store, true, firstBlock.Checkpoint)
 
 	ready := candidateWithStatus(t, store, firstCandidates, CandidateReady)
 	incident := testIncident(ready, 1)
 	if err := store.PutIncident(ctx, incident); err != nil {
-		t.Fatalf("PutIncident before capacity release: %v", err)
+		t.Fatalf("PutIncident before releasing capacity: %v", err)
 	}
 	commitResult := make(chan error, 1)
 	go func() { commitResult <- store.CommitCanonicalBlock(ctx, secondBlock) }()
 	ackResult := make(chan error, 1)
 	go func() { ackResult <- store.Ack(ctx, ready.ID, incident.ID) }()
 	if err := <-ackResult; err != nil {
-		t.Fatalf("Ack releasing journal: %v", err)
+		t.Fatalf("Ack releasing journal capacity: %v", err)
 	}
 	if err := <-commitResult; err != nil {
-		t.Fatalf("commit after Ack release: %v", err)
+		t.Fatalf("commit after release through Ack: %v", err)
 	}
 	assertCheckpoint(t, store, true, secondBlock.Checkpoint)
 }
@@ -674,7 +674,7 @@ func TestBoltStoreBoundsUnconfirmedBlockSpanUntilConsumerAck(t *testing.T) {
 		Candidates: []domain.RescueCandidate{candidate},
 	}
 	if err := store.CommitCanonicalBlock(ctx, first); err != nil {
-		t.Fatalf("commit first blocked block: %v", err)
+		t.Fatalf("committing first blocked block: %v", err)
 	}
 	previous := first.BlockHash
 	var last CanonicalBlock
@@ -684,7 +684,7 @@ func TestBoltStoreBoundsUnconfirmedBlockSpanUntilConsumerAck(t *testing.T) {
 			ParentHash: previous,
 		}
 		if err := store.CommitCanonicalBlock(ctx, last); err != nil {
-			t.Fatalf("commit unconfirmed block %d: %v", number, err)
+			t.Fatalf("committing unacknowledged block %d: %v", number, err)
 		}
 		previous = last.BlockHash
 	}
@@ -702,19 +702,19 @@ func TestBoltStoreBoundsUnconfirmedBlockSpanUntilConsumerAck(t *testing.T) {
 	<-started
 	cancel()
 	if err := <-result; !errors.Is(err, context.Canceled) {
-		t.Fatalf("bounded span cancellation = %v, want context.Canceled", err)
+		t.Fatalf("bounded range cancellation = %v, want context.Canceled", err)
 	}
 	assertCheckpoint(t, store, true, last.Checkpoint)
 
 	incident := testIncident(candidate, 1)
 	if err := store.PutIncident(ctx, incident); err != nil {
-		t.Fatalf("PutIncident: %v", err)
+		t.Fatalf("PutIncident returned an error: %v", err)
 	}
 	if err := store.Ack(ctx, candidate.ID, incident.ID); err != nil {
-		t.Fatalf("Ack releasing block span: %v", err)
+		t.Fatalf("Ack releasing block range: %v", err)
 	}
 	if err := store.CommitCanonicalBlock(ctx, blocked); err != nil {
-		t.Fatalf("commit after block span release: %v", err)
+		t.Fatalf("commit after releasing block range: %v", err)
 	}
 	assertCheckpoint(t, store, true, blocked.Checkpoint)
 	assertCheckpoint(t, store, false, blocked.Checkpoint)
@@ -734,7 +734,7 @@ func TestBoltStoreObservedRemovedAndCanonicalPromotion(t *testing.T) {
 	}
 	assertReplay(t, store)
 	if err := store.MarkRemoved(ctx, removed.ID); err != nil {
-		t.Fatalf("MarkRemoved: %v", err)
+		t.Fatalf("MarkRemoved returned an error: %v", err)
 	}
 	removedBlock := CanonicalBlock{
 		Checkpoint: Checkpoint{Network: options.Network, BlockNumber: 20, BlockHash: testHash(20)},
@@ -742,16 +742,16 @@ func TestBoltStoreObservedRemovedAndCanonicalPromotion(t *testing.T) {
 		Candidates: []domain.RescueCandidate{removed},
 	}
 	if err := store.CommitCanonicalBlock(ctx, removedBlock); err != nil {
-		t.Fatalf("commit block with removed member: %v", err)
+		t.Fatalf("committing block with removed item: %v", err)
 	}
 	assertCheckpoint(t, store, false, Checkpoint{})
 	assertReplay(t, store, removed)
 	removedIncident := testIncident(removed, 1)
 	if err := store.PutIncident(ctx, removedIncident); err != nil {
-		t.Fatalf("PutIncident canonical member after Removed: %v", err)
+		t.Fatalf("PutIncident canonical item after Removed: %v", err)
 	}
 	if err := store.Ack(ctx, removed.ID, removedIncident.ID); err != nil {
-		t.Fatalf("Ack canonical member after Removed: %v", err)
+		t.Fatalf("Ack canonical item after Removed: %v", err)
 	}
 	assertCheckpoint(t, store, false, removedBlock.Checkpoint)
 
@@ -771,12 +771,12 @@ func TestBoltStoreObservedRemovedAndCanonicalPromotion(t *testing.T) {
 		Candidates: []domain.RescueCandidate{canonical},
 	}
 	if err := store.CommitCanonicalBlock(ctx, promotedBlock); err != nil {
-		t.Fatalf("commit observed candidate: %v", err)
+		t.Fatalf("committing observed candidate: %v", err)
 	}
 	assertReplay(t, store, canonical)
 	assertCheckpoint(t, store, false, removedBlock.Checkpoint)
 	if err := store.MarkRemoved(ctx, canonical.ID); err == nil {
-		t.Fatal("MarkRemoved promoted ready candidate succeeded")
+		t.Fatal("MarkRemoved on promoted ready candidate succeeded")
 	}
 	incident := testIncident(canonical, 3)
 	if err := store.PutIncident(ctx, incident); err != nil {
@@ -797,7 +797,7 @@ func TestBoltStoreBindingSchemaLockAndPermissions(t *testing.T) {
 	store := openTestStore(t, path, options)
 	parentInfo, err := os.Stat(filepath.Dir(path))
 	if err != nil || parentInfo.Mode().Perm() != 0o700 {
-		t.Fatalf("parent permissions = (%v, %v), want 0700", parentInfo, err)
+		t.Fatalf("parent directory permissions = (%v, %v), want 0700", parentInfo, err)
 	}
 	fileInfo, err := os.Stat(path)
 	if err != nil || fileInfo.Mode().Perm() != 0o600 {
@@ -813,10 +813,10 @@ func TestBoltStoreBindingSchemaLockAndPermissions(t *testing.T) {
 		t.Fatalf("second Open exceeded bounded lock timeout: %s", time.Since(started))
 	}
 	if strings.Contains(lockErr.Error(), path) {
-		t.Fatalf("public lock error leaked path: %v", lockErr)
+		t.Fatalf("public lock error exposed path: %v", lockErr)
 	}
 	if err := store.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+		t.Fatalf("Close returned an error: %v", err)
 	}
 
 	mismatches := []OpenOptions{options, options, options, options, options, options, options, options}
@@ -832,24 +832,24 @@ func TestBoltStoreBindingSchemaLockAndPermissions(t *testing.T) {
 		opened, err := Open(path, mismatch)
 		if err == nil {
 			opened.Close()
-			t.Fatalf("binding mismatch %d opened database", index)
+			t.Fatalf("binding mismatch %d allowed database to open", index)
 		}
 		if strings.Contains(err.Error(), path) {
-			t.Fatalf("binding mismatch %d leaked path: %v", index, err)
+			t.Fatalf("binding mismatch %d exposed path: %v", index, err)
 		}
 	}
 
 	raw, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
-		t.Fatalf("open raw database: %v", err)
+		t.Fatalf("opening raw database: %v", err)
 	}
 	if err := raw.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(metaBucket).Put(schemaKey, encodeUint32(schemaVersion+1))
 	}); err != nil {
-		t.Fatalf("write future schema: %v", err)
+		t.Fatalf("writing future schema: %v", err)
 	}
 	if err := raw.Close(); err != nil {
-		t.Fatalf("close raw database: %v", err)
+		t.Fatalf("closing raw database: %v", err)
 	}
 	if opened, err := Open(path, options); err == nil {
 		opened.Close()
@@ -866,24 +866,24 @@ func TestBoltStoreRejectsCorruptionOnReadAndReopen(t *testing.T) {
 	store := openTestStore(t, path, options)
 	candidate := testBlockCandidate(options, 1, testHash(1))
 	if _, err := store.Put(ctx, candidate); err != nil {
-		t.Fatalf("Put: %v", err)
+		t.Fatalf("Put returned an error: %v", err)
 	}
 	if err := store.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(candidatesBucket).Put(candidate.ID[:], []byte{recordVersion, byte(CandidateReady)})
 	}); err != nil {
-		t.Fatalf("inject corruption: %v", err)
+		t.Fatalf("injecting corruption: %v", err)
 	}
 	if _, err := store.Replay(ctx, options.Network); !errors.Is(err, errCorrupt) {
-		t.Fatalf("Replay corruption error = %v, want safe corruption error", err)
+		t.Fatalf("Replay error on corruption = %v, want safe corruption error", err)
 	}
 	if err := store.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+		t.Fatalf("Close returned an error: %v", err)
 	}
 	if opened, err := Open(path, options); err == nil {
 		opened.Close()
-		t.Fatal("corrupted database reopened")
+		t.Fatal("corrupt database reopened")
 	} else if strings.Contains(err.Error(), path) {
-		t.Fatalf("corruption error leaked path: %v", err)
+		t.Fatalf("corruption error exposed path: %v", err)
 	}
 }
 
@@ -891,13 +891,13 @@ func TestBoltStoreRejectsReinitializingExistingState(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]func(*testing.T, string){
-		"усечённый файл": func(t *testing.T, path string) {
+		"truncated file": func(t *testing.T, path string) {
 			t.Helper()
 			if err := os.Truncate(path, 0); err != nil {
 				t.Fatal(err)
 			}
 		},
-		"удалённая схема": func(t *testing.T, path string) {
+		"deleted schema": func(t *testing.T, path string) {
 			t.Helper()
 			raw, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
 			if err != nil {
@@ -929,14 +929,14 @@ func TestBoltStoreRejectsReinitializingExistingState(t *testing.T) {
 			corrupt(t, path)
 			if opened, err := Open(path, options); err == nil {
 				opened.Close()
-				t.Fatal("существующий повреждённый state был переинициализирован")
+				t.Fatal("existing corrupt state was reinitialized")
 			}
 		})
 	}
 }
 
 func TestBoltStoreRejectsReadyOrderSequenceRollback(t *testing.T) {
-	for name, sequence := range map[string]uint64{"rollback": 0, "исчерпание": ^uint64(0)} {
+	for name, sequence := range map[string]uint64{"rollback": 0, "exhaustion": ^uint64(0)} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "handoff.db")
 			options := testOpenOptions(nil)
@@ -951,7 +951,7 @@ func TestBoltStoreRejectsReadyOrderSequenceRollback(t *testing.T) {
 			setBucketSequence(t, path, readyOrderBucket, sequence)
 			if opened, err := Open(path, options); err == nil {
 				opened.Close()
-				t.Fatal("store принял некорректный ready-order sequence")
+				t.Fatal("store accepted invalid readiness order sequence")
 			}
 		})
 	}
@@ -966,7 +966,7 @@ func TestBoltStoreRejectsCorruptTombstoneCoverageAndSequence(t *testing.T) {
 				cursor := tx.Bucket(tombstonesBucket).Cursor()
 				key, _ := cursor.First()
 				if key == nil {
-					return errors.New("tombstone отсутствует")
+					return errors.New("tombstone is missing")
 				}
 				return cursor.Delete()
 			})
@@ -994,7 +994,7 @@ func TestBoltStoreRejectsCorruptTombstoneCoverageAndSequence(t *testing.T) {
 			corrupt(t, path)
 			if opened, err := Open(path, options); err == nil {
 				opened.Close()
-				t.Fatal("store принял повреждённые tombstones")
+				t.Fatal("store accepted corrupt tombstones")
 			}
 		})
 	}
@@ -1033,17 +1033,17 @@ func TestBoltStoreDiscoveredTokensRequireCanonicalConfirmation(t *testing.T) {
 	store := openTestStore(t, path, options)
 	provisional := testLogCandidate(options, 1, testHash(1), 2, 1)
 	if _, err := store.PutObserved(ctx, provisional); err != nil {
-		t.Fatalf("PutObserved: %v", err)
+		t.Fatalf("PutObserved returned an error: %v", err)
 	}
 	assertDiscoveredTokens(t, store, options.Network, nil)
 	if err := store.MarkRemoved(ctx, provisional.ID); err != nil {
-		t.Fatalf("MarkRemoved: %v", err)
+		t.Fatalf("MarkRemoved returned an error: %v", err)
 	}
 	store = reopenTestStore(t, store, path, options)
 	defer store.Close()
 	assertDiscoveredTokens(t, store, options.Network, nil)
 	if overflowed, err := store.DiscoveryOverflowed(ctx, options.Network); err != nil || overflowed {
-		t.Fatalf("DiscoveryOverflowed = (%v, %v), want false", overflowed, err)
+		t.Fatalf("DiscoveryOverflowed returned (%v, %v), want false", overflowed, err)
 	}
 }
 
@@ -1073,23 +1073,23 @@ func TestBoltStoreDiscoveryOverflowIsDurableAndDoesNotBlockWork(t *testing.T) {
 		Candidates: candidates,
 	}
 	if err := store.CommitCanonicalBlock(ctx, block); err != nil {
-		t.Fatalf("canonical seal at discovery limit: %v", err)
+		t.Fatalf("canonical commit at discovery limit: %v", err)
 	}
 	assertCheckpoint(t, store, true, block.Checkpoint)
 	assertDiscoveredTokens(t, store, options.Network, wantTokens)
 	if overflowed, err := store.DiscoveryOverflowed(ctx, options.Network); err != nil || !overflowed {
-		t.Fatalf("DiscoveryOverflowed = (%v, %v), want true", overflowed, err)
+		t.Fatalf("DiscoveryOverflowed returned (%v, %v), want true", overflowed, err)
 	}
 
 	configuredToken := testIndexedToken(2000)
 	configured := domain.NewTokenReconciliationCandidate(options.Network, options.Source, configuredToken, 1, 1)
 	if result, err := store.Put(ctx, configured); err != nil || result != PutInserted {
-		t.Fatalf("configured token work after overflow = (%v, %v), want inserted", result, err)
+		t.Fatalf("configured token work after saturation = (%v, %v), want insertion", result, err)
 	}
 	store = reopenTestStore(t, store, path, options)
 	defer store.Close()
 	if overflowed, err := store.DiscoveryOverflowed(ctx, options.Network); err != nil || !overflowed {
-		t.Fatalf("DiscoveryOverflowed after reopen = (%v, %v), want true", overflowed, err)
+		t.Fatalf("DiscoveryOverflowed after reopening returned (%v, %v), want true", overflowed, err)
 	}
 	assertDiscoveredTokens(t, store, options.Network, wantTokens)
 }
@@ -1123,7 +1123,7 @@ func TestBoltStoreConcurrentDuplicateIsRaceSafe(t *testing.T) {
 	close(results)
 	close(errorsFound)
 	for err := range errorsFound {
-		t.Fatalf("concurrent Put: %v", err)
+		t.Fatalf("concurrent Put returned an error: %v", err)
 	}
 	inserted := 0
 	for result := range results {
@@ -1136,7 +1136,7 @@ func TestBoltStoreConcurrentDuplicateIsRaceSafe(t *testing.T) {
 		}
 	}
 	if inserted != 1 {
-		t.Fatalf("inserted count = %d, want 1", inserted)
+		t.Fatalf("insertion count = %d, want 1", inserted)
 	}
 	assertReplay(t, store, candidate)
 }
@@ -1154,7 +1154,7 @@ func TestBoltStoreCanonicalCommitProgressesWithFullObservedWindow(t *testing.T) 
 	canonical := testLogCandidate(options, 70, canonicalHash, 2, 2)
 	for _, candidate := range []domain.RescueCandidate{orphan, canonical} {
 		if _, err := store.PutObserved(ctx, candidate); err != nil {
-			t.Fatalf("PutObserved: %v", err)
+			t.Fatalf("PutObserved returned an error: %v", err)
 		}
 	}
 	native := testBlockCandidate(options, 70, canonicalHash)
@@ -1164,11 +1164,11 @@ func TestBoltStoreCanonicalCommitProgressesWithFullObservedWindow(t *testing.T) 
 		Candidates: []domain.RescueCandidate{native, canonical},
 	}
 	if err := store.CommitCanonicalBlock(ctx, block); err != nil {
-		t.Fatalf("canonical commit deadlocked or failed at provisional bound: %v", err)
+		t.Fatalf("canonical commit blocked or failed at preliminary limit: %v", err)
 	}
 	replay, err := store.Replay(ctx, options.Network)
 	if err != nil || len(replay) != 2 {
-		t.Fatalf("Replay after canonical commit = (%v, %v)", replay, err)
+		t.Fatalf("Replay after canonical commit returned (%v, %v)", replay, err)
 	}
 	seen := map[domain.CandidateID]bool{replay[0].ID: true, replay[1].ID: true}
 	if !seen[canonical.ID] || !seen[native.ID] {
@@ -1192,7 +1192,7 @@ func TestBoltStoreBoundsTombstonesAndCanonicalHistory(t *testing.T) {
 			ParentHash: parent,
 		}
 		if err := store.CommitCanonicalBlock(ctx, block); err != nil {
-			t.Fatalf("CommitCanonicalBlock(%d): %v", number, err)
+			t.Fatalf("CommitCanonicalBlock(%d) returned an error: %v", number, err)
 		}
 	}
 	if err := store.db.View(func(tx *bolt.Tx) error {
@@ -1236,7 +1236,7 @@ func openTestStore(t *testing.T, path string, options OpenOptions) *BoltStore {
 	t.Helper()
 	store, err := Open(path, options)
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		t.Fatalf("Open returned an error: %v", err)
 	}
 	return store
 }
@@ -1244,7 +1244,7 @@ func openTestStore(t *testing.T, path string, options OpenOptions) *BoltStore {
 func reopenTestStore(t *testing.T, store *BoltStore, path string, options OpenOptions) *BoltStore {
 	t.Helper()
 	if err := store.Close(); err != nil {
-		t.Fatalf("Close before reopen: %v", err)
+		t.Fatalf("Close before reopening returned an error: %v", err)
 	}
 	return openTestStore(t, path, options)
 }
@@ -1315,7 +1315,7 @@ func assertReplay(t *testing.T, store *BoltStore, want ...domain.RescueCandidate
 	t.Helper()
 	got, err := store.Replay(context.Background(), store.network)
 	if err != nil {
-		t.Fatalf("Replay: %v", err)
+		t.Fatalf("Replay returned an error: %v", err)
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Replay length = %d, want %d: %v", len(got), len(want), got)
@@ -1331,7 +1331,7 @@ func assertReplaySet(t *testing.T, store *BoltStore, want []domain.RescueCandida
 	t.Helper()
 	got, err := store.Replay(context.Background(), store.network)
 	if err != nil {
-		t.Fatalf("Replay: %v", err)
+		t.Fatalf("Replay returned an error: %v", err)
 	}
 	if len(got) != len(want) {
 		t.Fatalf("Replay length = %d, want %d", len(got), len(want))
@@ -1342,7 +1342,7 @@ func assertReplaySet(t *testing.T, store *BoltStore, want []domain.RescueCandida
 	}
 	for _, candidate := range got {
 		if expected, ok := wanted[candidate.ID]; !ok || expected != candidate {
-			t.Fatalf("Replay contained unexpected candidate: %v", candidate)
+			t.Fatalf("Replay contains unexpected candidate: %v", candidate)
 		}
 	}
 }
@@ -1365,13 +1365,13 @@ func candidateWithStatus(t *testing.T, store *BoltStore, candidates []domain.Res
 		data := candidateData(t, store, candidate.ID)
 		record, err := decodeCandidateRecord(data)
 		if err != nil {
-			t.Fatalf("decode candidate %s: %v", candidate.ID, err)
+			t.Fatalf("decoding candidate %s: %v", candidate.ID, err)
 		}
 		if record.Status == status {
 			return candidate
 		}
 	}
-	t.Fatalf("no candidate with status %v", status)
+	t.Fatalf("candidate with status %v is missing", status)
 	return domain.RescueCandidate{}
 }
 
@@ -1388,7 +1388,7 @@ func assertStatusCounts(t *testing.T, store *BoltStore, want map[CandidateStatus
 			return nil
 		})
 	}); err != nil {
-		t.Fatalf("read candidate statuses: %v", err)
+		t.Fatalf("reading candidate statuses: %v", err)
 	}
 	if len(got) != len(want) {
 		t.Fatalf("candidate status counts = %v, want %v", got, want)
@@ -1414,7 +1414,7 @@ func assertCheckpoint(t *testing.T, store *BoltStore, scan bool, want Checkpoint
 	}
 	wantFound := want != (Checkpoint{})
 	if err != nil || found != wantFound || got != want {
-		t.Fatalf("checkpoint(scan=%v) = (%v, %v, %v), want (%v, %v, nil)", scan, got, found, err, want, wantFound)
+		t.Fatalf("checkpoint (scan=%v) = (%v, %v, %v), want (%v, %v, nil)", scan, got, found, err, want, wantFound)
 	}
 }
 
@@ -1422,7 +1422,7 @@ func assertDiscoveredTokens(t *testing.T, store *BoltStore, network domain.Netwo
 	t.Helper()
 	got, err := store.DiscoveredTokens(context.Background(), network)
 	if err != nil {
-		t.Fatalf("DiscoveredTokens: %v", err)
+		t.Fatalf("DiscoveredTokens returned an error: %v", err)
 	}
 	if len(got) != len(want) {
 		t.Fatalf("DiscoveredTokens length = %d, want %d: %v", len(got), len(want), got)

@@ -199,9 +199,9 @@ class OperationsPolicyTests(unittest.TestCase):
             "active_alerts": 1,
         }
         cases = (
-            ("healthy", healthy, healthy_metrics, "200", "healthy_idle", "", True),
+            ("healthy state", healthy, healthy_metrics, "200", "healthy_idle", "", True),
             (
-                "stopped",
+                "stopped state",
                 stopped,
                 stopped_metrics,
                 "503",
@@ -209,9 +209,9 @@ class OperationsPolicyTests(unittest.TestCase):
                 "paid_actions_stopped",
                 True,
             ),
-            ("malformed health", "{", healthy_metrics, "200", "healthy_idle", "", False),
+            ("malformed health response", "{", healthy_metrics, "200", "healthy_idle", "", False),
             (
-                "different network sets",
+                "mismatched network sets",
                 healthy,
                 {**healthy_metrics, "networks": {"2": {}}},
                 "200",
@@ -229,7 +229,7 @@ class OperationsPolicyTests(unittest.TestCase):
                 False,
             ),
             (
-                "numeric alert chain",
+                "numeric alert chain ID",
                 stopped,
                 {
                     "networks": {"1": {}},
@@ -267,13 +267,13 @@ class OperationsPolicyTests(unittest.TestCase):
         runbook = (ROOT / "docs/operations/runbook.md").read_text(encoding="utf-8")
         backup = (ROOT / "docs/operations/backup-restore.md").read_text(encoding="utf-8")
         for statement in (
-            "сначала постоянно запретить автозапуск, затем остановить",
+            "сначала отключить и замаскировать службу",
             "DRY_RUN=false",
             "EMERGENCY_STOP=true",
             "503/stopped",
         ):
             self.assertIn(statement, runbook)
-        self.assertIn("Восстановленное состояние в этом выпуске никогда не возвращается в signing", backup)
+        self.assertIn("никогда не возвращается в режим", backup)
         self.assertIn("Устаревший снимок запрещено извлекать", backup)
         self.assertIn("снимок устарел", runbook)
         self.assertIn("запрещено извлекать в", runbook)
@@ -285,7 +285,7 @@ class OperationsPolicyTests(unittest.TestCase):
         self.assertIn("root:root 444", backup)
         self.assertNotIn("вернуть ключи", backup)
         self.assertIn("Процедуры удаления", backup)
-        self.assertIn("marker в этом выпуске нет", backup)
+        self.assertIn("маркера в этом выпуске нет", backup)
         self.assertNotIn("RPC_BROADCAST_HTTP_[0-9]+", runbook)
         self.assertNotIn("RPC_BROADCAST_HTTP_[0-9]+", backup)
 
@@ -365,17 +365,17 @@ class OperationsPolicyTests(unittest.TestCase):
         runbook = (ROOT / "docs/operations/runbook.md").read_text(encoding="utf-8")
         backup = (ROOT / "docs/operations/backup-restore.md").read_text(encoding="utf-8")
 
-        for heading, next_heading in (
-            ("## Аварийная остановка платных действий", "## Обновление"),
-            ("## Обновление", "## Откат"),
-            ("## Откат", "## Статус проверки процедуры"),
+        for name, heading, next_heading in (
+            ("emergency stop", "## Аварийная остановка платных действий", "## Обновление"),
+            ("upgrade", "## Обновление", "## Откат"),
+            ("rollback", "## Откат", "## Статус проверки процедуры"),
         ):
             section = runbook[runbook.index(heading) : runbook.index(next_heading)]
             stop = section.index("systemctl stop guard-daemon.service")
             stopped_pid = section.index("--property=MainPID --value")
             edit = section.index("sudoedit /etc/guard-daemon/guard-daemon.env")
             start = section.index("systemctl start guard-daemon.service")
-            with self.subTest(heading=heading):
+            with self.subTest(name=name):
                 self.assertLess(section.index("systemctl mask guard-daemon.service"), stop)
                 self.assertLess(stop, stopped_pid)
                 self.assertLess(stopped_pid, edit)
@@ -436,7 +436,7 @@ class OperationsPolicyTests(unittest.TestCase):
     def test_systemd_ci_uses_package_env_and_release_layout_without_starting(self) -> None:
         workflow = (ROOT / ".github/workflows/security.yml").read_text(encoding="utf-8")
         step = workflow[
-            workflow.index("- name: Статически проверить unit systemd") : workflow.index("  reproducible-artifacts:")
+            workflow.index("- name: Statically verify systemd configuration") : workflow.index("  reproducible-artifacts:")
         ]
         state_install = (
             "sudo install -o root -g root -m 0644 packaging/systemd/guard-daemon.state.env "
@@ -491,7 +491,7 @@ class OperationsPolicyTests(unittest.TestCase):
         self.assertEqual(valid.returncode, 0, valid.stderr)
         cases = (
             (
-                "partial passwd enumeration",
+                "incomplete passwd enumeration",
                 'getent() { printf "%s\\n" "guard-daemon:x:500:500::/var/lib/guard-daemon:/usr/sbin/nologin"; return 42; }; read_identity_database passwd',
             ),
             (
@@ -499,15 +499,15 @@ class OperationsPolicyTests(unittest.TestCase):
                 'validate_passwd_entries $\'guard-daemon:x:500:500::/var/lib/guard-daemon:/usr/sbin/nologin\\nguard-daemon:x:501:501::/var/lib/guard-daemon:/usr/sbin/nologin\' 500 500',
             ),
             (
-                "duplicate uid",
+                "duplicate UID",
                 'validate_passwd_entries $\'guard-daemon:x:500:500::/var/lib/guard-daemon:/usr/sbin/nologin\\nother:x:500:600::/nonexistent:/usr/sbin/nologin\' 500 500',
             ),
             (
-                "partial group enumeration",
+                "incomplete group enumeration",
                 'getent() { printf "%s\\n" "guard-daemon:x:500:"; return 42; }; read_identity_database group',
             ),
             (
-                "duplicate gid",
+                "duplicate GID",
                 "validate_group_entries $'guard-daemon:x:500:\\nother:x:500:' 500",
             ),
         )

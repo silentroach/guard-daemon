@@ -31,16 +31,16 @@ func TestLoadSystemdCredentialsReadsCredentialFiles(t *testing.T) {
 		t.Fatalf("loadSystemdCredentials() error = %v", err)
 	}
 	if credentials["SOURCE_PRIVATE_KEY"] != source {
-		t.Fatal("source credential не совпал")
+		t.Fatal("source credential does not match")
 	}
 	if credentials["SPONSOR_PRIVATE_KEY"] != sponsor {
-		t.Fatal("sponsor credential не совпал")
+		t.Fatal("sponsor credential does not match")
 	}
 	if _, present := os.LookupEnv("SOURCE_PRIVATE_KEY"); present {
-		t.Fatal("loader записал source key в environment")
+		t.Fatal("loader wrote source key to the environment")
 	}
 	if _, present := os.LookupEnv("SPONSOR_PRIVATE_KEY"); present {
-		t.Fatal("loader записал sponsor key в environment")
+		t.Fatal("loader wrote sponsor key to the environment")
 	}
 }
 
@@ -117,7 +117,7 @@ func TestLoadSystemdCredentialsRejectsUnsafeFiles(t *testing.T) {
 			t.Setenv("CREDENTIALS_DIRECTORY", directory)
 
 			if _, err := loadSystemdCredentials(); err == nil {
-				t.Fatal("loadSystemdCredentials() принял unsafe credential")
+				t.Fatal("loadSystemdCredentials() accepted an unsafe credential")
 			}
 		})
 	}
@@ -128,7 +128,7 @@ func TestLoadSystemdCredentialsRejectsNonCanonicalDirectory(t *testing.T) {
 	t.Setenv("CREDENTIALS_DIRECTORY", "relative/credentials")
 
 	if _, err := loadSystemdCredentials(); err == nil {
-		t.Fatal("loadSystemdCredentials() принял relative directory")
+		t.Fatal("loadSystemdCredentials() accepted a relative directory")
 	}
 }
 

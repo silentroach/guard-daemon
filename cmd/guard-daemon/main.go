@@ -18,11 +18,11 @@ func main() {
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr, runProcess))
 }
 
-const commandHelp = `Использование: guard-daemon [--help | --version]
+const commandHelp = `Usage: guard-daemon [--help | --version]
 
-Без аргументов guard-daemon загружает конфигурацию и запускает процесс.
-  --help     показать эту справку без чтения конфигурации и сетевых вызовов
-  --version  показать commit бинарного файла или development без чтения конфигурации
+With no arguments, guard-daemon loads its configuration and starts the process.
+  --help     show this help without loading configuration or making network requests
+  --version  show the binary commit, or development, without loading configuration
 `
 
 func runCLI(args []string, stdout, stderr io.Writer, start func() int) int {
@@ -37,13 +37,13 @@ func runCLI(args []string, stdout, stderr io.Writer, start func() int) int {
 		_, _ = fmt.Fprintln(stdout, buildinfo.Version())
 		return 0
 	}
-	_, _ = io.WriteString(stderr, "Ошибка: guard-daemon принимает только аргументы --help или --version.\n")
+	_, _ = io.WriteString(stderr, "Error: guard-daemon accepts only --help or --version.\n")
 	return 2
 }
 
 func runProcess() int {
 	if err := disableProcessDumps(); err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка запуска: не удалось запретить core dump процесса.")
+		fmt.Fprintln(os.Stderr, "Startup error: failed to disable process core dumps.")
 		return 1
 	}
 
@@ -52,13 +52,13 @@ func runProcess() int {
 
 	secrets, err := loadSystemdCredentials()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка конфигурации: не удалось безопасно загрузить credentials.")
+		fmt.Fprintln(os.Stderr, "Configuration error: failed to load credentials securely.")
 		stop()
 		return 1
 	}
 	runtimeConfig, err := config.LoadWithSecrets(secrets)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка конфигурации: %v.\n", err)
+		fmt.Fprintf(os.Stderr, "Configuration error: %v.\n", err)
 		stop()
 		return 1
 	}
@@ -66,13 +66,13 @@ func runProcess() int {
 	observer := newSafeConsoleObserver(os.Stdout)
 	daemon, err := newDaemon(ctx, runtimeConfig, newProductionDependencies(observer, runtimeConfig.Mode))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка запуска: %s.\n", startupOperatorMessage(err))
+		fmt.Fprintf(os.Stderr, "Startup error: %s.\n", startupOperatorMessage(err))
 		stop()
 		return 1
 	}
 
 	if err := daemon.Run(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "Ошибка работы: guard-daemon остановлен из-за внутреннего сбоя.")
+		fmt.Fprintln(os.Stderr, "Runtime error: guard-daemon stopped due to an internal failure.")
 		stop()
 		return 1
 	}
@@ -82,22 +82,22 @@ func runProcess() int {
 func startupOperatorMessage(err error) string {
 	var classified *domain.ClassifiedError
 	if !errors.As(err, &classified) {
-		return "guard-daemon не смог безопасно подготовить зависимости"
+		return "guard-daemon could not prepare its dependencies safely"
 	}
 	switch classified.Operation {
 	case "daemon.manifest":
-		return "не удалось доверенно загрузить deployment manifest и canonical artifact"
+		return "failed to load a trusted deployment manifest and canonical artifact"
 	case "daemon.restore_marker":
-		return "восстановленное состояние запрещено использовать для подписания"
+		return "restored state cannot be used for signing"
 	case "daemon.attestation":
-		return "RPC quorum не подтвердил deployment на общем finalized block"
+		return "the RPC quorum did not confirm the deployment at a shared finalized block"
 	case "daemon.signers", "daemon.signer_address":
-		return "адрес подписывающего компонента не совпал с настроенной ролью"
+		return "the signer address does not match the configured role"
 	case "daemon.lease_owner", "daemon.lease_acquire", "daemon.fence_acquire":
-		return "не удалось получить исключительный lease для сети и sponsor"
+		return "failed to acquire an exclusive lease for the network and sponsor"
 	case "daemon.networks", "daemon.config":
-		return "проверенная конфигурация не содержит допустимой включённой сети"
+		return "validated configuration does not contain an eligible enabled network"
 	default:
-		return "guard-daemon не смог безопасно подготовить зависимости"
+		return "guard-daemon could not prepare its dependencies safely"
 	}
 }

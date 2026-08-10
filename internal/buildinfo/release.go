@@ -1,11 +1,11 @@
-// Package buildinfo содержит идентичность воспроизводимой release-сборки.
+// Package buildinfo содержит идентификатор воспроизводимой релизной сборки.
 package buildinfo
 
-// ReleaseCommit задаётся только release builder через Go linker. Пустое
-// значение означает обычную development-сборку из закреплённого source tree.
+// ReleaseCommit задаётся только при сборке релиза через компоновщик Go. Пустое
+// значение означает обычную отладочную сборку из зафиксированной версии исходного кода.
 var ReleaseCommit string
 
-// Version возвращает только безопасную публичную идентичность бинарного файла.
+// Version возвращает только безопасный публичный идентификатор бинарного файла.
 func Version() string {
 	if len(ReleaseCommit) != 40 {
 		return "development"

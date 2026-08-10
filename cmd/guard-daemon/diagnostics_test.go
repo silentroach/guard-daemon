@@ -61,12 +61,12 @@ func TestDiagnosticsExposeStateAndBoundedMetricsWithoutSensitiveFields(t *testin
 	body := metricsResponse.Body.String()
 	for _, required := range []string{`"31337"`, `"spent_wei":"3"`, `"active_alerts":1`} {
 		if !strings.Contains(body, required) {
-			t.Fatalf("metrics response не содержит %s: %s", required, body)
+			t.Fatalf("metrics response does not contain %s: %s", required, body)
 		}
 	}
 	for _, forbidden := range []string{"rpc_url", "private_key", "signature", "raw_transaction", "token_address"} {
 		if strings.Contains(body, forbidden) {
-			t.Fatalf("metrics response содержит запрещённое поле %q: %s", forbidden, body)
+			t.Fatalf("metrics response contains forbidden field %q: %s", forbidden, body)
 		}
 	}
 }
@@ -77,7 +77,7 @@ func TestDiagnosticsRejectUnsafeExistingPath(t *testing.T) {
 	metrics, _ := observability.NewMetrics([]domain.NetworkID{chainID})
 	alerts, _ := observability.NewAlertManager(observability.AlertManagerConfig{Cooldown: time.Minute, Capacity: 8}, clock.Real{}, nil)
 	path := filepath.Join(shortTestStateDirectory(t), "diagnostics.sock")
-	if err := os.WriteFile(path, []byte("не socket"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("not a socket"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if diagnostics, err := newDiagnosticsServer(path, health, metrics, alerts); err == nil || diagnostics != nil {

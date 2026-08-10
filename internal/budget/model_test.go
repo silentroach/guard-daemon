@@ -49,12 +49,12 @@ func TestLedgerDeterministicModelSequence(t *testing.T) {
 			spent, reserved := modelTotals(model)
 			if spent+reserved+maximum > 500 {
 				if !errors.Is(err, ErrBudgetExceeded) {
-					t.Fatalf("step %d Reserve error = %v, want ErrBudgetExceeded", step, err)
+					t.Fatalf("step %d: Reserve returned error %v, want ErrBudgetExceeded", step, err)
 				}
 				break
 			}
 			if err != nil {
-				t.Fatalf("step %d Reserve: %v", step, err)
+				t.Fatalf("step %d: Reserve returned an error: %v", step, err)
 			}
 			model[reservation.ID] = modelReservation{state: ReservationHeld, amount: maximum}
 		case 1:
@@ -66,7 +66,7 @@ func TestLedgerDeterministicModelSequence(t *testing.T) {
 			hash := testHash(byte(step%250 + 1))
 			reservation, err := ledger.MarkExposed(ctx, id, hash)
 			if err != nil {
-				t.Fatalf("step %d MarkExposed: %v", step, err)
+				t.Fatalf("step %d: MarkExposed returned an error: %v", step, err)
 			}
 			entry := model[id]
 			entry.state = reservation.State
@@ -80,7 +80,7 @@ func TestLedgerDeterministicModelSequence(t *testing.T) {
 			id := held[random.Intn(len(held))]
 			reservation, err := ledger.ReleaseProvenUnused(ctx, id)
 			if err != nil {
-				t.Fatalf("step %d ReleaseProvenUnused: %v", step, err)
+				t.Fatalf("step %d: ReleaseProvenUnused returned an error: %v", step, err)
 			}
 			entry := model[id]
 			entry.state = reservation.State
@@ -95,7 +95,7 @@ func TestLedgerDeterministicModelSequence(t *testing.T) {
 			actual := uint64(random.Intn(int(entry.amount)) + 1)
 			reservation, err := ledger.CommitFinalized(ctx, FinalizedCharge{ReservationID: id, TxHash: entry.txHash, Actual: amount(actual)})
 			if err != nil {
-				t.Fatalf("step %d CommitFinalized: %v", step, err)
+				t.Fatalf("step %d: CommitFinalized returned an error: %v", step, err)
 			}
 			entry.state = reservation.State
 			entry.actual = actual
@@ -105,11 +105,11 @@ func TestLedgerDeterministicModelSequence(t *testing.T) {
 		spent, reserved := modelTotals(model)
 		snapshot, err := ledger.Snapshot(ctx)
 		if err != nil {
-			t.Fatalf("step %d Snapshot: %v", step, err)
+			t.Fatalf("step %d: Snapshot returned an error: %v", step, err)
 		}
 		if spent+reserved > 500 || snapshot.Global.Spent.Cumulative.Uint64() != spent ||
 			snapshot.Global.Reserved.Cumulative.Uint64() != reserved || snapshot.Global.Remaining.Cumulative.Uint64() != 500-spent-reserved {
-			t.Fatalf("step %d model=%d/%d snapshot=%+v", step, spent, reserved, snapshot.Global)
+			t.Fatalf("step %d: model=%d/%d, snapshot=%+v", step, spent, reserved, snapshot.Global)
 		}
 	}
 	if err := ledger.Close(); err != nil {

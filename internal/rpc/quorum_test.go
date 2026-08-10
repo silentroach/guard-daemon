@@ -74,7 +74,7 @@ func TestNewQuorumReaderValidatesProviderIndependence(t *testing.T) {
 	readers := []*historicalFake{{}, {}}
 	valid := testProviders(readers...)
 	if _, err := NewQuorumReader(valid, time.Second); err != nil {
-		t.Fatalf("NewQuorumReader(valid) error = %v", err)
+		t.Fatalf("NewQuorumReader(valid parameters) returned an error: %v", err)
 	}
 
 	tests := map[string]func([]Provider) []Provider{
@@ -105,12 +105,12 @@ func TestNewQuorumReaderValidatesProviderIndependence(t *testing.T) {
 			providers := append([]Provider(nil), valid...)
 			_, err := NewQuorumReader(mutate(providers), time.Second)
 			if !errors.Is(err, ErrInvalidProviders) {
-				t.Fatalf("NewQuorumReader() error = %v, want %v", err, ErrInvalidProviders)
+				t.Fatalf("NewQuorumReader() returned error %v, want %v", err, ErrInvalidProviders)
 			}
 		})
 	}
 	if _, err := NewQuorumReader(valid, 0); !errors.Is(err, ErrInvalidTimeout) {
-		t.Fatalf("NewQuorumReader(timeout=0) error = %v", err)
+		t.Fatalf("NewQuorumReader(timeout=0) returned an error: %v", err)
 	}
 }
 
@@ -127,7 +127,7 @@ func TestQuorumFinalizedUsesLowestCommonCanonicalBlock(t *testing.T) {
 	}
 	want := refForHeader(commonHeader)
 	if ref != want {
-		t.Fatalf("Finalized() = %#v, want %#v", ref, want)
+		t.Fatalf("Finalized() returned %#v, want %#v", ref, want)
 	}
 }
 
@@ -138,7 +138,7 @@ func TestQuorumFinalizedAndHeaderRejectByzantineOrMalformedResponse(t *testing.T
 			&historicalFake{header: finalizedHeaderPlan(12, map[uint64]*types.Header{10: testHeader(10, 2), 12: testHeader(12, 3)})},
 		)
 		if _, err := reader.Finalized(context.Background()); !errors.Is(err, ErrQuorumMismatch) {
-			t.Fatalf("Finalized() error = %v", err)
+			t.Fatalf("Finalized() returned an error: %v", err)
 		}
 	})
 
@@ -151,7 +151,7 @@ func TestQuorumFinalizedAndHeaderRejectByzantineOrMalformedResponse(t *testing.T
 			&historicalFake{header: exactHeaderPlan(second)},
 		)
 		if _, err := reader.Header(context.Background(), 7); !errors.Is(err, ErrQuorumMismatch) {
-			t.Fatalf("Header() error = %v", err)
+			t.Fatalf("Header() returned an error: %v", err)
 		}
 	})
 
@@ -161,7 +161,7 @@ func TestQuorumFinalizedAndHeaderRejectByzantineOrMalformedResponse(t *testing.T
 			&historicalFake{header: exactHeaderPlan(testHeader(7, 1))},
 		)
 		if _, err := reader.Header(context.Background(), 7); !errors.Is(err, ErrMalformedResponse) {
-			t.Fatalf("Header() error = %v", err)
+			t.Fatalf("Header() returned an error: %v", err)
 		}
 	})
 
@@ -171,7 +171,7 @@ func TestQuorumFinalizedAndHeaderRejectByzantineOrMalformedResponse(t *testing.T
 			&historicalFake{header: exactHeaderPlan(testHeader(8, 1))},
 		)
 		if _, err := reader.Header(context.Background(), 7); !errors.Is(err, ErrMalformedResponse) {
-			t.Fatalf("Header() error = %v", err)
+			t.Fatalf("Header() returned an error: %v", err)
 		}
 	})
 }
@@ -188,7 +188,7 @@ func TestQuorumHeaderDeadlineAndRedaction(t *testing.T) {
 		)
 		_, err := reader.Header(context.Background(), 3)
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("Header() error = %v, want deadline", err)
+			t.Fatalf("Header() returned error %v, want deadline exceeded", err)
 		}
 		if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "raw-backend") {
 			t.Fatalf("Header() exposed backend error: %q", err)
@@ -210,7 +210,7 @@ func TestQuorumHeaderReturnsWhenBackendIgnoresCancellation(t *testing.T) {
 		)
 
 		if _, err := reader.Header(context.Background(), 3); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("Header() error = %v, want coordinator deadline", err)
+			t.Fatalf("Header() returned error %v, want coordinator deadline exceeded", err)
 		}
 		close(release)
 		synctest.Wait()
@@ -237,7 +237,7 @@ func TestQuorumHeaderPropagatesParentCancellation(t *testing.T) {
 	}()
 
 	if _, err := reader.Header(ctx, 3); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Header() error = %v, want parent cancellation", err)
+		t.Fatalf("Header() returned error %v, want parent context cancellation", err)
 	}
 }
 
@@ -254,7 +254,7 @@ func TestQuorumFilterLogsNormalizesOrderAndCoalescesDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(logs) != 2 || logs[0].Index != 0 || logs[1].Index != 1 {
-		t.Fatalf("FilterLogs() did not deterministically coalesce duplicates: %#v", logs)
+		t.Fatalf("FilterLogs() did not merge duplicates deterministically: %#v", logs)
 	}
 	conflict := cloneLog(first)
 	conflict.Data = []byte{0xff}
@@ -263,7 +263,7 @@ func TestQuorumFilterLogsNormalizesOrderAndCoalescesDuplicates(t *testing.T) {
 		&historicalFake{logs: fixedLogs([]types.Log{first, conflict})},
 	)
 	if _, err := reader.FilterLogs(context.Background(), explicitQuery(5, 5)); !errors.Is(err, ErrMalformedResponse) {
-		t.Fatalf("conflicting duplicate error = %v", err)
+		t.Fatalf("conflicting duplicate error: %v", err)
 	}
 }
 
@@ -278,20 +278,20 @@ func TestQuorumFilterLogsPinsAgreedBlockHash(t *testing.T) {
 	reader := mustQuorum(t, first, second)
 	got, err := reader.FilterLogs(context.Background(), ethereum.FilterQuery{BlockHash: &blockHash})
 	if err != nil || len(got) != 1 || got[0].BlockHash != blockHash {
-		t.Fatalf("hash-pinned FilterLogs() = (%v, %v)", got, err)
+		t.Fatalf("FilterLogs() with pinned hash returned (%v, %v)", got, err)
 	}
 
 	wrong := cloneLog(logEntry)
 	wrong.BlockHash = common.Hash{31: 0x56}
 	second.logs = fixedLogs([]types.Log{wrong})
 	if _, err := reader.FilterLogs(context.Background(), ethereum.FilterQuery{BlockHash: &blockHash}); !errors.Is(err, ErrMalformedResponse) {
-		t.Fatalf("wrong-hash FilterLogs() error = %v", err)
+		t.Fatalf("FilterLogs() with incorrect hash returned an error: %v", err)
 	}
 	emptyLogs := func(context.Context, ethereum.FilterQuery) ([]types.Log, error) { return []types.Log{}, nil }
 	first.logs = emptyLogs
 	second.logs = emptyLogs
 	if logs, err := reader.FilterLogs(context.Background(), ethereum.FilterQuery{BlockHash: &blockHash}); err != nil || len(logs) != 0 {
-		t.Fatalf("empty hash-pinned FilterLogs() = (%v, %v)", logs, err)
+		t.Fatalf("empty FilterLogs() with pinned hash returned (%v, %v)", logs, err)
 	}
 }
 
@@ -328,7 +328,7 @@ func TestQuorumFilterLogsRejectsDisagreementAndMalformedResponses(t *testing.T) 
 				&historicalFake{logs: fixedLogs(test.second)},
 			)
 			if _, err := reader.FilterLogs(context.Background(), test.query); !errors.Is(err, test.want) {
-				t.Fatalf("FilterLogs() error = %v, want %v", err, test.want)
+				t.Fatalf("FilterLogs() returned error %v, want %v", err, test.want)
 			}
 		})
 	}
@@ -343,7 +343,7 @@ func TestQuorumFilterLogsRejectsDisagreementAndMalformedResponses(t *testing.T) 
 	for _, query := range invalidQueries {
 		reader := mustQuorum(t, &historicalFake{}, &historicalFake{})
 		if _, err := reader.FilterLogs(context.Background(), query); !errors.Is(err, ErrInvalidFilterQuery) {
-			t.Fatalf("FilterLogs(invalid) error = %v", err)
+			t.Fatalf("FilterLogs(invalid query) returned an error: %v", err)
 		}
 	}
 }
@@ -351,13 +351,13 @@ func TestQuorumFilterLogsRejectsDisagreementAndMalformedResponses(t *testing.T) 
 func TestQuorumFilterLogsRejectsApplicationLimitViolations(t *testing.T) {
 	valid := testLog(5, 0)
 	tests := map[string][]types.Log{
-		"слишком много logs": make([]types.Log, maxLogsPerResponse+1),
-		"слишком много topics": func() []types.Log {
+		"too many logs": make([]types.Log, maxLogsPerResponse+1),
+		"too many topics": func() []types.Log {
 			entry := cloneLog(valid)
 			entry.Topics = make([]common.Hash, maxTopicsPerLog+1)
 			return []types.Log{entry}
 		}(),
-		"слишком большие data": func() []types.Log {
+		"oversized data": func() []types.Log {
 			entry := cloneLog(valid)
 			entry.Data = make([]byte, maxLogDataBytes+1)
 			return []types.Log{entry}
@@ -370,7 +370,7 @@ func TestQuorumFilterLogsRejectsApplicationLimitViolations(t *testing.T) {
 				&historicalFake{logs: fixedLogs(logs)},
 			)
 			if _, err := reader.FilterLogs(context.Background(), explicitQuery(5, 5)); !errors.Is(err, ErrMalformedResponse) {
-				t.Fatalf("FilterLogs() error = %v, want %v", err, ErrMalformedResponse)
+				t.Fatalf("FilterLogs() returned error %v, want %v", err, ErrMalformedResponse)
 			}
 		})
 	}
@@ -403,15 +403,15 @@ func TestQuorumCriticalStateUsesCanonicalHashAndStrictEquality(t *testing.T) {
 
 	balance, err := reader.BalanceAt(context.Background(), block, address)
 	if err != nil || balance.Cmp(big.NewInt(4)) != 0 {
-		t.Fatalf("BalanceAt() = %v, %v", balance, err)
+		t.Fatalf("BalanceAt() returned %v, %v", balance, err)
 	}
 	code, err := reader.CodeAt(context.Background(), block, address)
 	if err != nil || !stringBytesEqual(code, []byte{1, 2}) {
-		t.Fatalf("CodeAt() = %x, %v", code, err)
+		t.Fatalf("CodeAt() returned %x, %v", code, err)
 	}
 	output, err := reader.CallContract(context.Background(), block, ethereum.CallMsg{To: &address})
 	if err != nil || !stringBytesEqual(output, []byte{3, 4}) {
-		t.Fatalf("CallContract() = %x, %v", output, err)
+		t.Fatalf("CallContract() returned %x, %v", output, err)
 	}
 }
 
@@ -432,7 +432,7 @@ func TestQuorumCriticalStateRejectsByzantineAndNilResponses(t *testing.T) {
 		second.balance = func(context.Context, common.Address, common.Hash) (*big.Int, error) { return big.NewInt(2), nil }
 		reader := mustQuorum(t, first, second)
 		if _, err := reader.BalanceAt(context.Background(), block, common.Address{}); !errors.Is(err, ErrQuorumMismatch) {
-			t.Fatalf("BalanceAt() error = %v", err)
+			t.Fatalf("BalanceAt() returned an error: %v", err)
 		}
 	})
 	t.Run("code disagreement", func(t *testing.T) {
@@ -440,7 +440,7 @@ func TestQuorumCriticalStateRejectsByzantineAndNilResponses(t *testing.T) {
 		second.code = func(context.Context, common.Address, common.Hash) ([]byte, error) { return []byte{2}, nil }
 		reader := mustQuorum(t, first, second)
 		if _, err := reader.CodeAt(context.Background(), block, common.Address{}); !errors.Is(err, ErrQuorumMismatch) {
-			t.Fatalf("CodeAt() error = %v", err)
+			t.Fatalf("CodeAt() returned an error: %v", err)
 		}
 	})
 	t.Run("call disagreement", func(t *testing.T) {
@@ -448,7 +448,7 @@ func TestQuorumCriticalStateRejectsByzantineAndNilResponses(t *testing.T) {
 		second.call = func(context.Context, ethereum.CallMsg, common.Hash) ([]byte, error) { return []byte{2}, nil }
 		reader := mustQuorum(t, first, second)
 		if _, err := reader.CallContract(context.Background(), block, ethereum.CallMsg{}); !errors.Is(err, ErrQuorumMismatch) {
-			t.Fatalf("CallContract() error = %v", err)
+			t.Fatalf("CallContract() returned an error: %v", err)
 		}
 	})
 	t.Run("nil values", func(t *testing.T) {
@@ -456,13 +456,13 @@ func TestQuorumCriticalStateRejectsByzantineAndNilResponses(t *testing.T) {
 		second.balance = func(context.Context, common.Address, common.Hash) (*big.Int, error) { return nil, nil }
 		reader := mustQuorum(t, first, second)
 		if _, err := reader.BalanceAt(context.Background(), block, common.Address{}); !errors.Is(err, ErrMalformedResponse) {
-			t.Fatalf("BalanceAt() error = %v", err)
+			t.Fatalf("BalanceAt() returned an error: %v", err)
 		}
 		second = base()
 		second.code = func(context.Context, common.Address, common.Hash) ([]byte, error) { return nil, nil }
 		reader = mustQuorum(t, base(), second)
 		if _, err := reader.CodeAt(context.Background(), block, common.Address{}); !errors.Is(err, ErrMalformedResponse) {
-			t.Fatalf("CodeAt() error = %v", err)
+			t.Fatalf("CodeAt() returned an error: %v", err)
 		}
 	})
 	t.Run("noncanonical block ref", func(t *testing.T) {
@@ -470,7 +470,7 @@ func TestQuorumCriticalStateRejectsByzantineAndNilResponses(t *testing.T) {
 		invalid.ParentHash = common.Hash{9}
 		reader := mustQuorum(t, base(), base())
 		if _, err := reader.CodeAt(context.Background(), invalid, common.Address{}); !errors.Is(err, ErrInvalidBlockRef) {
-			t.Fatalf("CodeAt() error = %v", err)
+			t.Fatalf("CodeAt() returned an error: %v", err)
 		}
 	})
 }
@@ -486,7 +486,7 @@ func TestQuorumReceiptRequiresEqualCanonicalFinalizedReceipt(t *testing.T) {
 
 	got, err := reader.Receipt(context.Background(), txHash)
 	if err != nil || got.Status != types.ReceiptStatusSuccessful || got.BlockHash != receiptHeader.Hash() {
-		t.Fatalf("Receipt() = %#v, %v", got, err)
+		t.Fatalf("Receipt() returned %#v, %v", got, err)
 	}
 }
 
@@ -504,7 +504,7 @@ func TestQuorumReceiptRejectsDisagreementMalformedAndUnfinalized(t *testing.T) {
 			receiptFake(finalizedHeader, receiptHeader, failed),
 		)
 		if _, err := reader.Receipt(context.Background(), txHash); !errors.Is(err, ErrQuorumMismatch) {
-			t.Fatalf("Receipt() error = %v", err)
+			t.Fatalf("Receipt() returned an error: %v", err)
 		}
 	})
 
@@ -516,7 +516,7 @@ func TestQuorumReceiptRejectsDisagreementMalformedAndUnfinalized(t *testing.T) {
 			receiptFake(finalizedHeader, receiptHeader, malformed),
 		)
 		if _, err := reader.Receipt(context.Background(), txHash); !errors.Is(err, ErrMalformedResponse) {
-			t.Fatalf("Receipt() error = %v", err)
+			t.Fatalf("Receipt() returned an error: %v", err)
 		}
 	})
 
@@ -525,7 +525,7 @@ func TestQuorumReceiptRejectsDisagreementMalformedAndUnfinalized(t *testing.T) {
 		second := receiptFake(finalizedHeader, receiptHeader, nil)
 		reader := mustQuorum(t, first, second)
 		if _, err := reader.Receipt(context.Background(), txHash); !errors.Is(err, ErrMalformedResponse) {
-			t.Fatalf("Receipt() error = %v", err)
+			t.Fatalf("Receipt() returned an error: %v", err)
 		}
 	})
 
@@ -537,7 +537,7 @@ func TestQuorumReceiptRejectsDisagreementMalformedAndUnfinalized(t *testing.T) {
 			receiptFake(finalizedHeader, receiptHeader, wrong),
 		)
 		if _, err := reader.Receipt(context.Background(), txHash); !errors.Is(err, ErrQuorumMismatch) {
-			t.Fatalf("Receipt() error = %v", err)
+			t.Fatalf("Receipt() returned an error: %v", err)
 		}
 	})
 
@@ -549,7 +549,7 @@ func TestQuorumReceiptRejectsDisagreementMalformedAndUnfinalized(t *testing.T) {
 			receiptFake(finalizedHeader, futureHeader, future),
 		)
 		if _, err := reader.Receipt(context.Background(), txHash); !errors.Is(err, ErrUnfinalizedReceipt) {
-			t.Fatalf("Receipt() error = %v", err)
+			t.Fatalf("Receipt() returned an error: %v", err)
 		}
 	})
 }
@@ -569,14 +569,14 @@ func TestDialQuorumCleansUpPartialFailureAndRedacts(t *testing.T) {
 		return &historicalFake{}, func() { closed.Add(1) }, nil
 	})
 	if !errors.Is(err, ErrQuorumDial) {
-		t.Fatalf("dialQuorum() error = %v", err)
+		t.Fatalf("dialQuorum() returned an error: %v", err)
 	}
 	if closed.Load() != 1 {
-		t.Fatalf("partial dial close count = %d, want 1", closed.Load())
+		t.Fatalf("close count after partial dial = %d, want 1", closed.Load())
 	}
 	for _, endpoint := range endpoints {
 		if strings.Contains(err.Error(), endpoint.Endpoint) {
-			t.Fatalf("dialQuorum() exposed endpoint: %q", err)
+			t.Fatalf("dialQuorum() exposed endpoint address: %q", err)
 		}
 	}
 	if strings.Contains(err.Error(), "raw backend") {

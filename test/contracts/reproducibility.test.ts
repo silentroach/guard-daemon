@@ -32,7 +32,7 @@ const artifactDigests = async (
   return Object.fromEntries(entries);
 };
 
-test("повторная компиляция создаёт идентичные артефакты", async () => {
+test("recompilation creates identical artifacts", async () => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "guard-contracts-"));
   const firstDirectory = join(temporaryDirectory, "first");
   const secondDirectory = join(temporaryDirectory, "second");
@@ -63,14 +63,14 @@ test("повторная компиляция создаёт идентичны�
   }
 });
 
-test("production artifact содержит только разрешённый Rescuer ABI", async () => {
+test("the production artifact contains only the allowed Rescuer ABI", async () => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "guard-contracts-"));
 
   try {
     const artifactPaths = compileContracts(temporaryDirectory);
     const artifactPath = artifactPaths[0];
     if (!artifactPath) {
-      assert.fail("Компилятор не создал RescuerV2 artifact");
+      assert.fail("Compiler did not create the RescuerV2 artifact");
     }
     const artifact = JSON.parse(
       await readFile(artifactPath, "utf8"),

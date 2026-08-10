@@ -6,12 +6,12 @@ import (
 )
 
 var (
-	ErrPaidActionsStopped = errors.New("платные действия остановлены")
-	ErrNilPaidAction      = errors.New("платное действие не задано")
+	ErrPaidActionsStopped = errors.New("paid actions are stopped")
+	ErrNilPaidAction      = errors.New("paid action is nil")
 )
 
-// PaidActionGate является общей границей для signer и broadcaster. Каждый
-// такой вызов должен полностью находиться внутри Do.
+// PaidActionGate синхронизирует остановку подписанта и модуля отправки. Каждый вызов
+// этих компонентов должен полностью выполняться внутри Do.
 type PaidActionGate struct {
 	mu      sync.Mutex
 	drained *sync.Cond
@@ -25,8 +25,8 @@ func NewPaidActionGate() *PaidActionGate {
 	return gate
 }
 
-// Do резервирует право на одно signing/broadcast действие. Callback не должен
-// вызывать Stop на том же gate, поскольку Stop ожидает завершения callback.
+// Do регистрирует начало одного действия подписания или отправки. Переданная функция
+// не должна вызывать Stop для того же PaidActionGate, поскольку Stop ожидает её завершения.
 func (gate *PaidActionGate) Do(action func() error) error {
 	if action == nil {
 		return ErrNilPaidAction
@@ -51,8 +51,8 @@ func (gate *PaidActionGate) Do(action func() error) error {
 	return action()
 }
 
-// Stop сначала запрещает новые callbacks, затем ждёт уже начатые. После
-// возврата Stop signer/broadcaster не выполняется ни в одном callback gate.
+// Stop сначала запрещает запуск новых переданных функций, а затем ждёт завершения уже
+// начатых. После возврата Stop все начатые функции завершены, а новые запустить нельзя.
 func (gate *PaidActionGate) Stop() {
 	gate.mu.Lock()
 	gate.initLocked()

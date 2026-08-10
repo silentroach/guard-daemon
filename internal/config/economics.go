@@ -38,15 +38,15 @@ type EconomicPolicy struct {
 	TokenValueRules                   []TokenValueRule
 }
 
-// TokenValueRule является явным обещанием оператора: при указанном raw balance
-// ожидаемая ценность trusted token не ниже разрешённой стоимости gas.
+// TokenValueRule задаёт явное условие оператора: при указанном исходном балансе
+// стоимость доверенного токена должна быть не ниже разрешённых затрат на gas.
 type TokenValueRule struct {
 	Address               common.Address
 	MinimumBalance        *big.Int
 	MaxTransactionCostWei *big.Int
 }
 
-// Clone возвращает независимую копию policy со своими big.Int.
+// Clone возвращает независимую копию политики с отдельными копиями значений big.Int.
 func (policy EconomicPolicy) Clone() EconomicPolicy {
 	result := policy
 	result.MaxTransactionCostWei = cloneBigInt(policy.MaxTransactionCostWei)
@@ -99,7 +99,7 @@ func economicProfileFor(network string) economicProfile {
 	case "bnb":
 		return economicProfile{"10000000000", "2000000000", "0", false}
 	default:
-		panic("неизвестная сеть во внутреннем реестре")
+		panic("unknown network in internal registry")
 	}
 }
 
@@ -170,13 +170,13 @@ func loadEconomicPolicy(lookup func(string) (string, bool), suffix string, profi
 	}
 
 	if maxCost.Cmp(hourly) > 0 {
-		return EconomicPolicy{}, fmt.Errorf("переменная %s не должна быть меньше %s", hourlyName, maxCostName)
+		return EconomicPolicy{}, fmt.Errorf("environment variable %s must not be less than %s", hourlyName, maxCostName)
 	}
 	if hourly.Cmp(daily) > 0 {
-		return EconomicPolicy{}, fmt.Errorf("переменная %s не должна быть меньше %s", dailyName, hourlyName)
+		return EconomicPolicy{}, fmt.Errorf("environment variable %s must not be less than %s", dailyName, hourlyName)
 	}
 	if daily.Cmp(cumulative) > 0 {
-		return EconomicPolicy{}, fmt.Errorf("переменная %s не должна быть меньше %s", cumulativeName, dailyName)
+		return EconomicPolicy{}, fmt.Errorf("environment variable %s must not be less than %s", cumulativeName, dailyName)
 	}
 	for _, limit := range []struct {
 		name   string
@@ -190,17 +190,17 @@ func loadEconomicPolicy(lookup func(string) (string, bool), suffix string, profi
 		{cumulativeName, cumulative, "CUMULATIVE_BUDGET_WEI", global.CumulativeBudgetWei},
 	} {
 		if limit.value.Cmp(limit.bound) > 0 {
-			return EconomicPolicy{}, fmt.Errorf("переменная %s не должна превышать %s", limit.name, limit.global)
+			return EconomicPolicy{}, fmt.Errorf("environment variable %s must not exceed %s", limit.name, limit.global)
 		}
 	}
 	if reserve.Cmp(global.SponsorMinimumBalanceWei) < 0 {
-		return EconomicPolicy{}, fmt.Errorf("переменная %s не должна быть меньше SPONSOR_MIN_BALANCE_WEI", reserveName)
+		return EconomicPolicy{}, fmt.Errorf("environment variable %s must not be less than SPONSOR_MIN_BALANCE_WEI", reserveName)
 	}
 	if maxPriority.Cmp(maxFee) > 0 {
-		return EconomicPolicy{}, fmt.Errorf("переменная %s не должна превышать %s", maxPriorityName, maxFeeName)
+		return EconomicPolicy{}, fmt.Errorf("environment variable %s must not exceed %s", maxPriorityName, maxFeeName)
 	}
 	if unknownMax.Cmp(maxCost) > 0 {
-		return EconomicPolicy{}, fmt.Errorf("переменная %s не должна превышать %s", unknownMaxName, maxCostName)
+		return EconomicPolicy{}, fmt.Errorf("environment variable %s must not exceed %s", unknownMaxName, maxCostName)
 	}
 	if err := validateMaximumGasCost(tokenGasName, tokenGas, maxFeeName, maxFee, overheadName, overhead, maxCostName, maxCost); err != nil {
 		return EconomicPolicy{}, err
@@ -234,7 +234,7 @@ func loadTokenValueRules(lookup func(string) (string, bool), suffix string, trus
 		return nil, nil
 	}
 	if value == "" {
-		return nil, fmt.Errorf("переменная %s не должна быть пустой", name)
+		return nil, fmt.Errorf("environment variable %s must not be empty", name)
 	}
 	trusted := make(map[common.Address]struct{}, len(trustedTokens))
 	for _, address := range trustedTokens {
@@ -245,7 +245,7 @@ func loadTokenValueRules(lookup func(string) (string, bool), suffix string, trus
 	for _, encoded := range strings.Split(value, ",") {
 		parts := strings.Split(encoded, ":")
 		if len(parts) != 3 || !common.IsHexAddress(parts[0]) || !decimalDigits(parts[1]) || !decimalDigits(parts[2]) {
-			return nil, fmt.Errorf("переменная %s содержит некорректное правило ценности токена", name)
+			return nil, fmt.Errorf("environment variable %s contains a malformed token value rule", name)
 		}
 		address := common.HexToAddress(parts[0])
 		minimum, okMinimum := new(big.Int).SetString(parts[1], 10)
@@ -254,7 +254,7 @@ func loadTokenValueRules(lookup func(string) (string, bool), suffix string, trus
 		_, duplicate := seen[address]
 		if address == (common.Address{}) || !known || duplicate || !okMinimum || !okMaximum || minimum.Sign() <= 0 || maximum.Sign() <= 0 ||
 			minimum.BitLen() > 256 || maximum.BitLen() > 256 || maximum.Cmp(networkMax) > 0 {
-			return nil, fmt.Errorf("переменная %s содержит недопустимое правило ценности токена", name)
+			return nil, fmt.Errorf("environment variable %s contains an invalid token value rule", name)
 		}
 		seen[address] = struct{}{}
 		rules = append(rules, TokenValueRule{Address: address, MinimumBalance: minimum, MaxTransactionCostWei: maximum})
@@ -266,7 +266,7 @@ func validateMaximumGasCost(gasName string, gas uint64, feeName string, fee *big
 	maximum := new(big.Int).Mul(new(big.Int).SetUint64(gas), fee)
 	maximum.Add(maximum, overhead)
 	if maximum.BitLen() > 256 || maximum.Cmp(limit) > 0 {
-		return fmt.Errorf("переменные %s, %s и %s задают стоимость выше %s", gasName, feeName, overheadName, limitName)
+		return fmt.Errorf("environment variables %s, %s, and %s produce a cost above %s", gasName, feeName, overheadName, limitName)
 	}
 	return nil
 }
@@ -274,7 +274,7 @@ func validateMaximumGasCost(gasName string, gas uint64, feeName string, fee *big
 func boundedDefault(value string, upper *big.Int) string {
 	parsed, ok := new(big.Int).SetString(value, 10)
 	if !ok {
-		panic("некорректный внутренний decimal default")
+		panic("invalid internal decimal default")
 	}
 	if parsed.Cmp(upper) > 0 {
 		return upper.String()
@@ -285,7 +285,7 @@ func boundedDefault(value string, upper *big.Int) string {
 func lowerBoundedDefault(value string, lower *big.Int) string {
 	parsed, ok := new(big.Int).SetString(value, 10)
 	if !ok {
-		panic("некорректный внутренний decimal default")
+		panic("invalid internal decimal default")
 	}
 	if parsed.Cmp(lower) < 0 {
 		return lower.String()

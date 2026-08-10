@@ -146,7 +146,7 @@ const requireString = (
 ): string => {
   const value = record[name];
   if (typeof value !== "string" || !value) {
-    throw new DeploymentInputError(`Поле artifact ${name} отсутствует`);
+    throw new DeploymentInputError(`Artifact field ${name} is missing`);
   }
   return value;
 };
@@ -162,7 +162,7 @@ const requireExactKeys = (
     actual.length !== wanted.length ||
     actual.some((key, i) => key !== wanted[i])
   ) {
-    throw new DeploymentInputError(`${subject} содержит неожиданные поля`);
+    throw new DeploymentInputError(`${subject} contains unexpected fields`);
   }
 };
 
@@ -170,19 +170,21 @@ const parseReferences = (
   value: unknown,
 ): CanonicalArtifact["immutableReferences"] => {
   if (!isRecord(value)) {
-    throw new DeploymentInputError("Artifact не содержит immutable references");
+    throw new DeploymentInputError(
+      "Artifact does not contain immutable references",
+    );
   }
   requireExactKeys(value, immutableNames, "Immutable references");
   const result: Record<string, readonly ImmutableReference[]> = {};
   for (const name of immutableNames) {
     const entries = value[name];
     if (!Array.isArray(entries) || entries.length === 0) {
-      throw new DeploymentInputError(`Immutable reference ${name} отсутствует`);
+      throw new DeploymentInputError(`Immutable reference ${name} is missing`);
     }
     result[name] = entries.map((entry) => {
       if (!isRecord(entry)) {
         throw new DeploymentInputError(
-          `Immutable reference ${name} повреждена`,
+          `Immutable reference ${name} is corrupted`,
         );
       }
       requireExactKeys(
@@ -194,7 +196,7 @@ const parseReferences = (
       const start = entry["start"];
       if (!isSafeInteger(start) || !isSafeInteger(length)) {
         throw new DeploymentInputError(
-          `Immutable reference ${name} повреждена`,
+          `Immutable reference ${name} is corrupted`,
         );
       }
       return { length, start };
@@ -209,9 +211,7 @@ const parseReferences = (
 
 const parseArtifact = (value: unknown): CanonicalArtifact => {
   if (!isRecord(value)) {
-    throw new DeploymentInputError(
-      "Canonical artifact не является JSON object",
-    );
+    throw new DeploymentInputError("Canonical artifact is not a JSON object");
   }
   requireExactKeys(
     value,
@@ -251,7 +251,7 @@ const parseArtifact = (value: unknown): CanonicalArtifact => {
     !isRecord(value["settings"])
   ) {
     throw new DeploymentInputError(
-      "Canonical artifact не прошёл строгую проверку",
+      "Canonical artifact failed strict validation",
     );
   }
   return {
@@ -277,9 +277,7 @@ export const loadCanonicalArtifact = async (
   try {
     parsed = JSON.parse(content.toString("utf8"));
   } catch {
-    throw new DeploymentInputError(
-      "Canonical artifact содержит недопустимый JSON",
-    );
+    throw new DeploymentInputError("Canonical artifact contains invalid JSON");
   }
   return { artifact: parseArtifact(parsed), sha256: sha256(content) };
 };
@@ -315,7 +313,7 @@ class CandidateJSONParser {
 
   private invalid(): never {
     throw new DeploymentInputError(
-      "Release candidate не прошёл строгую проверку",
+      "Release candidate failed strict validation",
     );
   }
 
@@ -405,7 +403,7 @@ const requireCandidateKeys = (
     actual.some((key, index) => key !== wanted[index])
   ) {
     throw new DeploymentInputError(
-      "Release candidate не прошёл строгую проверку",
+      "Release candidate failed strict validation",
     );
   }
 };
@@ -417,7 +415,7 @@ const requireCandidateString = (
   const field = value.get(name);
   if (typeof field !== "string") {
     throw new DeploymentInputError(
-      "Release candidate не прошёл строгую проверку",
+      "Release candidate failed strict validation",
     );
   }
   return field;
@@ -430,7 +428,7 @@ const requireCandidateObject = (
   const field = value.get(name);
   if (!(field instanceof Map)) {
     throw new DeploymentInputError(
-      "Release candidate не прошёл строгую проверку",
+      "Release candidate failed strict validation",
     );
   }
   return field;
@@ -443,7 +441,7 @@ const requireCandidateBoolean = (
   const field = value.get(name);
   if (typeof field !== "boolean") {
     throw new DeploymentInputError(
-      "Release candidate не прошёл строгую проверку",
+      "Release candidate failed strict validation",
     );
   }
   return field;
@@ -476,12 +474,12 @@ const requireRegularCandidateFile = async (path: string): Promise<void> => {
     metadata = await lstat(path);
   } catch {
     throw new DeploymentInputError(
-      "Кандидат на релиз не содержит обязательный обычный файл",
+      "Release candidate does not contain a required regular file",
     );
   }
   if (metadata.isSymbolicLink() || !metadata.isFile()) {
     throw new DeploymentInputError(
-      "Кандидат на релиз не содержит обязательный обычный файл",
+      "Release candidate does not contain a required regular file",
     );
   }
 };
@@ -492,12 +490,12 @@ const requireCandidateDirectory = async (path: string): Promise<void> => {
     metadata = await lstat(path);
   } catch {
     throw new DeploymentInputError(
-      "Release candidate должен находиться в полном каталоге кандидата",
+      "Release candidate must reside in the complete candidate directory",
     );
   }
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
     throw new DeploymentInputError(
-      "Release candidate должен находиться в полном каталоге кандидата",
+      "Release candidate must reside in the complete candidate directory",
     );
   }
 };
@@ -550,7 +548,7 @@ const runGit = async (
         if (error) {
           rejectCommand(
             new DeploymentInputError(
-              "Не удалось проверить candidate относительно локального Git",
+              "Failed to verify candidate against local Git",
             ),
           );
           return;
@@ -574,11 +572,11 @@ const requireNoRepositoryAttributes = async (
         continue;
       }
       throw new DeploymentInputError(
-        "Не удалось проверить локальный Git-файл info/attributes",
+        "Failed to inspect the local Git info/attributes file",
       );
     }
     throw new DeploymentInputError(
-      `Локальный Git-файл info/attributes запрещён: ${path}`,
+      `Local Git info/attributes file is forbidden: ${path}`,
     );
   }
 };
@@ -594,12 +592,12 @@ const requireNoHiddenIndexFlags = async (
     const tag = entry[0];
     if (!tag || entry[1] !== " ") {
       throw new DeploymentInputError(
-        "Не удалось однозначно проверить флаги локального Git index",
+        "Failed to inspect local Git index flags unambiguously",
       );
     }
     if (tag === "S" || (tag >= "a" && tag <= "z")) {
       throw new DeploymentInputError(
-        "Git index содержит запрещённый assume-unchanged или skip-worktree flag",
+        "Git index contains a forbidden assume-unchanged or skip-worktree flag",
       );
     }
   }
@@ -656,7 +654,7 @@ const verifyCanonicalSourceArchive = async (
     await archive.close();
     child.kill();
     throw new DeploymentInputError(
-      "Не удалось построить канонический source archive",
+      "Failed to build the canonical source archive",
     );
   }
   const completion = new Promise<number>((resolveExit, rejectExit) => {
@@ -683,7 +681,7 @@ const verifyCanonicalSourceArchive = async (
     const [code, metadata] = await Promise.all([completion, archive.stat()]);
     if (code !== 0 || metadata.size !== offset || !matches) {
       throw new DeploymentInputError(
-        "Source archive не совпадает с каноническим git archive",
+        "Source archive does not match the canonical git archive",
       );
     }
   } catch (error) {
@@ -692,7 +690,7 @@ const verifyCanonicalSourceArchive = async (
       throw error;
     }
     throw new DeploymentInputError(
-      "Не удалось проверить канонический source archive",
+      "Failed to verify the canonical source archive",
     );
   } finally {
     await archive.close();
@@ -738,7 +736,7 @@ const verifyCandidateGitIdentity = async (
     checkoutStatus.length !== 0
   ) {
     throw new DeploymentInputError(
-      "Release candidate не соответствует HEAD чистого локального checkout",
+      "Release candidate does not match HEAD of a clean local checkout",
     );
   }
   await verifyCanonicalSourceArchive(
@@ -762,7 +760,7 @@ export const loadReleaseCandidate = async (
   const candidatePath = resolve(path);
   if (basename(candidatePath) !== "release-candidate.json") {
     throw new DeploymentInputError(
-      "--release-candidate должен указывать на release-candidate.json",
+      "--release-candidate must point to release-candidate.json",
     );
   }
   const directory = dirname(candidatePath);
@@ -772,7 +770,7 @@ export const loadReleaseCandidate = async (
     names = (await readdir(directory)).sort();
   } catch {
     throw new DeploymentInputError(
-      "Полный каталог кандидата на релиз не удалось безопасно прочитать",
+      "Complete release candidate directory could not be read safely",
     );
   }
   if (
@@ -780,7 +778,7 @@ export const loadReleaseCandidate = async (
     names.some((name, index) => name !== candidateOutputNames[index])
   ) {
     throw new DeploymentInputError(
-      "Каталог кандидата на релиз имеет недопустимый состав",
+      "Release candidate directory has invalid contents",
     );
   }
   await Promise.all(
@@ -791,7 +789,7 @@ export const loadReleaseCandidate = async (
   const contentBytes = await readFile(candidatePath);
   if (contentBytes.length > maximumCandidateJSONBytes) {
     throw new DeploymentInputError(
-      "Release candidate превышает допустимый размер JSON",
+      "Release candidate exceeds the allowed JSON size",
     );
   }
   let content: string;
@@ -799,7 +797,7 @@ export const loadReleaseCandidate = async (
     content = new TextDecoder("utf-8", { fatal: true }).decode(contentBytes);
   } catch {
     throw new DeploymentInputError(
-      "Release candidate содержит недопустимую кодировку",
+      "Release candidate contains invalid encoding",
     );
   }
   const candidate = new CandidateJSONParser(content).parse();
@@ -826,7 +824,7 @@ export const loadReleaseCandidate = async (
       recordSha256 !== actualSha256
     ) {
       throw new DeploymentInputError(
-        "Release candidate не прошёл строгую проверку",
+        "Release candidate failed strict validation",
       );
     }
     if (name === "contract") {
@@ -847,7 +845,7 @@ export const loadReleaseCandidate = async (
     contractSha256 !== artifact.sha256
   ) {
     throw new DeploymentInputError(
-      "Release candidate не прошёл строгую проверку",
+      "Release candidate failed strict validation",
     );
   }
   const expectedChecksums = (
@@ -861,14 +859,14 @@ export const loadReleaseCandidate = async (
   const checksums = await readFile(resolve(directory, "SHA256SUMS"), "utf8");
   if (checksums !== expectedChecksums) {
     throw new DeploymentInputError(
-      "SHA256SUMS кандидата некорректен или не отсортирован",
+      "Candidate SHA256SUMS is invalid or unsorted",
     );
   }
   const repositoryRoot = verifyGitIdentity
     ? await verifyCandidateGitIdentity(directory, releaseCommit, releaseTree)
     : await realpath(process.cwd()).catch(() => {
         throw new DeploymentInputError(
-          "Не удалось проверить установленный production tooling",
+          "Failed to verify installed production tooling",
         );
       });
   return {
@@ -892,14 +890,14 @@ export const normalizeRoles = (
       sponsor: getAddress(sponsor),
     };
   } catch {
-    throw new DeploymentInputError("Адрес роли имеет недопустимый формат");
+    throw new DeploymentInputError("Role address has an invalid format");
   }
   const zero = "0x0000000000000000000000000000000000000000";
   if (Object.values(values).some((value) => value === zero)) {
-    throw new DeploymentInputError("Адрес роли не должен быть нулевым");
+    throw new DeploymentInputError("Role address must not be zero");
   }
   if (values.destination === values.sponsor) {
-    throw new DeploymentInputError("Destination и sponsor должны различаться");
+    throw new DeploymentInputError("Destination and sponsor must differ");
   }
   return values;
 };
@@ -920,9 +918,7 @@ export const linkRuntime = (
         end > runtime.length ||
         runtime.subarray(reference.start, end).some((byte) => byte !== 0)
       ) {
-        throw new DeploymentInputError(
-          `Immutable reference ${name} небезопасна`,
-        );
+        throw new DeploymentInputError(`Immutable reference ${name} is unsafe`);
       }
       ranges.push({ end, start: reference.start });
       address.copy(runtime, reference.start + 12);
@@ -934,7 +930,7 @@ export const linkRuntime = (
       (range, index) => index > 0 && range.start < ranges[index - 1]!.end,
     )
   ) {
-    throw new DeploymentInputError("Immutable references пересекаются");
+    throw new DeploymentInputError("Immutable references overlap");
   }
   return `0x${runtime.toString("hex")}`;
 };
@@ -950,7 +946,7 @@ export const sourceProvenance = (
     };
   }
   if (!releaseCommitPattern.test(releaseCommit)) {
-    throw new DeploymentInputError("Release commit имеет недопустимый формат");
+    throw new DeploymentInputError("Release commit has an invalid format");
   }
   return { kind: "git-commit", value: releaseCommit };
 };

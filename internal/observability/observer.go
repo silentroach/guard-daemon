@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	ErrInvalidLogEvent = errors.New("событие журнала имеет недопустимую безопасную схему")
-	ErrInvalidTxHash   = errors.New("публичный хеш транзакции пуст")
+	ErrInvalidLogEvent = errors.New("log event has an invalid safe schema")
+	ErrInvalidTxHash   = errors.New("public transaction hash is empty")
 )
 
 type Level uint8
@@ -24,13 +24,13 @@ const (
 	LevelError
 )
 
-// EventCode сохранён для совместимости старых production call sites. Новый код
-// должен использовать закрытый LogCode через SafeEvent.
+// EventCode сохранён для совместимости с прежними точками вызова в рабочем коде.
+// Новый код должен передавать один из предусмотренных LogCode через SafeEvent.
 type EventCode string
 
-// Event сохранён как переходный вход Observer. TokenSymbol, Amount, Candidate
-// и TxHash намеренно не попадают в журнал: их происхождение и момент
-// публичности нельзя доказать из legacy-схемы.
+// Event сохранён как переходный входной формат Observer. Поля TokenSymbol, Amount,
+// Candidate и TxHash намеренно не попадают в журнал: устаревшая схема не позволяет
+// подтвердить их происхождение и момент, когда их можно раскрывать.
 type Event struct {
 	Level       Level
 	Code        EventCode
@@ -57,7 +57,7 @@ func (Discard) Record(Event) {}
 
 func (Discard) Write(SafeEvent) error { return nil }
 
-// LogCode задаёт закрытый набор безопасных событий журнала.
+// LogCode перечисляет все допустимые безопасные события журнала.
 type LogCode uint8
 
 const (
@@ -73,8 +73,8 @@ const (
 	LogAlertState
 )
 
-// DurableState описывает только состояние, сохранённое либо подлежащее
-// сохранению durable coordinator.
+// DurableState описывает только состояние, которое координатор уже сохранил
+// или должен сохранить.
 type DurableState uint8
 
 const (
@@ -88,7 +88,7 @@ const (
 	DurableAcknowledged
 )
 
-// Result задаёт закрытую классификацию результата без произвольного текста.
+// Result перечисляет допустимые результаты без произвольного текста.
 type Result uint8
 
 const (
@@ -102,7 +102,7 @@ const (
 	ResultAmbiguous
 )
 
-// ErrorClass задаёт безопасный класс ошибки для журнала и wiring.
+// ErrorClass задаёт безопасную категорию ошибки для журнала и обмена между компонентами.
 type ErrorClass uint8
 
 const (
@@ -116,7 +116,7 @@ const (
 	ErrorInternal
 )
 
-// ErrorCode задаёт закрытые операторские коды без текста исходной ошибки.
+// ErrorCode перечисляет допустимые операторские коды без текста исходной ошибки.
 type ErrorCode uint8
 
 const (
@@ -133,8 +133,8 @@ const (
 	ErrorInternalFailure
 )
 
-// SafeError не хранит cause или message, поэтому raw error нельзя случайно
-// сериализовать. Значение создаётся только из закрытых class/code.
+// SafeError не хранит причину или текст сообщения, поэтому исходную ошибку нельзя
+// случайно сериализовать. Значение создаётся только из предусмотренных категорий и кодов.
 type SafeError struct {
 	class     ErrorClass
 	code      ErrorCode
@@ -157,8 +157,8 @@ func (safeError SafeError) Retryable() bool { return safeError.retryable }
 
 func (safeError SafeError) Ambiguous() bool { return safeError.ambiguous }
 
-// PublicTxHash может быть создан только в точке, где broadcast уже принят.
-// Тип не предоставляет сериализацию raw signed transaction.
+// PublicTxHash создаётся только после того, как отправка принята. Тип не позволяет
+// сериализовать исходную подписанную транзакцию.
 type PublicTxHash struct {
 	hash common.Hash
 }
@@ -172,7 +172,7 @@ func NewPublicTxHashAfterBroadcast(hash common.Hash) (PublicTxHash, error) {
 
 func (hash PublicTxHash) Hash() common.Hash { return hash.hash }
 
-// SafeEvent содержит только поля, допустимые в публичном structured log.
+// SafeEvent содержит только поля, допустимые в общедоступном структурированном журнале.
 type SafeEvent struct {
 	Level    Level
 	Code     LogCode
@@ -185,7 +185,8 @@ type SafeEvent struct {
 	Alert    AlertCode
 }
 
-// Logger записывает одно JSON-событие на строку и сериализует concurrent writes.
+// Logger записывает каждое событие JSON в отдельной строке и упорядочивает
+// одновременные записи.
 type Logger struct {
 	mu     sync.Mutex
 	writer io.Writer
@@ -198,8 +199,8 @@ func NewLogger(writer io.Writer) *Logger {
 	return &Logger{writer: writer}
 }
 
-// Write проверяет закрытую схему до записи. При ошибке в output не появляется
-// частичная строка.
+// Write до записи проверяет соответствие заданной схеме. При ошибке в выходном потоке
+// не появляется неполная строка.
 func (logger *Logger) Write(event SafeEvent) error {
 	record, err := newSafeLogRecord(event)
 	if err != nil {
@@ -208,8 +209,8 @@ func (logger *Logger) Write(event SafeEvent) error {
 	return logger.writeRecord(record)
 }
 
-// Record поддерживает legacy Observer, но отбрасывает все потенциально
-// чувствительные incident-specific поля.
+// Record поддерживает устаревший Observer, но отбрасывает все потенциально
+// конфиденциальные поля конкретного инцидента.
 func (logger *Logger) Record(event Event) {
 	record := legacyLogRecord{
 		Level:   legacyLevel(event.Level),
@@ -238,7 +239,7 @@ func (logger *Logger) writeRecord(record any) error {
 	return err
 }
 
-// Console сохранён как совместимое имя; формат теперь является NDJSON.
+// Console сохранён как совместимое имя; теперь данные записываются в формате NDJSON.
 type Console struct {
 	*Logger
 }

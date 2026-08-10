@@ -9,10 +9,11 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// CandidateQueue сохраняет candidate до возврата из Put. Повторный Put с тем
-// же stable ID не создаёт новую работу, включая промежуток после Ack и до
-// продвижения checkpoint. Nack сохраняет связь с incident и откладывает работу
-// до retryAt, не позволяя одной ошибке блокировать готовую очередь.
+// CandidateQueue гарантирует, что к моменту возврата из Put кандидат сохранён. Повторный Put
+// с тем же неизменным ID не добавляет задание заново, в том числе после Ack и до
+// продвижения контрольной точки. Nack сохраняет связь с инцидентом и откладывает
+// обработку до retryAt, чтобы ошибка одного кандидата не задерживала остальных
+// готовых кандидатов.
 type CandidateQueue interface {
 	Put(context.Context, domain.RescueCandidate) (PutResult, error)
 	Next(context.Context, domain.NetworkID) (domain.RescueCandidate, error)
@@ -21,18 +22,18 @@ type CandidateQueue interface {
 	Ack(context.Context, domain.CandidateID, domain.IncidentID) error
 }
 
-// IncidentStore идемпотентно сохраняет связь candidate с incident. При replay
-// совпадение ID, Candidate и Network определяет ту же запись; исходный CreatedAt
-// сохраняется и не заменяется временем повторной обработки.
+// IncidentStore идемпотентно сохраняет связь кандидата с инцидентом. При повторной
+// обработке запись считается той же, если совпадают ID, Candidate и Network; исходное
+// значение CreatedAt сохраняется.
 type IncidentStore interface {
 	PutIncident(context.Context, Incident) error
 	IncidentByCandidate(context.Context, domain.CandidateID) (Incident, bool, error)
 }
 
-// RescueStateStore хранит transaction state отдельно от watcher handoff.
+// RescueStateStore хранит состояние операций восстановления отдельно от очереди наблюдателя.
 // PutRescueIncident идемпотентен по ID, UpdateRescueIncident принимает только
-// допустимый переход, а RescueIncidents возвращает снимок для restart/nonce
-// reconciliation.
+// допустимый переход, а RescueIncidents возвращает снимок для повторной проверки
+// операций после перезапуска и восстановления нижней границы nonce.
 type RescueStateStore interface {
 	PutRescueIncident(context.Context, RescueIncident) (RescueIncident, error)
 	UpdateRescueIncident(context.Context, RescueIncident) error
@@ -43,16 +44,18 @@ type RescueStateStore interface {
 	PruneRescueIncidents(context.Context, int) error
 }
 
-// CheckpointStore разделяет scan cursor и подтверждённый checkpoint. Scanner
-// может продолжать durable backfill, пока checkpoint ждёт incident и Ack.
+// CheckpointStore отдельно хранит позицию сканирования и подтверждённую контрольную
+// точку. Сканер может сохранять прогресс поиска пропущенных блоков, а продвижение
+// контрольной точки откладывается до создания инцидента и вызова Ack.
 type CheckpointStore interface {
 	LoadCheckpoint(context.Context, domain.NetworkID) (Checkpoint, bool, error)
 	LoadScanCursor(context.Context, domain.NetworkID) (Checkpoint, bool, error)
 	CommitCanonicalBlock(context.Context, CanonicalBlock) error
 }
 
-// ObservationStore хранит provisional WebSocket observations. Они не доступны
-// consumer до подтверждения canonical scanner и могут быть отозваны Removed log.
+// ObservationStore хранит предварительные наблюдения WebSocket. Они недоступны
+// обработчику до подтверждения каноническим сканером и удаляются после получения
+// лога с признаком Removed.
 type ObservationStore interface {
 	PutObserved(context.Context, domain.RescueCandidate) (PutResult, error)
 	MarkRemoved(context.Context, domain.CandidateID) error
@@ -60,8 +63,8 @@ type ObservationStore interface {
 	DiscoveryOverflowed(context.Context, domain.NetworkID) (bool, error)
 }
 
-// HandoffStore объединяет queue, incidents и watcher state в одной
-// транзакционной границе.
+// HandoffStore предоставляет единое транзакционное хранилище очереди, инцидентов
+// и состояния наблюдателя.
 type HandoffStore interface {
 	CandidateQueue
 	IncidentStore

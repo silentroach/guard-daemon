@@ -13,7 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-var errNilPrivateKey = errors.New("nil private key")
+var errNilPrivateKey = errors.New("private key is nil")
 
 type AuthorizationSigner interface {
 	Address() common.Address

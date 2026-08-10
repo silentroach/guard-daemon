@@ -2,12 +2,12 @@
 
 set -euo pipefail
 
-: "${GITHUB_PATH:?Скрипт разрешено запускать только в GitHub Actions}"
-: "${GITHUB_ENV:?Не задан файл окружения GitHub Actions}"
-: "${RUNNER_TEMP:?Не задан временный каталог GitHub Actions}"
-: "${SOLC_COMMIT:?Не задан commit solc}"
-: "${SOLC_SHA256:?Не задан SHA-256 solc}"
-: "${SOLC_VERSION:?Не задана версия solc}"
+: "${GITHUB_PATH:?This script may only run in GitHub Actions}"
+: "${GITHUB_ENV:?GitHub Actions environment file is not set}"
+: "${RUNNER_TEMP:?GitHub Actions temporary directory is not set}"
+: "${SOLC_COMMIT:?solc commit is not set}"
+: "${SOLC_SHA256:?solc SHA-256 is not set}"
+: "${SOLC_VERSION:?solc version is not set}"
 
 install_dir="${RUNNER_TEMP}/solc"
 binary="${install_dir}/solc"
@@ -24,7 +24,7 @@ version_output="$("${binary}" --version)"
 case "${version_output}" in
   *"Version: ${SOLC_VERSION}+commit.${SOLC_COMMIT}"*) ;;
   *)
-    printf '%s\n' "Получена неожиданная версия solc: ${version_output}" >&2
+    printf '%s\n' "Unexpected solc version: ${version_output}" >&2
     exit 1
     ;;
 esac

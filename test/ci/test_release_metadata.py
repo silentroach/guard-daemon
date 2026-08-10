@@ -239,7 +239,7 @@ class ReleaseMetadataTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 metadata.MetadataError,
-                "go mod graph ссылается на неизвестный модуль: unknown.example/module",
+                "go mod graph references an unknown module: unknown.example/module",
             ):
                 metadata.build_sbom(package_lock, go_modules, go_graph, COMMIT)
 
@@ -342,7 +342,7 @@ class ReleaseMetadataTests(unittest.TestCase):
             metadata.verify_release(directory)
             (directory / "unexpected.log").write_text("not allowed\n", encoding="utf-8")
             with self.assertRaisesRegex(
-                metadata.MetadataError, "неизвестные файлы: unexpected.log"
+                metadata.MetadataError, "unknown files: unexpected.log"
             ):
                 metadata.verify_release(directory)
 

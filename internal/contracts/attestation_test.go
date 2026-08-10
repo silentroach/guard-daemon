@@ -87,7 +87,7 @@ func TestLoadTrustedManifest(t *testing.T) {
 		t.Fatalf("trusted manifest addresses = %s, %s, %s", manifest.Address, manifest.Immutables.Destination, manifest.Immutables.Sponsor)
 	}
 	if manifest.Runtime.ByteLength != uint64(len(fixture.runtime)) || manifest.Runtime.Keccak256 != crypto.Keccak256Hash(fixture.runtime).Hex() {
-		t.Fatalf("trusted runtime identity = %d, %s", manifest.Runtime.ByteLength, manifest.Runtime.Keccak256)
+		t.Fatalf("trusted runtime identifier = %d, %s", manifest.Runtime.ByteLength, manifest.Runtime.Keccak256)
 	}
 }
 
@@ -136,7 +136,7 @@ func TestAttestDeploymentRejectsFinalizedHashChangedDuringCommonRead(t *testing.
 		testProvider("archive-a", fixture.reader(changedLowest)),
 		testProvider("archive-b", fixture.reader(higherFinalized)),
 	}, time.Second); err == nil {
-		t.Fatal("provider that changed its finalized hash was accepted")
+		t.Fatal("provider that changed its finalized hash accepted")
 	}
 }
 
@@ -154,7 +154,7 @@ func TestAttestDeploymentRejectsRuntimeEvenWithCorrectDestination(t *testing.T) 
 		testProvider("archive-b", second),
 	}, time.Second)
 	if err == nil {
-		t.Fatal("wrong runtime was accepted")
+		t.Fatal("incorrect runtime accepted")
 	}
 }
 
@@ -169,10 +169,10 @@ func TestAttestDeploymentRejectsMissingSponsorGetterWithoutLeakingRPCError(t *te
 		testProvider("archive-b", legacy),
 	}, time.Second)
 	if err == nil {
-		t.Fatal("legacy getter set was accepted")
+		t.Fatal("stale reader method set accepted")
 	}
 	if strings.Contains(err.Error(), "private.invalid") || strings.Contains(err.Error(), "credential") {
-		t.Fatalf("operator error leaked RPC details: %v", err)
+		t.Fatalf("operator error exposed RPC details: %v", err)
 	}
 }
 
@@ -187,7 +187,7 @@ func TestAttestDeploymentRejectsWrongChainFromOneProvider(t *testing.T) {
 		testProvider("archive-b", wrongChain),
 	}, time.Second)
 	if err == nil {
-		t.Fatal("wrong chain was accepted")
+		t.Fatal("incorrect network accepted")
 	}
 }
 
@@ -201,7 +201,7 @@ func TestAttestDeploymentRejectsDivergentFinalizedHash(t *testing.T) {
 		testProvider("archive-b", fixture.reader(divergent)),
 	}, time.Second)
 	if err == nil {
-		t.Fatal("divergent finalized hashes were accepted")
+		t.Fatal("divergent finalized hashes accepted")
 	}
 }
 
@@ -216,7 +216,7 @@ func TestAttestDeploymentRejectsMissingCode(t *testing.T) {
 		testProvider("archive-b", missing),
 	}, time.Second)
 	if err == nil {
-		t.Fatal("missing runtime code was accepted")
+		t.Fatal("missing runtime code accepted")
 	}
 }
 
@@ -230,7 +230,7 @@ func TestAttestDeploymentRejectsWrongDeploymentBlockHash(t *testing.T) {
 		testProvider("archive-a", fixture.reader(fixture.commonHeader)),
 		testProvider("archive-b", wrongDeployment),
 	}, time.Second); err == nil {
-		t.Fatal("wrong deployment block hash was accepted")
+		t.Fatal("incorrect deployment block hash accepted")
 	}
 }
 
@@ -247,7 +247,7 @@ func TestAttestDeploymentRejectsTwoHashesAtSameFinalizedHeight(t *testing.T) {
 		testProvider("archive-a", first),
 		testProvider("archive-b", second),
 	}, time.Second); err == nil {
-		t.Fatal("different finalized and deployment hashes at one height were accepted")
+		t.Fatal("different finalization and deployment hashes at the same height accepted")
 	}
 }
 
@@ -261,7 +261,7 @@ func TestAttestDeploymentRejectsTamperedTransactionHash(t *testing.T) {
 		testProvider("archive-a", fixture.reader(fixture.commonHeader)),
 		testProvider("archive-b", fixture.reader(fixture.commonHeader)),
 	}, time.Second); err == nil {
-		t.Fatal("manifest with a transaction hash unrelated to the returned transaction was accepted")
+		t.Fatal("manifest with a transaction hash unrelated to the returned transaction accepted")
 	}
 }
 
@@ -297,7 +297,7 @@ func TestAttestDeploymentRejectsInvalidDeploymentTransaction(t *testing.T) {
 				testProvider("archive-a", first),
 				testProvider("archive-b", second),
 			}, time.Second); err == nil {
-				t.Fatal("invalid deployment transaction was accepted")
+				t.Fatal("invalid deployment transaction accepted")
 			}
 		})
 	}
@@ -313,7 +313,7 @@ func TestAttestDeploymentRejectsPendingDeploymentTransaction(t *testing.T) {
 		testProvider("archive-a", fixture.reader(fixture.commonHeader)),
 		testProvider("archive-b", pending),
 	}, time.Second); err == nil {
-		t.Fatal("pending deployment transaction was accepted")
+		t.Fatal("pending deployment transaction accepted")
 	}
 }
 
@@ -353,7 +353,7 @@ func TestAttestDeploymentRejectsFailedOrMismatchedReceipt(t *testing.T) {
 				testProvider("archive-a", fixture.reader(fixture.commonHeader)),
 				testProvider("archive-b", byzantine),
 			}, time.Second); err == nil {
-				t.Fatal("failed or mismatched deployment receipt was accepted")
+				t.Fatal("failed or mismatched deployment receipt accepted")
 			}
 		})
 	}
@@ -373,7 +373,7 @@ func TestAttestDeploymentRejectsOldManifestBlockUnrelatedToReceipt(t *testing.T)
 		testProvider("archive-a", first),
 		testProvider("archive-b", second),
 	}, time.Second); err == nil {
-		t.Fatal("old manifest block unrelated to the deployment receipt was accepted")
+		t.Fatal("old manifest block unrelated to the deployment receipt accepted")
 	}
 }
 
@@ -407,7 +407,7 @@ func TestAttestDeploymentRejectsWrongGettersAndMinorityDivergence(t *testing.T) 
 				testProvider("archive-c", byzantine),
 			}
 			if err := contracts.AttestDeployment(context.Background(), fixture.trusted, providers, time.Second); err == nil {
-				t.Fatal("2-of-3 result was accepted despite a divergent provider")
+				t.Fatal("two-of-three result accepted despite a divergent provider")
 			}
 		})
 	}
@@ -426,7 +426,7 @@ func TestAttestDeploymentRejectsTimeoutAndCancellation(t *testing.T) {
 			testProvider("archive-b", fixture.reader(fixture.commonHeader)),
 		}, 10*time.Millisecond)
 		if err == nil {
-			t.Fatal("timed out provider was accepted")
+			t.Fatal("timed-out provider accepted")
 		}
 		if time.Since(started) > time.Second {
 			t.Fatal("provider timeout was not bounded")
@@ -442,7 +442,7 @@ func TestAttestDeploymentRejectsTimeoutAndCancellation(t *testing.T) {
 			testProvider("archive-b", fixture.reader(fixture.commonHeader)),
 		}, time.Second)
 		if err == nil {
-			t.Fatal("cancelled attestation was accepted")
+			t.Fatal("canceled attestation accepted")
 		}
 	})
 
@@ -453,7 +453,7 @@ func TestAttestDeploymentRejectsTimeoutAndCancellation(t *testing.T) {
 			testProvider("archive-b", fixture.reader(fixture.commonHeader)),
 		}, 0)
 		if err == nil {
-			t.Fatal("nonpositive timeout was accepted")
+			t.Fatal("non-positive timeout accepted")
 		}
 	})
 }
@@ -496,12 +496,12 @@ func TestAttestDeploymentRejectsInvalidProviderSet(t *testing.T) {
 			t.Parallel()
 			err := contracts.AttestDeployment(context.Background(), fixture.trusted, providers, time.Second)
 			if err == nil {
-				t.Fatal("invalid provider set was accepted")
+				t.Fatal("invalid provider set accepted")
 			}
 			for _, provider := range providers {
 				for _, opaque := range []string{provider.EndpointFingerprint, provider.TrustDomain} {
 					if strings.TrimSpace(opaque) != "" && strings.Contains(err.Error(), opaque) {
-						t.Fatalf("operator error leaked opaque provider metadata: %v", err)
+						t.Fatalf("operator error exposed opaque provider metadata: %v", err)
 					}
 				}
 			}
@@ -545,7 +545,7 @@ func TestLoadTrustedManifestRejectsManifestTampering(t *testing.T) {
 			fixture := newAttestationFixture(t)
 			manifest, expectations := mutate(t, fixture)
 			if _, err := contracts.LoadTrustedManifest(bytes.NewReader(manifest), bytes.NewReader(fixture.artifact), expectations); err == nil {
-				t.Fatal("tampered manifest was accepted")
+				t.Fatal("modified manifest accepted")
 			}
 		})
 	}
@@ -557,10 +557,10 @@ func TestLoadTrustedManifestRejectsRawArtifactTampering(t *testing.T) {
 	fixture := newAttestationFixture(t)
 	tampered := bytes.Replace(fixture.artifact, []byte(`"bytecode":"0x6000"`), []byte(`"bytecode":"0x6001"`), 1)
 	if bytes.Equal(tampered, fixture.artifact) {
-		t.Fatal("test artifact was not changed")
+		t.Fatal("test artifact was not modified")
 	}
 	if _, err := contracts.LoadTrustedManifest(bytes.NewReader(fixture.manifest), bytes.NewReader(tampered), fixture.expectations); err == nil {
-		t.Fatal("tampered artifact bytes were accepted")
+		t.Fatal("modified artifact bytes accepted")
 	}
 }
 
@@ -574,7 +574,7 @@ func TestAttestDeploymentRejectsMutationAfterTrustedLoad(t *testing.T) {
 		testProvider("archive-a", fixture.reader(fixture.commonHeader)),
 		testProvider("archive-b", fixture.reader(fixture.commonHeader)),
 	}, time.Second); err == nil {
-		t.Fatal("manifest changed after trusted loading was accepted")
+		t.Fatal("manifest modified after trusted load accepted")
 	}
 }
 
@@ -607,7 +607,7 @@ func TestLoadTrustedManifestRejectsUnknownTrailingAndDuplicateJSON(t *testing.T)
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			if _, err := contracts.LoadTrustedManifest(bytes.NewReader(test.manifest), bytes.NewReader(test.artifact), fixture.expectations); err == nil {
-				t.Fatal("invalid JSON was accepted")
+				t.Fatal("invalid JSON accepted")
 			}
 		})
 	}
@@ -653,7 +653,7 @@ func TestLoadTrustedManifestRejectsUnsafeImmutableReferences(t *testing.T) {
 			expectations := fixture.expectations
 			expectations.ArtifactSHA256 = artifactDigest
 			if _, err := contracts.LoadTrustedManifest(bytes.NewReader(encodeJSON(t, manifestObject)), bytes.NewReader(artifact), expectations); err == nil {
-				t.Fatal("unsafe immutable references were accepted")
+				t.Fatal("unsafe immutable references accepted")
 			}
 		})
 	}
@@ -665,11 +665,11 @@ func TestLoadTrustedManifestEnforcesSizeLimits(t *testing.T) {
 	fixture := newAttestationFixture(t)
 	oversizedManifest := strings.Repeat(" ", int(contracts.MaxDeploymentManifestBytes)+1)
 	if _, err := contracts.LoadTrustedManifest(strings.NewReader(oversizedManifest), bytes.NewReader(fixture.artifact), fixture.expectations); err == nil {
-		t.Fatal("oversized manifest was accepted")
+		t.Fatal("oversized manifest accepted")
 	}
 	oversizedArtifact := strings.Repeat(" ", int(contracts.MaxCanonicalArtifactBytes)+1)
 	if _, err := contracts.LoadTrustedManifest(bytes.NewReader(fixture.manifest), strings.NewReader(oversizedArtifact), fixture.expectations); err == nil {
-		t.Fatal("oversized artifact was accepted")
+		t.Fatal("oversized artifact accepted")
 	}
 }
 
@@ -682,7 +682,7 @@ func TestAttestDeploymentRejectsDeploymentAboveCommonFinalizedBlock(t *testing.T
 		testProvider("archive-a", fixture.reader(staleFinalized)),
 		testProvider("archive-b", fixture.reader(staleFinalized)),
 	}, time.Second); err == nil {
-		t.Fatal("unfinalized deployment was accepted")
+		t.Fatal("unfinalized deployment accepted")
 	}
 }
 

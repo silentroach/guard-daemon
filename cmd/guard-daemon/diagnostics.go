@@ -26,26 +26,26 @@ type diagnosticsServer struct {
 
 func newDiagnosticsServer(path string, health *observability.Health, metrics *observability.Metrics, alerts *observability.AlertManager) (*diagnosticsServer, error) {
 	if path == "" || health == nil || metrics == nil || alerts == nil {
-		return nil, errors.New("не заданы зависимости diagnostics")
+		return nil, errors.New("diagnostics dependencies are missing")
 	}
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 {
-			return nil, errors.New("путь diagnostics занят небезопасным файлом")
+			return nil, errors.New("diagnostics path is occupied by an unsafe file")
 		}
 		if err := os.Remove(path); err != nil {
-			return nil, errors.New("не удалось удалить прежний diagnostics socket")
+			return nil, errors.New("failed to remove stale diagnostics socket")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, errors.New("не удалось проверить diagnostics socket")
+		return nil, errors.New("failed to inspect diagnostics socket")
 	}
 	listener, err := net.Listen("unix", path)
 	if err != nil {
-		return nil, errors.New("не удалось открыть diagnostics socket")
+		return nil, errors.New("failed to open diagnostics socket")
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = listener.Close()
 		_ = os.Remove(path)
-		return nil, errors.New("не удалось ограничить доступ к diagnostics socket")
+		return nil, errors.New("failed to restrict access to diagnostics socket")
 	}
 	diagnostics := &diagnosticsServer{path: path, listener: listener, health: health, metrics: metrics, alerts: alerts}
 	mux := http.NewServeMux()
@@ -80,7 +80,7 @@ func (diagnostics *diagnosticsServer) Close() error {
 			result = nil
 		}
 		if err := os.Remove(diagnostics.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			result = errors.Join(result, errors.New("не удалось удалить diagnostics socket"))
+			result = errors.Join(result, errors.New("failed to remove diagnostics socket"))
 		}
 	})
 	return result

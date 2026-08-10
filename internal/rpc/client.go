@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-var ErrIncompleteClient = errors.New("RPC client задан не полностью")
+var ErrIncompleteClient = errors.New("RPC client is incomplete")
 
 type ClientParts struct {
 	Reader Reader

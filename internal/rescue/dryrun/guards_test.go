@@ -16,7 +16,7 @@ func TestGuardsForbidEveryProductionCapability(t *testing.T) {
 	sponsor := testAddress(2)
 	authorizer, transactioner, broadcaster, attempts := NewGuards(source, sponsor)
 	if authorizer.Address() != source || transactioner.Address() != sponsor {
-		t.Fatal("guard Address() does not match the configured role")
+		t.Fatal("guard Address() does not match configured role")
 	}
 
 	authorization := types.SetCodeAuthorization{Nonce: 11, V: 1}

@@ -18,29 +18,29 @@ UNKNOWN_LICENSES = {
 
 def validate_dependency_changes(changes: Any) -> list[str]:
     if not isinstance(changes, list):
-        return ["dependency-changes должен быть JSON-массивом"]
+        return ["`dependency-changes` must be a JSON array"]
 
     errors: list[str] = []
     for index, change in enumerate(changes):
         if not isinstance(change, dict):
-            errors.append(f"dependency-changes[{index}] должен быть объектом")
+            errors.append(f"`dependency-changes[{index}]` must be an object")
             continue
         change_type = change.get("change_type")
         if change_type not in {"added", "removed"}:
             errors.append(
-                f"dependency-changes[{index}] содержит неизвестный тип изменения"
+                f"dependency-changes[{index}] contains an unknown change type"
             )
             continue
         if change_type != "added":
             continue
         license_name = change.get("license")
         if not isinstance(license_name, str) or not license_name.strip():
-            errors.append(f"у добавленной зависимости #{index} отсутствует лицензия")
+            errors.append(f"added dependency #{index} has no license")
             continue
         normalized = license_name.strip().casefold()
         if normalized in UNKNOWN_LICENSES or "licenseref-clearlydefined-other" in normalized:
             errors.append(
-                f"у добавленной зависимости #{index} не определена SPDX-лицензия"
+                f"added dependency #{index} has no recognized SPDX license"
             )
     return errors
 
@@ -48,20 +48,20 @@ def validate_dependency_changes(changes: Any) -> list[str]:
 def main() -> int:
     raw_changes = os.environ.get("DEPENDENCY_CHANGES")
     if raw_changes is None:
-        print("Не задан обязательный вывод dependency-changes.", file=sys.stderr)
+        print("Required dependency-changes output is not set.", file=sys.stderr)
         return 1
     try:
         changes = json.loads(raw_changes)
     except json.JSONDecodeError as error:
-        print(f"Некорректный JSON dependency-changes: {error}", file=sys.stderr)
+        print(f"Invalid dependency-changes JSON: {error}", file=sys.stderr)
         return 1
 
     errors = validate_dependency_changes(changes)
     for error in errors:
-        print(f"Нарушение политики лицензий: {error}", file=sys.stderr)
+        print(f"License policy violation: {error}", file=sys.stderr)
     if errors:
         return 1
-    print("Все добавленные зависимости имеют определённые SPDX-лицензии.")
+    print("All added dependencies have recognized SPDX licenses.")
     return 0
 
 

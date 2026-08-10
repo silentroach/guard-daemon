@@ -342,10 +342,10 @@ func rejectRestoredSigningState(runtimeConfig config.Runtime, lstat func(string)
 	}
 	_, err := lstat(restoreMarkerPath)
 	if err == nil {
-		return errors.New("состояние было восстановлено из резервной копии")
+		return errors.New("state was restored from a backup")
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	return errors.New("не удалось безопасно проверить marker восстановленного состояния")
+	return errors.New("failed to inspect the restored-state marker safely")
 }

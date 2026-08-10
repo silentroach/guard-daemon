@@ -15,29 +15,29 @@ func TestLoadFromDryRunDoesNotReadPrivateKeys(t *testing.T) {
 	read := make(map[string]bool)
 	runtime, err := LoadFrom(func(name string) (string, bool) {
 		if name == "SOURCE_PRIVATE_KEY" || name == "SPONSOR_PRIVATE_KEY" {
-			t.Fatalf("dry run прочитал %s", name)
+			t.Fatalf("dry-run mode read %s", name)
 		}
 		read[name] = true
 		value, ok := values[name]
 		return value, ok
 	})
 	if err != nil {
-		t.Fatalf("LoadFrom() вернул ошибку: %v", err)
+		t.Fatalf("LoadFrom() returned an error: %v", err)
 	}
 	if !runtime.Mode.IsDryRun() || runtime.Mode.IsLive() {
-		t.Fatalf("получен неверный режим: %v", runtime.Mode)
+		t.Fatalf("incorrect mode returned: %v", runtime.Mode)
 	}
 	if source, sponsor, ok := runtime.LiveSecrets.PrivateKeys(); ok || source != nil || sponsor != nil {
-		t.Fatal("dry run сохранил приватные ключи")
+		t.Fatal("dry-run mode retained private keys")
 	}
 	if read["SOURCE_PRIVATE_KEY"] || read["SPONSOR_PRIVATE_KEY"] {
-		t.Fatal("dry run отметил чтение приватного ключа")
+		t.Fatal("dry-run mode recorded a private key read")
 	}
 }
 
 func TestLoadFromRequiresStrictDryRunBoolean(t *testing.T) {
 	for _, value := range []string{"", "TRUE", "1", " false"} {
-		t.Run(fmt.Sprintf("значение_%q", value), func(t *testing.T) {
+		t.Run(fmt.Sprintf("value_%q", value), func(t *testing.T) {
 			values := validEnvironment()
 			values["DRY_RUN"] = value
 			_, err := LoadFrom(mapLookup(values))
@@ -52,10 +52,10 @@ func TestLoadFromLiveSecrets(t *testing.T) {
 		configure func(map[string]string)
 		wantError string
 	}{
-		{name: "полная конфигурация"},
-		{name: "нет source key", configure: func(values map[string]string) { delete(values, "SOURCE_PRIVATE_KEY") }, wantError: "SOURCE_PRIVATE_KEY"},
-		{name: "нет sponsor key", configure: func(values map[string]string) { delete(values, "SPONSOR_PRIVATE_KEY") }, wantError: "SPONSOR_PRIVATE_KEY"},
-		{name: "повреждён source key", configure: func(values map[string]string) { values["SOURCE_PRIVATE_KEY"] = "test-only-secret-material" }, wantError: "SOURCE_PRIVATE_KEY"},
+		{name: "complete configuration"},
+		{name: "missing source key", configure: func(values map[string]string) { delete(values, "SOURCE_PRIVATE_KEY") }, wantError: "SOURCE_PRIVATE_KEY"},
+		{name: "missing sponsor key", configure: func(values map[string]string) { delete(values, "SPONSOR_PRIVATE_KEY") }, wantError: "SPONSOR_PRIVATE_KEY"},
+		{name: "malformed source key", configure: func(values map[string]string) { values["SOURCE_PRIVATE_KEY"] = "test-only-secret-material" }, wantError: "SOURCE_PRIVATE_KEY"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -74,13 +74,13 @@ func TestLoadFromLiveSecrets(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("LoadFrom() вернул ошибку: %v", err)
+				t.Fatalf("LoadFrom() returned an error: %v", err)
 			}
 			if !runtime.Mode.IsLive() {
-				t.Fatal("DRY_RUN=false не включил live-режим")
+				t.Fatal("DRY_RUN=false did not enable production mode")
 			}
 			if source, sponsor, ok := runtime.LiveSecrets.PrivateKeys(); !ok || source == nil || sponsor == nil {
-				t.Fatal("live-режим не сохранил оба разобранных ключа")
+				t.Fatal("production mode did not retain both parsed keys")
 			}
 		})
 	}
@@ -92,11 +92,11 @@ func TestLoadFromRejectsInvalidRoles(t *testing.T) {
 		configure func(map[string]string)
 		wantField string
 	}{
-		{name: "повреждён source", configure: func(values map[string]string) { values["SOURCE_ADDRESS"] = "test-only-address" }, wantField: "SOURCE_ADDRESS"},
-		{name: "нулевой sponsor", configure: func(values map[string]string) { values["SPONSOR_ADDRESS"] = common.Address{}.Hex() }, wantField: "SPONSOR_ADDRESS"},
-		{name: "source равен sponsor", configure: func(values map[string]string) { values["SPONSOR_ADDRESS"] = values["SOURCE_ADDRESS"] }, wantField: "SOURCE_ADDRESS"},
-		{name: "source равен destination", configure: func(values map[string]string) { values["DESTINATION_ADDRESS"] = values["SOURCE_ADDRESS"] }, wantField: "DESTINATION_ADDRESS"},
-		{name: "sponsor равен destination", configure: func(values map[string]string) { values["DESTINATION_ADDRESS"] = values["SPONSOR_ADDRESS"] }, wantField: "SPONSOR_ADDRESS"},
+		{name: "malformed source", configure: func(values map[string]string) { values["SOURCE_ADDRESS"] = "test-only-address" }, wantField: "SOURCE_ADDRESS"},
+		{name: "zero sponsor", configure: func(values map[string]string) { values["SPONSOR_ADDRESS"] = common.Address{}.Hex() }, wantField: "SPONSOR_ADDRESS"},
+		{name: "source equals sponsor", configure: func(values map[string]string) { values["SPONSOR_ADDRESS"] = values["SOURCE_ADDRESS"] }, wantField: "SOURCE_ADDRESS"},
+		{name: "source equals destination", configure: func(values map[string]string) { values["DESTINATION_ADDRESS"] = values["SOURCE_ADDRESS"] }, wantField: "DESTINATION_ADDRESS"},
+		{name: "sponsor equals destination", configure: func(values map[string]string) { values["DESTINATION_ADDRESS"] = values["SPONSOR_ADDRESS"] }, wantField: "SPONSOR_ADDRESS"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -126,8 +126,8 @@ func TestLoadRejectsMalformedDotEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := Load()
-	if err == nil || err.Error() != "файл .env содержит некорректные данные" {
-		t.Fatalf("ошибка = %v", err)
+	if err == nil || err.Error() != ".env file contains invalid data" {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -144,10 +144,10 @@ func TestLoadGivesProcessEnvironmentPriority(t *testing.T) {
 
 	runtime, err := Load()
 	if err != nil {
-		t.Fatalf("Load() не сохранил приоритет process env: %v", err)
+		t.Fatalf("Load() did not preserve process environment priority: %v", err)
 	}
 	if !runtime.Mode.IsDryRun() {
-		t.Fatal("process env не переопределил DRY_RUN из .env")
+		t.Fatal("process environment did not override DRY_RUN from .env")
 	}
 }
 
@@ -169,10 +169,10 @@ func TestLoadDryRunDoesNotParsePrivateKeysFromDotEnv(t *testing.T) {
 
 	runtimeConfig, err := Load()
 	if err != nil {
-		t.Fatalf("Load() разобрал private key из dry-run .env: %v", err)
+		t.Fatalf("Load() parsed a private key from dry-run .env: %v", err)
 	}
 	if !runtimeConfig.Mode.IsDryRun() {
-		t.Fatal("Load() не сохранил безопасный dry-run режим")
+		t.Fatal("Load() did not preserve safe dry-run mode")
 	}
 }
 
@@ -207,7 +207,7 @@ func TestLoadLiveAcceptsPrivateKeysOnlyFromProcessEnvironment(t *testing.T) {
 
 	_, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "SOURCE_PRIVATE_KEY") {
-		t.Fatalf("Load() использовал private key из .env: %v", err)
+		t.Fatalf("Load() used private key from .env: %v", err)
 	}
 }
 
@@ -233,19 +233,19 @@ func TestLoadWithSecretsUsesOnlySuppliedLiveKeys(t *testing.T) {
 
 	runtime, err := LoadWithSecrets(secrets)
 	if err != nil {
-		t.Fatalf("LoadWithSecrets() error = %v", err)
+		t.Fatalf("LoadWithSecrets() returned an error: %v", err)
 	}
 	if source, sponsor, ok := runtime.LiveSecrets.PrivateKeys(); !ok || source == nil || sponsor == nil {
-		t.Fatal("LoadWithSecrets() не использовал supplied credentials")
+		t.Fatal("LoadWithSecrets() did not use supplied credentials")
 	}
 
 	t.Setenv("SOURCE_PRIVATE_KEY", "test-only-process-source-canary")
 	_, err = LoadWithSecrets(secrets)
 	if err == nil || !strings.Contains(err.Error(), "SOURCE_PRIVATE_KEY") {
-		t.Fatalf("LoadWithSecrets() принял initial environment key: %v", err)
+		t.Fatalf("LoadWithSecrets() accepted key from source environment: %v", err)
 	}
 	if strings.Contains(err.Error(), "test-only-process-source-canary") {
-		t.Fatalf("ошибка раскрывает initial environment key: %q", err)
+		t.Fatalf("error exposes key from source environment: %q", err)
 	}
 }
 
@@ -281,7 +281,7 @@ func TestLoadWithSecretsRejectsCredentialsWithoutSigning(t *testing.T) {
 				"SOURCE_PRIVATE_KEY": fmt.Sprintf("%064x", 1),
 			})
 			if err == nil || !strings.Contains(err.Error(), "SOURCE_PRIVATE_KEY") {
-				t.Fatalf("LoadWithSecrets() принял credential без signing: %v", err)
+				t.Fatalf("LoadWithSecrets() accepted credentials without signing capability: %v", err)
 			}
 		})
 	}
@@ -309,11 +309,11 @@ func TestLoadRejectsAlternativeDotEnvGrammarBeforeParsingValues(t *testing.T) {
 			}
 
 			_, err := Load()
-			if err == nil || err.Error() != "файл .env содержит некорректные данные" {
-				t.Fatalf("Load() error = %v", err)
+			if err == nil || err.Error() != ".env file contains invalid data" {
+				t.Fatalf("Load() returned an error: %v", err)
 			}
 			if strings.Contains(err.Error(), "test-only-private-canary") {
-				t.Fatalf("ошибка раскрывает значение: %q", err)
+				t.Fatalf("error exposes value: %q", err)
 			}
 		})
 	}
@@ -357,7 +357,7 @@ func TestFormattingRedactsRuntimeInputs(t *testing.T) {
 	domainNetwork := runtime.Networks[0].Domain(common.HexToAddress(testAddress(9)))
 	for _, formatted := range []string{fmt.Sprintf("%v", runtime), fmt.Sprintf("%#v", runtime.LiveSecrets), fmt.Sprintf("%+v", runtime.Networks[0]), fmt.Sprintf("%#v", runtime.Artifact), fmt.Sprintf("%+v", domainNetwork)} {
 		if strings.Contains(formatted, "test-only-private") {
-			t.Fatalf("форматирование раскрывает входные данные: %q", formatted)
+			t.Fatalf("formatting exposes input: %q", formatted)
 		}
 	}
 }
@@ -368,10 +368,10 @@ func TestValidationErrorsRedactCredentialBearingValues(t *testing.T) {
 	values["RPC_READ_1_HTTP_BASE"] = "https://user:" + canary + "@invalid host"
 	_, err := LoadFrom(mapLookup(values))
 	if err == nil || !strings.Contains(err.Error(), "RPC_READ_1_HTTP_BASE") {
-		t.Fatalf("LoadFrom() error = %v", err)
+		t.Fatalf("LoadFrom() returned an error: %v", err)
 	}
 	if strings.Contains(err.Error(), canary) || strings.Contains(err.Error(), values["RPC_READ_1_HTTP_BASE"]) {
-		t.Fatalf("ошибка раскрывает RPC credentials: %q", err)
+		t.Fatalf("error exposes RPC credentials: %q", err)
 	}
 }
 
@@ -422,14 +422,14 @@ func unsetPrivateKeyEnvironment(t *testing.T) {
 func assertErrorField(t *testing.T, err error, field string, values map[string]string) {
 	t.Helper()
 	if err == nil {
-		t.Fatalf("LoadFrom() не отклонил поле %s", field)
+		t.Fatalf("LoadFrom() did not reject field %s", field)
 	}
 	if !strings.Contains(err.Error(), field) {
-		t.Fatalf("ошибка %q не называет поле %s", err, field)
+		t.Fatalf("error %q does not name field %s", err, field)
 	}
 	for _, value := range values {
 		if strings.HasPrefix(value, "test-only-") && strings.Contains(err.Error(), value) {
-			t.Fatalf("ошибка раскрывает входное значение: %q", err)
+			t.Fatalf("error exposes input value: %q", err)
 		}
 	}
 }

@@ -44,7 +44,7 @@ func TestLoggerWritesClosedSafeSchema(t *testing.T) {
 
 	var got map[string]any
 	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &got); err != nil {
-		t.Fatalf("записан невалидный JSON: %v", err)
+		t.Fatalf("invalid JSON written: %v", err)
 	}
 	want := map[string]any{
 		"level":         "warning",
@@ -91,20 +91,20 @@ func TestLoggerLegacyPathRedactsSyntheticCanaries(t *testing.T) {
 	line := output.String()
 	for _, record := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte{'\n'}) {
 		if !json.Valid(record) {
-			t.Fatalf("legacy record не является JSON: %q", line)
+			t.Fatalf("legacy record is not JSON: %q", line)
 		}
 	}
 	for _, canary := range canaries {
 		if strings.Contains(line, canary) {
-			t.Fatalf("журнал раскрыл synthetic canary %q: %q", canary, line)
+			t.Fatalf("log exposed synthetic canary %q: %q", canary, line)
 		}
 	}
 	if strings.Contains(line, common.HexToHash("0x9876").Hex()) {
-		t.Fatalf("legacy tx hash попал в журнал до typed broadcast boundary: %q", line)
+		t.Fatalf("legacy transaction hash reached the log before the typed broadcast boundary: %q", line)
 	}
 	for _, expected := range []string{"safe_event", "event_redacted", "error_redacted"} {
 		if !strings.Contains(line, expected) {
-			t.Fatalf("журнал потерял безопасную классификацию %q: %q", expected, line)
+			t.Fatalf("log lost safe classification %q: %q", expected, line)
 		}
 	}
 }
@@ -119,13 +119,13 @@ func TestLoggerRejectsInvalidTypedValuesWithoutOutput(t *testing.T) {
 		t.Fatalf("error = %v, want ErrInvalidLogEvent", err)
 	}
 	if output.Len() != 0 {
-		t.Fatalf("invalid event создал output: %q", output.String())
+		t.Fatalf("invalid event produced output: %q", output.String())
 	}
 	if _, err := NewSafeError(ErrorClass(255), ErrorInternalFailure, false, false); !errors.Is(err, ErrInvalidLogEvent) {
-		t.Fatalf("NewSafeError error = %v, want ErrInvalidLogEvent", err)
+		t.Fatalf("NewSafeError returned error %v, want ErrInvalidLogEvent", err)
 	}
 	if _, err := NewPublicTxHashAfterBroadcast(common.Hash{}); !errors.Is(err, ErrInvalidTxHash) {
-		t.Fatalf("NewPublicTxHashAfterBroadcast error = %v, want ErrInvalidTxHash", err)
+		t.Fatalf("NewPublicTxHashAfterBroadcast returned error %v, want ErrInvalidTxHash", err)
 	}
 }
 
@@ -180,10 +180,10 @@ func TestLoggerConcurrentWritesRemainNDJSONRecords(t *testing.T) {
 		lines++
 		var record map[string]any
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
-			t.Fatalf("строка %d повреждена concurrent write: %v", lines, err)
+			t.Fatalf("line %d corrupted by concurrent writes: %v", lines, err)
 		}
 		if record["code"] != "candidate_queued" {
-			t.Fatalf("строка %d имеет code %#v", lines, record["code"])
+			t.Fatalf("line %d has code %#v", lines, record["code"])
 		}
 	}
 	if err := scanner.Err(); err != nil {

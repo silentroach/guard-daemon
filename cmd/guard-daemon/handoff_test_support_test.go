@@ -17,12 +17,12 @@ import (
 )
 
 var (
-	errHandoffNetwork   = errors.New("работа относится к другой сети")
-	errIncidentOrder    = errors.New("incident можно сохранить только после candidate")
-	errIncidentConflict = errors.New("candidate связан с другим incident")
-	errAckOrder         = errors.New("ack допустим только после сохранения incident")
-	errNackOrder        = errors.New("nack допустим только для головы pending очереди после сохранения incident")
-	errRescueState      = errors.New("некорректный переход состояния rescue")
+	errHandoffNetwork   = errors.New("work belongs to a different network")
+	errIncidentOrder    = errors.New("incident can be stored only after its candidate")
+	errIncidentConflict = errors.New("candidate is associated with a different incident")
+	errAckOrder         = errors.New("candidate can be acknowledged only after its incident is stored")
+	errNackOrder        = errors.New("only the head of the pending queue can be negatively acknowledged after its incident is stored")
+	errRescueState      = errors.New("invalid rescue state transition")
 )
 
 const (
@@ -69,8 +69,8 @@ func (candidates *delayedCandidates) Pop() any {
 	return last
 }
 
-// legacyMemoryHandoff является только process-local реализацией для daemon
-// tests. Она не выбирается production wiring и не обеспечивает durability.
+// legacyMemoryHandoff используется только в тестах демона как внутрипроцессная
+// реализация. В рабочей конфигурации она не применяется и не сохраняет данные между запусками.
 type legacyMemoryHandoff struct {
 	mu         sync.Mutex
 	network    domain.NetworkID

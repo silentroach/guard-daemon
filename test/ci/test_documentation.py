@@ -26,7 +26,7 @@ class DocumentationTests(unittest.TestCase):
                     if target.startswith(("https://", "http://", "mailto:", "#")):
                         continue
                     clean_target = target.split("#", 1)[0]
-                    self.assertTrue(clean_target, "пустая относительная ссылка")
+                    self.assertTrue(clean_target, "empty relative link")
                     self.assertTrue((path.parent / clean_target).resolve().exists())
 
     def test_public_headings_are_russian(self) -> None:

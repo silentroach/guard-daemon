@@ -27,15 +27,15 @@ const (
 )
 
 var (
-	ErrInvalidProviders   = errors.New("некорректные провайдеры RPC quorum")
-	ErrInvalidTimeout     = errors.New("некорректный RPC timeout")
-	ErrQuorumUnavailable  = errors.New("RPC quorum недоступен")
-	ErrQuorumMismatch     = errors.New("ответы RPC quorum расходятся")
-	ErrMalformedResponse  = errors.New("некорректный RPC response")
-	ErrInvalidBlockRef    = errors.New("некорректная ссылка на блок")
-	ErrInvalidFilterQuery = errors.New("некорректный запрос финализированных logs")
-	ErrUnfinalizedReceipt = errors.New("transaction receipt не финализирован")
-	ErrQuorumDial         = errors.New("не удалось подключить RPC quorum")
+	ErrInvalidProviders   = errors.New("invalid RPC quorum providers")
+	ErrInvalidTimeout     = errors.New("invalid RPC timeout")
+	ErrQuorumUnavailable  = errors.New("RPC quorum unavailable")
+	ErrQuorumMismatch     = errors.New("RPC quorum responses do not match")
+	ErrMalformedResponse  = errors.New("malformed RPC response")
+	ErrInvalidBlockRef    = errors.New("invalid block reference")
+	ErrInvalidFilterQuery = errors.New("invalid finalized log query")
+	ErrUnfinalizedReceipt = errors.New("transaction receipt is not finalized")
+	ErrQuorumDial         = errors.New("failed to connect to RPC quorum")
 )
 
 type BlockRef struct {

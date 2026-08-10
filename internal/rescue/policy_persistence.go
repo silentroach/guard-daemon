@@ -24,8 +24,8 @@ type boltAdmissionPersistence struct {
 	db *bolt.DB
 }
 
-// OpenAdmissionController restores one bounded global admission window shared
-// by every network coordinator.
+// OpenAdmissionController восстанавливает общий для координаторов всех сетей
+// ограничитель частоты попыток.
 func OpenAdmissionController(path string, config AdmissionConfig, serviceClock AdmissionClock) (*AdmissionController, error) {
 	controller, err := NewAdmissionController(config, serviceClock)
 	if err != nil || path == "" {

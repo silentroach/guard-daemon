@@ -46,13 +46,13 @@ func TestPersistentSponsorBudgetCannotBeBypassedByRestartOrStateDirectory(t *tes
 		t.Fatal(err)
 	}
 	if canonicalFirst != canonicalSecond || strings.Contains(canonicalFirst, firstRuntime.Watch.StateDirectory) || strings.Contains(canonicalFirst, secondRuntime.Watch.StateDirectory) {
-		t.Fatalf("canonical budget path changed with ordinary state directory: %q / %q", canonicalFirst, canonicalSecond)
+		t.Fatalf("canonical budget path changed with the regular state directory: %q / %q", canonicalFirst, canonicalSecond)
 	}
 
 	firstStore := openStore(t, firstRuntime, rescuer)
 	firstCandidate := domain.NewBlockCandidate(firstRuntime.Networks[0].ChainID, domain.CandidateNative, firstRuntime.SourceAddress, testHash(1), 1)
 	if result, err := firstStore.Put(context.Background(), firstCandidate); err != nil || result != store.PutInserted {
-		t.Fatalf("first state Put() = (%v, %v)", result, err)
+		t.Fatalf("first state Put() returned (%v, %v)", result, err)
 	}
 
 	ledgerPath := filepath.Join(root, "host-budget", filepath.Base(canonicalFirst))
@@ -87,7 +87,7 @@ func TestPersistentSponsorBudgetCannotBeBypassedByRestartOrStateDirectory(t *tes
 	restartedStore := openStore(t, firstRuntime, rescuer)
 	replayed, err := restartedStore.Replay(context.Background(), firstRuntime.Networks[0].ChainID)
 	if err != nil || len(replayed) != 1 || replayed[0].ID != firstCandidate.ID {
-		t.Fatalf("restart replay = (%v, %v)", replayed, err)
+		t.Fatalf("replay after restart = (%v, %v)", replayed, err)
 	}
 	restartedLedger, err := budget.Open(ledgerPath, options)
 	if err != nil {
@@ -95,24 +95,24 @@ func TestPersistentSponsorBudgetCannotBeBypassedByRestartOrStateDirectory(t *tes
 	}
 	restartCandidate := domain.NewBlockCandidate(firstRuntime.Networks[0].ChainID, domain.CandidateNative, firstRuntime.SourceAddress, testHash(2), 2)
 	if _, err := restartedLedger.Reserve(context.Background(), reservationRequest(firstRuntime, restartCandidate, 1)); !errors.Is(err, budget.ErrBudgetExceeded) {
-		t.Fatalf("restart Reserve() error = %v, want ErrBudgetExceeded", err)
+		t.Fatalf("Reserve() after restart returned error %v, want ErrBudgetExceeded", err)
 	}
 	closeStore(t, restartedStore)
 
 	freshOrdinaryStore := openStore(t, secondRuntime, rescuer)
 	stateDirectoryCandidate := domain.NewBlockCandidate(secondRuntime.Networks[0].ChainID, domain.CandidateNative, secondRuntime.SourceAddress, testHash(3), 3)
 	if result, err := freshOrdinaryStore.Put(context.Background(), stateDirectoryCandidate); err != nil || result != store.PutInserted {
-		t.Fatalf("fresh state Put() = (%v, %v)", result, err)
+		t.Fatalf("new state Put() returned (%v, %v)", result, err)
 	}
 	if _, err := restartedLedger.Reserve(context.Background(), reservationRequest(secondRuntime, stateDirectoryCandidate, 1)); !errors.Is(err, budget.ErrBudgetExceeded) {
-		t.Fatalf("state-directory bypass Reserve() error = %v, want ErrBudgetExceeded", err)
+		t.Fatalf("Reserve() bypassing the state directory returned error %v, want ErrBudgetExceeded", err)
 	}
 	snapshot, err := restartedLedger.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !snapshot.Global.Blocked() || !snapshot.Networks[secondRuntime.Networks[0].ChainID].Blocked() {
-		t.Fatal("exhausted persistent budget is not reported as blocked")
+		t.Fatal("exhausted persistent budget was not marked as blocked")
 	}
 	closeStore(t, freshOrdinaryStore)
 	closeLedger(t, restartedLedger)
@@ -127,7 +127,7 @@ func TestEmergencyStopReadOnlyPathHasZeroPaidSideEffects(t *testing.T) {
 	values["SPONSOR_PRIVATE_KEY"] = "sponsor-private-key-canary"
 	runtimeConfig := loadRuntime(t, values)
 	if !runtimeConfig.Mode.IsLive() || !runtimeConfig.Policy.EmergencyStop {
-		t.Fatal("test config did not enable live emergency stop")
+		t.Fatal("test configuration did not enable production emergency stop")
 	}
 	if source, sponsor, ok := runtimeConfig.LiveSecrets.PrivateKeys(); ok || source != nil || sponsor != nil {
 		t.Fatal("emergency stop retained private keys")
@@ -199,11 +199,11 @@ func TestEmergencyStopReadOnlyPathHasZeroPaidSideEffects(t *testing.T) {
 	}
 	candidate := domain.NewBlockCandidate(network.ChainID, domain.CandidateNative, runtimeConfig.SourceAddress, testHash(7), 7)
 	if err := session.Handle(context.Background(), candidate); !errors.Is(err, observability.ErrPaidActionsStopped) {
-		t.Fatalf("Handle() error = %v, want ErrPaidActionsStopped", err)
+		t.Fatalf("Handle() returned error %v, want ErrPaidActionsStopped", err)
 	}
 	assertNoPaidAttempts(t, attempts)
 	if reader.chainCalls.Load() != 1 || reader.finalizedCalls.Load() != 1 || reader.destinationCalls.Load() != 1 || reader.estimateCalls.Load() != 0 || reader.unexpectedCalls.Load() != 0 {
-		t.Fatalf("emergency RPC calls = chain:%d finalized:%d destination:%d estimate:%d unexpected:%d",
+		t.Fatalf("RPC calls during emergency stop: chain=%d, finalized=%d, destination=%d, estimate=%d, unexpected=%d",
 			reader.chainCalls.Load(), reader.finalizedCalls.Load(), reader.destinationCalls.Load(), reader.estimateCalls.Load(), reader.unexpectedCalls.Load())
 	}
 	incidents, err := handoff.RescueIncidents(context.Background(), network.ChainID)
@@ -244,12 +244,12 @@ func TestDryRunPlanUsesOnlyReadCapabilitiesAndPreservesCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if reader.chainCalls.Load() != 1 || reader.estimateCalls.Load() != 1 || reader.finalizedCalls.Load() != 0 || reader.destinationCalls.Load() != 0 || reader.unexpectedCalls.Load() != 0 {
-		t.Fatalf("dry-run RPC calls = chain:%d estimate:%d finalized:%d destination:%d unexpected:%d",
+		t.Fatalf("RPC calls during dry run: chain=%d, estimate=%d, finalized=%d, destination=%d, unexpected=%d",
 			reader.chainCalls.Load(), reader.estimateCalls.Load(), reader.finalizedCalls.Load(), reader.destinationCalls.Load(), reader.unexpectedCalls.Load())
 	}
 	replayed, err := handoff.Replay(context.Background(), candidate.Network)
 	if err != nil || len(replayed) != 1 || replayed[0].ID != candidate.ID {
-		t.Fatalf("dry-run changed durable candidate state: (%v, %v)", replayed, err)
+		t.Fatalf("dry run changed persistent candidate state: (%v, %v)", replayed, err)
 	}
 }
 
@@ -331,7 +331,7 @@ func TestTypedRedactionCanariesDoNotEscapeComposedOperatorPath(t *testing.T) {
 		runtimeConfig, runtimeConfig.Watch, runtimeConfig.LiveSecrets, runtimeConfig.Networks[0], runtimeConfig.Networks[0].ReadProviders[0])
 	for _, canary := range []string{rpcCanary, stateCanary, sourceKeyCanary, sponsorKeyCanary, tokenCanary, amountCanary, signatureCanary, signedTxCanary, operatorCodeCanary} {
 		if strings.Contains(surface, canary) {
-			t.Fatalf("composed operator surface exposed canary %q: %q", canary, surface)
+			t.Fatalf("combined operator surface exposed canary %q: %q", canary, surface)
 		}
 	}
 	for _, safeValue := range []string{`"code":"event_redacted"`, `"error_code":"error_redacted"`, `"error_code":"signing_failed"`} {
@@ -380,7 +380,7 @@ func loadRuntime(t *testing.T, values map[string]string) config.Runtime {
 	t.Helper()
 	runtimeConfig, err := config.LoadFromMap(values)
 	if err != nil {
-		t.Fatalf("config.LoadFromMap() error = %v", err)
+		t.Fatalf("config.LoadFromMap() returned an error: %v", err)
 	}
 	return runtimeConfig
 }
@@ -398,7 +398,7 @@ func openStore(t *testing.T, runtimeConfig config.Runtime, rescuer common.Addres
 		MaxDiscoveredTokens: 16,
 	})
 	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
+		t.Fatalf("store.Open() returned an error: %v", err)
 	}
 	return handoff
 }
@@ -474,7 +474,7 @@ func toUint256(t *testing.T, value *big.Int) uint256.Int {
 	t.Helper()
 	converted, overflow := uint256.FromBig(value)
 	if overflow || converted == nil {
-		t.Fatalf("value %v does not fit uint256", value)
+		t.Fatalf("value %v does not fit in uint256", value)
 	}
 	return *converted
 }
@@ -482,7 +482,7 @@ func toUint256(t *testing.T, value *big.Int) uint256.Int {
 func assertNoPaidAttempts(t *testing.T, attempts *dryrun.Attempts) {
 	t.Helper()
 	if attempts.AuthorizationSignatures() != 0 || attempts.TransactionSignatures() != 0 || attempts.Broadcasts() != 0 {
-		t.Fatalf("paid attempts = authorization:%d transaction:%d broadcast:%d, want all zero",
+		t.Fatalf("paid attempts: authorization=%d, transaction=%d, broadcast=%d, want all zeros",
 			attempts.AuthorizationSignatures(), attempts.TransactionSignatures(), attempts.Broadcasts())
 	}
 }
@@ -490,14 +490,14 @@ func assertNoPaidAttempts(t *testing.T, attempts *dryrun.Attempts) {
 func closeStore(t *testing.T, handoff *store.BoltStore) {
 	t.Helper()
 	if err := handoff.Close(); err != nil {
-		t.Fatalf("store Close() error = %v", err)
+		t.Fatalf("store Close() returned an error: %v", err)
 	}
 }
 
 func closeLedger(t *testing.T, ledger *budget.BudgetLedger) {
 	t.Helper()
 	if err := ledger.Close(); err != nil {
-		t.Fatalf("budget Close() error = %v", err)
+		t.Fatalf("budget Close() returned an error: %v", err)
 	}
 }
 

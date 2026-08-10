@@ -11,7 +11,7 @@ func TestOpenRejectsIncompleteOptions(t *testing.T) {
 	t.Parallel()
 
 	if opened, err := Open("", OpenOptions{}); err == nil || opened != nil {
-		t.Fatalf("Open() = (%v, %v), ожидался безопасный отказ", opened, err)
+		t.Fatalf("Open() = (%v, %v), want safe failure", opened, err)
 	}
 }
 
@@ -32,7 +32,7 @@ func TestOpenRejectsUnsafeRoleBindings(t *testing.T) {
 			options := base
 			mutate(&options)
 			if opened, err := Open(filepath.Join(t.TempDir(), "state.db"), options); err == nil || opened != nil {
-				t.Fatalf("Open() = (%v, %v), expected role validation failure", opened, err)
+				t.Fatalf("Open() returned (%v, %v), want role validation error", opened, err)
 			}
 		})
 	}

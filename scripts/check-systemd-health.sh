@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if (($# < 2 || $# > 3)); then
-  printf 'Использование: check-systemd-health.sh <HTTP-code> <status> [alert-code]\n' >&2
+  printf 'Usage: check-systemd-health.sh <HTTP-code> <status> [alert-code]\n' >&2
   exit 2
 fi
 
@@ -13,19 +13,19 @@ expected_alert=${3:-}
 case "${expected_http}:${expected_status}" in
   200:healthy_idle | 503:stopped) ;;
   *)
-    printf 'Неподдерживаемое ожидаемое состояние health.\n' >&2
+    printf 'Unsupported expected health status.\n' >&2
     exit 2
     ;;
 esac
 if [[ -n "${expected_alert}" && "${expected_alert}" != "paid_actions_stopped" ]]; then
-  printf 'Неподдерживаемый ожидаемый alert.\n' >&2
+  printf 'Unsupported expected alert.\n' >&2
   exit 2
 fi
 
 umask 077
 health_file=$(mktemp "${TMPDIR:-/tmp}/guard-daemon-health.XXXXXX")
 metrics_file=$(mktemp "${TMPDIR:-/tmp}/guard-daemon-metrics.XXXXXX")
-# Invoked by the EXIT trap.
+# Используется как обработчик EXIT.
 # shellcheck disable=SC2329
 cleanup() {
   rm -f -- "${health_file}" "${metrics_file}"
@@ -100,6 +100,6 @@ raise SystemExit(0 if valid else 1)
   sleep 1
 done
 
-printf 'guard-daemon не достиг ожидаемого проверенного состояния %s/HTTP %s.\n' \
+printf 'guard-daemon did not reach the expected verified state %s/HTTP %s.\n' \
   "${expected_status}" "${expected_http}" >&2
 exit 1

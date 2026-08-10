@@ -43,7 +43,7 @@ func TestScanUsesBoundedLookbackAndRetriesFailedBlock(t *testing.T) {
 	}
 	assertCursor(t, handoff, network.ChainID, 101, testHash(0x65))
 	if !finalized.usedHashPinnedQuery(100) || !finalized.usedHashPinnedQuery(101) {
-		t.Fatal("scanner запросил logs по номеру, а не по согласованному block hash")
+		t.Fatal("scanner requested logs by number instead of the agreed block hash")
 	}
 	assertCandidateIDs(t, handoff, network.ChainID,
 		domain.NewBlockCandidate(network.ChainID, domain.CandidateNative, source, testHash(0x64), 100).ID,
@@ -60,7 +60,7 @@ func TestScanUsesBoundedLookbackAndRetriesFailedBlock(t *testing.T) {
 	finalized.addBlock(102, testHash(0x66), testHash(0x65))
 	finalized.setFilterError(102, errors.New("private backend detail"))
 	if err := service.scan(context.Background()); err == nil {
-		t.Fatal("ошибка FilterLogs не остановила scan")
+		t.Fatal("FilterLogs error did not stop scanning")
 	}
 	assertCursor(t, handoff, network.ChainID, 101, testHash(0x65))
 
@@ -70,7 +70,7 @@ func TestScanUsesBoundedLookbackAndRetriesFailedBlock(t *testing.T) {
 	}
 	assertCursor(t, handoff, network.ChainID, 102, testHash(0x66))
 	if finalized.filterCalls(102) != 2 {
-		t.Fatalf("FilterLogs calls для незафиксированного блока = %d, нужно 2", finalized.filterCalls(102))
+		t.Fatalf("FilterLogs calls for uncommitted block = %d, want 2", finalized.filterCalls(102))
 	}
 }
 
@@ -86,7 +86,7 @@ func TestReadyRunsOnlyAfterInitialScan(t *testing.T) {
 	service.ready = func() error {
 		cursor, found, err := handoff.LoadScanCursor(context.Background(), network.ChainID)
 		if err != nil || !found || cursor.BlockNumber != 7 || cursor.BlockHash != testHash(0x07) {
-			return errors.New("ready вызван до durable initial scan")
+			return errors.New("readiness signal invoked before durable initial scan")
 		}
 		close(ready)
 		return nil
@@ -98,7 +98,7 @@ func TestReadyRunsOnlyAfterInitialScan(t *testing.T) {
 	receive(t, ready)
 	cancel()
 	if err := receive(t, result); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Run после cancel = %v", err)
+		t.Fatalf("Run after cancellation = %v", err)
 	}
 }
 
@@ -123,13 +123,14 @@ func TestSubscriptionDisconnectBackfillsGapWithoutDuplicates(t *testing.T) {
 	go func() { runResult <- service.Run(ctx) }()
 	receive(t, logs.registered)
 
-	// Повтор subscription уже canonical candidate безопасно coalesce-ится.
+	// Событие подписки для кандидата, уже подтверждённого канонической цепочкой,
+	// безопасно объединяется с существующей записью.
 	logs.send(firstLog)
 	gapLog := matchingLog(codec, source, token.Address, 11, testHash(0x0b), 2)
 	finalized.addBlockWithLogs(11, testHash(0x0b), testHash(0x0a), []types.Log{gapLog})
 	logs.subscription.fail(errors.New("disconnect"))
 	if err := receive(t, runResult); err == nil {
-		t.Fatal("disconnect не завершил поколение")
+		t.Fatal("disconnect did not end the generation")
 	}
 
 	service = newTestService(t, finalized, handoff, source, network, 1, &fakeContractCaller{}, newFakeLogSubscriber(), newFakeHeadSubscriber())
@@ -144,7 +145,7 @@ func TestSubscriptionDisconnectBackfillsGapWithoutDuplicates(t *testing.T) {
 		domain.NewLogCandidate(network.ChainID, source, token, testHash(0x0b), gapLog.TxHash, 11, 2).ID,
 	)
 	if !logs.subscription.unsubscribed.Load() || !heads.subscription.unsubscribed.Load() {
-		t.Fatal("смена поколения не освободила subscriptions")
+		t.Fatal("generation change did not release subscriptions")
 	}
 }
 
@@ -215,12 +216,12 @@ func TestLogCandidateRequiresStrictTransferShape(t *testing.T) {
 	}
 	valid := matchingLog(codec, source, testAddress(0x44), 1, testHash(1), 1)
 	tests := map[string]types.Log{
-		"лишний topic": func() types.Log {
+		"extra topic": func() types.Log {
 			entry := valid
 			entry.Topics = append(append([]common.Hash(nil), valid.Topics...), testHash(4))
 			return entry
 		}(),
-		"короткие data": func() types.Log {
+		"short data": func() types.Log {
 			entry := valid
 			entry.Data = make([]byte, common.HashLength-1)
 			return entry
@@ -229,7 +230,7 @@ func TestLogCandidateRequiresStrictTransferShape(t *testing.T) {
 	for name, logEntry := range tests {
 		t.Run(name, func(t *testing.T) {
 			if _, accepted := service.logCandidate(context.Background(), logEntry, false); accepted {
-				t.Fatal("нестрогий Transfer log принят")
+				t.Fatal("non-strict Transfer log accepted")
 			}
 		})
 	}
@@ -242,7 +243,7 @@ func TestUnknownMetadataHasDeadlineSizeAndCacheBounds(t *testing.T) {
 	defer handoff.Close()
 	caller := &fakeContractCaller{call: func(ctx context.Context, _ ethereum.CallMsg, _ *big.Int) ([]byte, error) {
 		if _, ok := ctx.Deadline(); !ok {
-			t.Fatal("metadata call не получил deadline")
+			t.Fatal("metadata call did not receive a deadline")
 		}
 		return make([]byte, metadataReturnLimit+1), nil
 	}}
@@ -251,7 +252,7 @@ func TestUnknownMetadataHasDeadlineSizeAndCacheBounds(t *testing.T) {
 	first := service.resolveToken(context.Background(), unknown)
 	second := service.resolveToken(context.Background(), unknown)
 	if first != second || first.Symbol != addressFallback(unknown) || caller.calls.Load() != 2 {
-		t.Fatalf("bounded metadata fallback/cache = (%#v, %#v, calls=%d)", first, second, caller.calls.Load())
+		t.Fatalf("bounded fallback metadata and cache = (%#v, %#v, calls=%d)", first, second, caller.calls.Load())
 	}
 
 	encodedSymbol := encodeABIValue(t, "string", "TOKEN")
@@ -268,7 +269,7 @@ func TestUnknownMetadataHasDeadlineSizeAndCacheBounds(t *testing.T) {
 		service.resolveToken(context.Background(), address)
 	}
 	if len(service.metadata) != metadataCacheLimit || len(service.metadataOrder) != metadataCacheLimit {
-		t.Fatalf("metadata cache size = %d/%d, нужно %d", len(service.metadata), len(service.metadataOrder), metadataCacheLimit)
+		t.Fatalf("metadata cache size = %d/%d, want %d", len(service.metadata), len(service.metadataOrder), metadataCacheLimit)
 	}
 }
 
@@ -286,7 +287,7 @@ func TestReconciliationRestoresDiscoveredUnknownToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	if discovered, err := handoff.DiscoveredTokens(context.Background(), network.ChainID); err != nil || len(discovered) != 0 {
-		t.Fatalf("provisional discovery = (%v, %v), нужен пустой confirmed registry", discovered, err)
+		t.Fatalf("preliminary discovery = (%v, %v), want empty confirmed registry", discovered, err)
 	}
 	if err := service.reconcile(context.Background()); err != nil {
 		t.Fatal(err)
@@ -296,7 +297,7 @@ func TestReconciliationRestoresDiscoveredUnknownToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(candidates) != 1 || candidates[0].Kind != domain.CandidatePeriodic {
-		t.Fatalf("до canonical seal reconciliation candidates = %v", candidates)
+		t.Fatalf("reconciliation candidates before canonical commit = %v", candidates)
 	}
 	if err := service.scan(context.Background()); err != nil {
 		t.Fatal(err)
@@ -342,14 +343,14 @@ func TestPolicyFingerprintIsDeterministicAndPolicyBound(t *testing.T) {
 	fingerprint := PolicyFingerprint(network, 64)
 	network.Tokens = []domain.Token{second, first}
 	if fingerprint != PolicyFingerprint(network, 64) {
-		t.Fatal("порядок token config изменил fingerprint")
+		t.Fatal("token configuration order changed fingerprint")
 	}
 	if fingerprint == PolicyFingerprint(network, 65) {
-		t.Fatal("lookback не связан с fingerprint")
+		t.Fatal("lookback depth is not bound to fingerprint")
 	}
 	network.AllowUnknownTokens = true
 	if fingerprint == PolicyFingerprint(network, 64) {
-		t.Fatal("token mode не связан с fingerprint")
+		t.Fatal("token mode is not bound to fingerprint")
 	}
 }
 
@@ -574,7 +575,7 @@ func assertCursor(t *testing.T, handoff *store.BoltStore, network domain.Network
 	t.Helper()
 	cursor, found, err := handoff.LoadScanCursor(context.Background(), network)
 	if err != nil || !found || cursor.BlockNumber != number || cursor.BlockHash != hash {
-		t.Fatalf("scan cursor = (%v, %v, %v), нужен block %d %s", cursor, found, err, number, hash)
+		t.Fatalf("scan cursor = (%v, %v, %v), want block %d %s", cursor, found, err, number, hash)
 	}
 }
 
@@ -593,7 +594,7 @@ func assertCandidateIDs(t *testing.T, handoff *store.BoltStore, network domain.N
 		wanted[id]++
 	}
 	if !reflect.DeepEqual(got, wanted) {
-		t.Fatalf("candidate IDs = %v, нужны %v", got, wanted)
+		t.Fatalf("candidate IDs = %v, want %v", got, wanted)
 	}
 }
 
@@ -634,7 +635,7 @@ func receive[T any](t *testing.T, channel <-chan T) T {
 	case value := <-channel:
 		return value
 	case <-time.After(2 * time.Second):
-		t.Fatal("истекло время ожидания test event")
+		t.Fatal("timed out waiting for test event")
 		var zero T
 		return zero
 	}

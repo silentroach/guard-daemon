@@ -287,11 +287,11 @@ const writeMalformedCandidateDirectory = async (
   return join(directory, "release-candidate.json");
 };
 
-test("режим по умолчанию не читает ключ и не обращается к RPC", async () => {
+test("default mode does not read the key or contact RPC", async () => {
   const unreadEnvironment = new Proxy<NodeJS.ProcessEnv>(
     {},
     {
-      get: () => assert.fail("Режим планирования прочитал environment"),
+      get: () => assert.fail("Planning mode read the environment"),
     },
   );
   const options = parseCLIOptions(
@@ -313,7 +313,7 @@ test("режим по умолчанию не читает ключ и не об
   await runDeployment(options, unreadEnvironment);
 });
 
-test("подменённый artifact отклоняется повторной pinned-сборкой", async () => {
+test("a tampered artifact is rejected by recompilation with pinned settings", async () => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "guard-artifact-"));
   const modifiedArtifactPath = join(temporaryDirectory, "RescuerV2.json");
   const canonical = await readFile(artifactPath, "utf8");
@@ -327,14 +327,14 @@ test("подменённый artifact отклоняется повторной 
   try {
     await assert.rejects(
       verifyCanonicalArtifact(modifiedArtifactPath),
-      /pinned source\/compiler\/settings/,
+      /pinned source, compiler, and settings/,
     );
   } finally {
     await rm(temporaryDirectory, { force: true, recursive: true });
   }
 });
 
-test("source provenance различает source tree и проверенный commit", async () => {
+test("source metadata distinguishes the source tree from the verified commit", async () => {
   const loaded = await loadCanonicalArtifact(artifactPath);
   assert.deepStrictEqual(sourceProvenance(loaded.artifact), {
     kind: "source-tree-sha256",
@@ -350,7 +350,7 @@ test("source provenance различает source tree и проверенный
   );
 });
 
-test("установленный production candidate не читает Git metadata", async () => {
+test("an installed production candidate does not read Git metadata", async () => {
   await withCleanWorktree(async (checkout, temporaryDirectory) => {
     const candidate = await writeReleaseCandidate(
       join(temporaryDirectory, "candidate"),
@@ -378,7 +378,7 @@ test("установленный production candidate не читает Git meta
   });
 });
 
-test("candidate JSON ограничен по размеру и глубине", async () => {
+test("candidate JSON is bounded by size and depth", async () => {
   const temporaryDirectory = await mkdtemp(
     join(tmpdir(), "guard-json-limits-"),
   );
@@ -390,7 +390,7 @@ test("candidate JSON ограничен по размеру и глубине", 
     );
     await assert.rejects(
       loadReleaseCandidate(oversized, loaded),
-      /превышает допустимый размер/,
+      /exceeds the allowed JSON size/,
     );
 
     const deeplyNested = await writeMalformedCandidateDirectory(
@@ -399,14 +399,14 @@ test("candidate JSON ограничен по размеру и глубине", 
     );
     await assert.rejects(
       loadReleaseCandidate(deeplyNested, loaded),
-      /строгую проверку/,
+      /failed strict validation/,
     );
   } finally {
     await rm(temporaryDirectory, { force: true, recursive: true });
   }
 });
 
-test("CLI требует local recovery directory и полный набор broadcast аргументов", () => {
+test("CLI requires a local recovery directory and complete broadcast arguments", () => {
   assert.throws(() => parseCLIOptions([]), /--chain-id/);
   assert.equal(
     parseCLIOptions([
@@ -450,7 +450,7 @@ test("CLI требует local recovery directory и полный набор bro
   }
 });
 
-test("CLI отделяет production RPC credentials и фиксирует recovery path", () => {
+test("CLI isolates production RPC credentials and pins the recovery path", () => {
   const local = [
     ...broadcastArguments(
       "candidate/release-candidate.json",
@@ -460,7 +460,7 @@ test("CLI отделяет production RPC credentials и фиксирует reco
   ];
   const legacy = [...local];
   legacy[legacy.indexOf("--recovery-directory")] = "--recovery-record";
-  assert.throws(() => parseCLIOptions(legacy), /Неизвестный аргумент/);
+  assert.throws(() => parseCLIOptions(legacy), /Unknown argument/);
 
   const production = local.filter(
     (value, index) =>
@@ -472,14 +472,14 @@ test("CLI отделяет production RPC credentials и фиксирует reco
   production[production.indexOf("--chain-id") + 1] = "1";
   assert.throws(
     () => parseCLIOptions(production, {}),
-    /не задан DEPLOYMENT_RPC_URL/,
+    /DEPLOYMENT_RPC_URL is not set/,
   );
   const options = parseCLIOptions(production, {
     DEPLOYMENT_RPC_URL: "https://operator:secret@rpc.example.invalid",
   });
   assert.equal(options.broadcast, true);
   if (!options.broadcast) {
-    assert.fail("Ожидался режим broadcast");
+    assert.fail("Expected broadcast mode");
   }
   assert.equal(
     options.recoveryDirectory,
@@ -492,7 +492,7 @@ test("CLI отделяет production RPC credentials и фиксирует reco
       parseCLIOptions(production, {
         DEPLOYMENT_RPC_URL: "https://rpc.example.invalid",
       }),
-    /разрешён только для локальной chain ID 31337/,
+    /allowed only for local chain ID 31337/,
   );
 
   const productionWithRPCArgument = [...local];
@@ -508,11 +508,11 @@ test("CLI отделяет production RPC credentials и фиксирует reco
       parseCLIOptions(productionWithRPCArgument, {
         DEPLOYMENT_RPC_URL: "https://rpc.example.invalid",
       }),
-    /только через DEPLOYMENT_RPC_URL, а не --rpc-url/,
+    /through DEPLOYMENT_RPC_URL, not --rpc-url/,
   );
 });
 
-test("CLI ограничивает fee-model chain IDs до чтения ключа", () => {
+test("CLI restricts chain IDs by fee model before reading the key", () => {
   const args = [
     ...broadcastArguments(
       "candidate/release-candidate.json",
@@ -521,10 +521,10 @@ test("CLI ограничивает fee-model chain IDs до чтения клю�
     ),
   ];
   args[args.indexOf("--chain-id") + 1] = "10";
-  assert.throws(() => parseCLIOptions(args), /chain ID 1, 56, 137/);
+  assert.throws(() => parseCLIOptions(args), /chain IDs 1, 56, 137/);
 });
 
-test("CLI строго ограничивает decimal bigint и полную стоимость", () => {
+test("CLI strictly bounds decimal bigints and total cost", () => {
   const replaceValue = (name: string, value: string): readonly string[] => {
     const args = [
       ...broadcastArguments(
@@ -557,7 +557,7 @@ test("CLI строго ограничивает decimal bigint и полную �
       parseCLIOptions(
         replaceValue("--max-priority-fee-per-gas-wei", "2000000001"),
       ),
-    /превышает --max-fee-per-gas-wei/,
+    /exceeds --max-fee-per-gas-wei/,
   );
   assert.throws(
     () =>
@@ -566,7 +566,7 @@ test("CLI строго ограничивает decimal bigint и полную �
   );
 });
 
-test("legacy config arguments неизвестны", () => {
+test("legacy configuration arguments are unknown", () => {
   for (const name of ["--config", "--config-key"]) {
     assert.throws(
       () =>
@@ -580,12 +580,12 @@ test("legacy config arguments неизвестны", () => {
           name,
           "legacy",
         ]),
-      /Неизвестный аргумент/,
+      /Unknown argument/,
     );
   }
 });
 
-test("существующие recovery record и manifest блокируют до RPC", async () => {
+test("an existing recovery record and manifest block execution before RPC", async () => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "guard-existing-"));
   const candidatePath = join(
     temporaryDirectory,
@@ -607,7 +607,7 @@ test("существующие recovery record и manifest блокируют д
         ),
         {},
       ),
-      /Незавершённый recovery.*chain и sponsor/,
+      /Incomplete recovery.*chain and sponsor/,
     );
     await rm(existingRecord);
     await writeFile(manifestPath, "manifest-before\n");
@@ -618,14 +618,14 @@ test("существующие recovery record и manifest блокируют д
         ),
         {},
       ),
-      /Manifest уже существует/,
+      /Manifest already exists/,
     );
   } finally {
     await rm(temporaryDirectory, { force: true, recursive: true });
   }
 });
 
-test("local recovery registry обязан быть preexisting каталогом 0700 без symlink", async () => {
+test("local recovery registry must be a pre-created 0700 directory without symbolic links", async () => {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "guard-registry-"));
   const candidatePath = join(temporaryDirectory, "release-candidate.json");
   const manifestPath = join(temporaryDirectory, "manifest.json");
@@ -641,7 +641,7 @@ test("local recovery registry обязан быть preexisting каталого
         ),
         {},
       ),
-      /режим 0700/,
+      /mode 0700/,
     );
     await assert.rejects(
       runDeployment(
@@ -650,14 +650,14 @@ test("local recovery registry обязан быть preexisting каталого
         ),
         {},
       ),
-      /обычным каталогом, а не символической ссылкой/,
+      /regular directory, not a symbolic link/,
     );
   } finally {
     await rm(temporaryDirectory, { force: true, recursive: true });
   }
 });
 
-test("самосогласованный candidate чужого commit отклоняется без RPC", async () => {
+test("a self-consistent candidate from another commit is rejected without RPC", async () => {
   await withCleanWorktree(async (checkout, temporaryDirectory) => {
     const candidate = await writeReleaseCandidate(
       join(temporaryDirectory, "foreign-candidate"),
@@ -678,7 +678,7 @@ test("самосогласованный candidate чужого commit откл�
     );
     const address = server.address();
     if (!address || typeof address === "string") {
-      assert.fail("Тестовый RPC не получил TCP port");
+      assert.fail("Test RPC did not receive a TCP port");
     }
     const previousDirectory = process.cwd();
     try {
@@ -695,7 +695,7 @@ test("самосогласованный candidate чужого commit откл�
           ),
           {},
         ),
-        /HEAD чистого локального checkout/,
+        /HEAD of a clean local checkout/,
       );
       assert.equal(requestCount, 0);
     } finally {
@@ -708,7 +708,7 @@ test("самосогласованный candidate чужого commit откл�
   });
 });
 
-test("manifest внутри candidate или Git worktree блокируется до RPC", async () => {
+test("a manifest inside the candidate directory or Git worktree is blocked before RPC", async () => {
   await withCleanWorktree(async (checkout, temporaryDirectory) => {
     const candidate = await writeReleaseCandidate(
       join(temporaryDirectory, "candidate"),
@@ -734,7 +734,7 @@ test("manifest внутри candidate или Git worktree блокируется
             ),
             {},
           ),
-          /должны находиться вне candidate и Git worktree/,
+          /must be outside the candidate and Git worktree/,
         );
       }
     } finally {
@@ -743,7 +743,7 @@ test("manifest внутри candidate или Git worktree блокируется
   });
 });
 
-test("recovery registry внутри Git worktree блокируется до RPC", async () => {
+test("a recovery registry inside the Git worktree is blocked before RPC", async () => {
   await withCleanWorktree(async (checkout, temporaryDirectory) => {
     const candidate = await writeReleaseCandidate(
       join(temporaryDirectory, "candidate"),
@@ -765,7 +765,7 @@ test("recovery registry внутри Git worktree блокируется до RP
           ),
           {},
         ),
-        /должны находиться вне candidate и Git worktree/,
+        /must be outside the candidate and Git worktree/,
       );
     } finally {
       process.chdir(previousDirectory);
@@ -773,7 +773,7 @@ test("recovery registry внутри Git worktree блокируется до RP
   });
 });
 
-test("candidate verifier отклоняет hidden info/attributes и symlink", async () => {
+test("candidate verification rejects a hidden info/attributes file and symbolic link", async () => {
   await withCleanWorktree(async (checkout, temporaryDirectory) => {
     const candidate = await writeReleaseCandidate(
       join(temporaryDirectory, "candidate"),
@@ -808,7 +808,7 @@ test("candidate verifier отклоняет hidden info/attributes и symlink", 
             ),
             {},
           ),
-          /info\/attributes запрещён/,
+          /info\/attributes file is forbidden/,
         );
         await rm(attributesPath);
       }
@@ -819,7 +819,7 @@ test("candidate verifier отклоняет hidden info/attributes и symlink", 
   });
 });
 
-test("candidate verifier отклоняет hidden Git index flags до RPC", async () => {
+test("candidate verification rejects hidden Git index flags before RPC", async () => {
   await withCleanWorktree(async (checkout, temporaryDirectory) => {
     const recoveryDirectory = join(temporaryDirectory, "recovery");
     const manifestPath = join(temporaryDirectory, "manifest.json");
@@ -837,7 +837,7 @@ test("candidate verifier отклоняет hidden Git index flags до RPC", as
     );
     const address = server.address();
     if (!address || typeof address === "string") {
-      assert.fail("Тестовый RPC не получил TCP port");
+      assert.fail("Test RPC did not receive a TCP port");
     }
     const previousDirectory = process.cwd();
     try {
@@ -864,7 +864,7 @@ test("candidate verifier отклоняет hidden Git index flags до RPC", as
             ),
             {},
           ),
-          /assume-unchanged или skip-worktree/,
+          /assume-unchanged or skip-worktree/,
         );
         assert.equal(requestCount, 0);
         await runGitText(checkout, [
@@ -894,7 +894,7 @@ test("candidate verifier отклоняет hidden Git index flags до RPC", as
   });
 });
 
-test("recovery record сохраняется до broadcast и остаётся при RPC error", async () => {
+test("the recovery record is persisted before broadcast and retained after an RPC error", async () => {
   await withCleanWorktree(async (checkout, temporaryDirectory) => {
     const candidate = await writeReleaseCandidate(
       join(temporaryDirectory, "candidate"),
@@ -929,19 +929,19 @@ test("recovery record сохраняется до broadcast и остаётся 
             item: unknown,
           ): Promise<Readonly<Record<string, unknown>>> => {
             if (!item || typeof item !== "object" || Array.isArray(item)) {
-              assert.fail("Тестовый RPC получил недопустимый запрос");
+              assert.fail("Test RPC received an invalid request");
             }
             const id = Reflect.get(item, "id");
             const method = Reflect.get(item, "method");
             if (typeof id !== "number" || typeof method !== "string") {
-              assert.fail("Тестовый RPC получил недопустимый запрос");
+              assert.fail("Test RPC received an invalid request");
             }
             if (method === "eth_sendRawTransaction") {
               const recordValue: unknown = JSON.parse(
                 await readFile(recoveryPath, "utf8"),
               );
               if (!isRecord(recordValue)) {
-                assert.fail("Recovery record не является object");
+                assert.fail("Recovery record is not an object");
               }
               observedRecord = recordValue;
               resolveObserved();
@@ -974,7 +974,7 @@ test("recovery record сохраняется до broadcast и остаётся 
     );
     const address = server.address();
     if (!address || typeof address === "string") {
-      assert.fail("Тестовый RPC не получил TCP port");
+      assert.fail("Test RPC did not receive a TCP port");
     }
     const previousDirectory = process.cwd();
     try {

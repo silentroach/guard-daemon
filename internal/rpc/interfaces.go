@@ -49,9 +49,9 @@ type Reader interface {
 	LogReader
 }
 
-// HistoricalReader is the read-only, hash-addressable subset used by quorum
-// providers. It deliberately excludes pending state, subscriptions and
-// transaction broadcasting.
+// HistoricalReader предоставляет поставщикам кворума только операции чтения
+// по хешу блока. Интерфейс намеренно исключает неподтверждённое состояние,
+// подписки и отправку транзакций.
 type HistoricalReader interface {
 	HeaderByNumber(context.Context, *big.Int) (*types.Header, error)
 	BalanceAtHash(context.Context, common.Address, common.Hash) (*big.Int, error)

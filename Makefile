@@ -54,28 +54,28 @@ mod-verify:
 
 build:
 	@packages="$$(bash scripts/go-packages.sh)" || exit 1; \
-		test -n "$$packages" || { printf '%s\n' 'Список Go packages пуст' >&2; exit 1; }; \
+		test -n "$$packages" || { printf '%s\n' 'Go package list is empty' >&2; exit 1; }; \
 		mkdir -p build/bin; \
 		CGO_ENABLED=0 go build -o build/bin/ -mod=readonly $$packages
 
 test:
 	@packages="$$(bash scripts/go-packages.sh)" || exit 1; \
-		test -n "$$packages" || { printf '%s\n' 'Список Go packages пуст' >&2; exit 1; }; \
+		test -n "$$packages" || { printf '%s\n' 'Go package list is empty' >&2; exit 1; }; \
 		go test -mod=readonly $$packages
 
 race:
 	@packages="$$(bash scripts/go-packages.sh)" || exit 1; \
-		test -n "$$packages" || { printf '%s\n' 'Список Go packages пуст' >&2; exit 1; }; \
+		test -n "$$packages" || { printf '%s\n' 'Go package list is empty' >&2; exit 1; }; \
 		CGO_ENABLED=1 go test -race -mod=readonly $$packages
 
 vet:
 	@packages="$$(bash scripts/go-packages.sh)" || exit 1; \
-		test -n "$$packages" || { printf '%s\n' 'Список Go packages пуст' >&2; exit 1; }; \
+		test -n "$$packages" || { printf '%s\n' 'Go package list is empty' >&2; exit 1; }; \
 		go vet -mod=readonly $$packages
 
 vuln:
 	@packages="$$(bash scripts/go-packages.sh)" || exit 1; \
-		test -n "$$packages" || { printf '%s\n' 'Список Go packages пуст' >&2; exit 1; }; \
+		test -n "$$packages" || { printf '%s\n' 'Go package list is empty' >&2; exit 1; }; \
 		govulncheck $$packages
 
 typecheck:

@@ -52,7 +52,7 @@ func TestConcurrentNativeAndTokenCandidatesUseDistinctSponsorNonces(t *testing.T
 	close(errorsByCandidate)
 	for err := range errorsByCandidate {
 		if err != nil {
-			t.Fatalf("Handle() error = %v", err)
+			t.Fatalf("Handle() returned an error: %v", err)
 		}
 	}
 
@@ -74,13 +74,13 @@ func TestExternalSponsorNonceJumpReconcilesBeforeSigning(t *testing.T) {
 	rig.chain.setToken(secondToken, rig.source, 9)
 
 	if err := rig.session.Handle(context.Background(), rig.tokenCandidate(firstToken, 1)); err != nil {
-		t.Fatalf("first Handle() error = %v", err)
+		t.Fatalf("first Handle() returned an error: %v", err)
 	}
 	rig.primary.mu.Lock()
 	rig.primary.sponsorNonce = 12
 	rig.primary.mu.Unlock()
 	if err := rig.session.Handle(context.Background(), rig.tokenCandidate(secondToken, 2)); err != nil {
-		t.Fatalf("second Handle() error = %v", err)
+		t.Fatalf("second Handle() returned an error: %v", err)
 	}
 
 	transactions := rig.broadcaster.snapshot()
@@ -98,7 +98,7 @@ func TestAtomicNativeHasAuthorizationAndCallDataWithoutProactiveRenewal(t *testi
 
 	candidate := rig.nativeCandidate(1)
 	if err := rig.session.Handle(context.Background(), candidate); err != nil {
-		t.Fatalf("Handle() error = %v", err)
+		t.Fatalf("Handle() returned an error: %v", err)
 	}
 	transactions := rig.broadcaster.snapshot()
 	if len(transactions) != 1 {
@@ -106,12 +106,12 @@ func TestAtomicNativeHasAuthorizationAndCallDataWithoutProactiveRenewal(t *testi
 	}
 	transaction := transactions[0]
 	if transaction.Type() != types.SetCodeTxType || transaction.To() == nil || *transaction.To() != rig.source || len(transaction.Data()) == 0 || len(transaction.SetCodeAuthorizations()) != 1 {
-		t.Fatal("native rescue was not one atomic SetCode transaction")
+		t.Fatal("native asset rescue was not performed in one atomic SetCode transaction")
 	}
 	incident := rig.incident(candidate, domain.CandidateNative, common.Address{})
 	floor, _ := rig.state.NonceFloor(context.Background())
 	if incident.Policy.FinalityTimeout < 30*time.Minute || len(incident.SignedTransaction) != 0 || floor != transaction.Nonce()+1 {
-		t.Fatalf("terminal policy/payload/floor = %s/%d/%d", incident.Policy.FinalityTimeout, len(incident.SignedTransaction), floor)
+		t.Fatalf("final policy/payload/floor = %s/%d/%d", incident.Policy.FinalityTimeout, len(incident.SignedTransaction), floor)
 	}
 }
 
@@ -121,7 +121,7 @@ func TestAuthorizationFailureCannotCreateDelegationOnlyTransaction(t *testing.T)
 	err := rig.session.Handle(context.Background(), rig.nativeCandidate(1))
 	assertCode(t, err, codeSigning)
 	if rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
-		t.Fatal("failed authorization produced a sponsor transaction")
+		t.Fatal("failed authorization created sponsor transaction")
 	}
 }
 
@@ -153,7 +153,7 @@ func TestSuccessfulReceiptWithPostconditionRPCErrorIsAmbiguous(t *testing.T) {
 		t.Fatal(err)
 	}
 	if snapshot.Global.Spent.Cumulative.IsZero() || !snapshot.Global.Reserved.Cumulative.IsZero() {
-		t.Fatalf("finalized receipt cost was not committed before postcondition: %+v", snapshot.Global)
+		t.Fatalf("finalized receipt cost was not committed before postcondition check: %+v", snapshot.Global)
 	}
 	rig.clock.advance(time.Second)
 	assertAmbiguous(t, rig.session.Handle(context.Background(), candidate))
@@ -169,7 +169,7 @@ func TestUnknownTokenNeverGetsTrustedSuccess(t *testing.T) {
 	rig.chain.setToken(unknown, rig.source, 4)
 	candidate := domain.NewTokenReconciliationCandidate(rig.chainID, rig.source, domain.Token{Address: unknown, Symbol: "configured-looking", Decimals: 18}, 1, 1)
 	if err := rig.session.Handle(context.Background(), candidate); err != nil {
-		t.Fatalf("Handle() error = %v", err)
+		t.Fatalf("Handle() returned an error: %v", err)
 	}
 	incident := rig.incident(candidate, domain.CandidateToken, unknown)
 	if incident.Trusted || incident.Status != store.RescueTokenReported {
@@ -183,11 +183,11 @@ func TestConfiguredTokenOutcomeRemainsTokenReported(t *testing.T) {
 	rig.chain.setToken(token, rig.source, 4)
 	candidate := rig.tokenCandidate(token, 1)
 	if err := rig.session.Handle(context.Background(), candidate); err != nil {
-		t.Fatalf("Handle() error = %v", err)
+		t.Fatalf("Handle() returned an error: %v", err)
 	}
 	incident := rig.incident(candidate, domain.CandidateToken, token)
 	if !incident.Trusted || incident.Status != store.RescueTokenReported {
-		t.Fatalf("configured token trust/status = %t/%v, want economic trust with token-reported outcome", incident.Trusted, incident.Status)
+		t.Fatalf("configured token trust/status = %t/%v, want economic trust with token-reported result", incident.Trusted, incident.Status)
 	}
 }
 
@@ -196,11 +196,11 @@ func TestFakeTransferHintWithoutBalanceStopsBeforeSigning(t *testing.T) {
 	rig := newTestRig(t, rigOptions{tokens: []common.Address{token}})
 	candidate := rig.tokenCandidate(token, 1)
 	if err := rig.session.Handle(context.Background(), candidate); err != nil {
-		t.Fatalf("Handle() error = %v", err)
+		t.Fatalf("Handle() returned an error: %v", err)
 	}
 	incident := rig.incident(candidate, domain.CandidateToken, token)
 	if incident.Status != store.RescueFailed || incident.LastCode != codeNoPaidAction || rig.authorizer.count() != 0 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
-		t.Fatalf("fake hint status/code/paid actions = %v/%s/%d/%d/%d", incident.Status, incident.LastCode, rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
+		t.Fatalf("spoofed hint status/code/paid actions = %v/%s/%d/%d/%d", incident.Status, incident.LastCode, rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
 	}
 }
 
@@ -217,7 +217,7 @@ func TestExplicitlyAllowlistedUnknownTokenGetsOnlyTokenReportedOutcome(t *testin
 	}
 	incident := rig.incident(candidate, domain.CandidateToken, token)
 	if incident.Trusted || incident.Status != store.RescueTokenReported {
-		t.Fatalf("allowlisted unknown trust/status = %t/%v", incident.Trusted, incident.Status)
+		t.Fatalf("allowlisted unknown token trust/status = %t/%v", incident.Trusted, incident.Status)
 	}
 }
 
@@ -231,16 +231,16 @@ func TestExhaustedIncidentDoesNotBlockNewCandidate(t *testing.T) {
 		rig.clock.advance(time.Second)
 	}
 	if err := rig.session.Handle(context.Background(), first); err != nil {
-		t.Fatalf("exhausted replay error = %v", err)
+		t.Fatalf("exhausted incident replay error: %v", err)
 	}
 	if incident := rig.incident(first, domain.CandidateToken, token); incident.Status != store.RescueExhausted || incident.Attempts != 3 {
-		t.Fatalf("first incident = status %v attempts %d", incident.Status, incident.Attempts)
+		t.Fatalf("first incident: status=%v, attempts=%d", incident.Status, incident.Attempts)
 	}
 
 	second := rig.tokenCandidate(token, 2)
 	assertCode(t, rig.session.Handle(context.Background(), second), codeFeeRead)
 	if incident := rig.incident(second, domain.CandidateToken, token); incident.Status != store.RescueRetryable || incident.Attempts != 1 {
-		t.Fatalf("new incident = status %v attempts %d", incident.Status, incident.Attempts)
+		t.Fatalf("new incident: status=%v, attempts=%d", incident.Status, incident.Attempts)
 	}
 }
 
@@ -270,18 +270,18 @@ func TestPrestateFailuresAreDurableAndBounded(t *testing.T) {
 				incident := rig.incident(candidate, test.kind, candidate.Token.Address)
 				wantStatus := store.RescueRetryable
 				if incident.Attempts != uint32(attempt) || incident.Status != wantStatus || incident.LastCode != test.code || incident.SnapshotBlockHash == (common.Hash{}) {
-					t.Fatalf("attempt %d incident = attempts %d status %v code %s snapshot %s", attempt, incident.Attempts, incident.Status, incident.LastCode, incident.SnapshotBlockHash)
+					t.Fatalf("attempt %d: incident = attempts %d, status %v, code %s, snapshot %s", attempt, incident.Attempts, incident.Status, incident.LastCode, incident.SnapshotBlockHash)
 				}
 				rig.clock.advance(time.Second)
 			}
 			if err := rig.session.Handle(context.Background(), candidate); err != nil {
-				t.Fatalf("exhausted replay error = %v", err)
+				t.Fatalf("exhausted incident replay error: %v", err)
 			}
 			if incident := rig.incident(candidate, test.kind, candidate.Token.Address); incident.Status != store.RescueExhausted {
-				t.Fatalf("terminal status = %v, want RescueExhausted", incident.Status)
+				t.Fatalf("final status = %v, want RescueExhausted", incident.Status)
 			}
 			if rig.authorizer.count() != 0 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
-				t.Fatal("prestate failure reached signing or broadcast")
+				t.Fatal("prestate error reached signing or broadcast")
 			}
 		})
 	}
@@ -330,11 +330,11 @@ func TestDelayedFinalitySucceedsOnReplayWithoutResigning(t *testing.T) {
 	rig.chain.mu.Unlock()
 	rig.clock.advance(time.Second)
 	if err := rig.session.Handle(context.Background(), candidate); err != nil {
-		t.Fatalf("delayed finality replay error = %v", err)
+		t.Fatalf("delayed finality replay error: %v", err)
 	}
 	incident := rig.incident(candidate, domain.CandidateToken, token)
 	if incident.Status != store.RescueTokenReported || rig.authorizer.count() != 1 || rig.transactioner.count() != 1 || len(rig.broadcaster.snapshot()) != 1 {
-		t.Fatalf("delayed outcome/sign/broadcast = %v/%d/%d/%d", incident.Status, rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
+		t.Fatalf("delayed result/signing/broadcast = %v/%d/%d/%d", incident.Status, rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
 	}
 }
 
@@ -355,11 +355,11 @@ func TestReconcileDeadlineLeavesPayloadAmbiguous(t *testing.T) {
 	rig.state.mu.Unlock()
 	rig.clock.advance(incident.ReconcileUntil.Sub(rig.clock.Now()) + time.Second)
 	if err := rig.session.Handle(context.Background(), candidate); err != nil {
-		t.Fatalf("expired reconciliation error = %v, want nil Ack", err)
+		t.Fatalf("expired reconciliation error = %v, want nil from Ack", err)
 	}
 	incident = rig.incident(candidate, domain.CandidateToken, token)
 	if incident.Status != store.RescueAmbiguous || len(incident.SignedTransaction) == 0 || incident.ReconcileUntil.IsZero() {
-		t.Fatalf("expired durable state = %v payload %d deadline %s", incident.Status, len(incident.SignedTransaction), incident.ReconcileUntil)
+		t.Fatalf("expired persistent state = %v, payload %d, deadline %s", incident.Status, len(incident.SignedTransaction), incident.ReconcileUntil)
 	}
 	rig.chain.setToken(nextToken, rig.source, 4)
 	beforeSignatures := rig.transactioner.count()
@@ -369,7 +369,7 @@ func TestReconcileDeadlineLeavesPayloadAmbiguous(t *testing.T) {
 		t.Fatal("expired ambiguous nonce fence allowed a new signature")
 	}
 	if next := rig.incident(nextCandidate, domain.CandidateToken, nextToken); next.Status != store.RescuePending || next.Attempts != 0 {
-		t.Fatalf("blocked candidate state = %v attempts %d", next.Status, next.Attempts)
+		t.Fatalf("blocked candidate state = %v, attempts %d", next.Status, next.Attempts)
 	}
 }
 
@@ -408,7 +408,7 @@ func TestRunReconciliationResolvesLateReceiptAndClearsNonceFence(t *testing.T) {
 	secondCandidate := rig.tokenCandidate(secondToken, 2)
 	assertCode(t, rig.session.Handle(context.Background(), secondCandidate), codeRetryPending)
 	if rig.transactioner.count() != 1 {
-		t.Fatal("expired ambiguous operation did not retain the nonce fence")
+		t.Fatal("expired ambiguous operation did not preserve nonce fence")
 	}
 
 	rig.chain.accept(rig.broadcaster.snapshot()[0])
@@ -417,21 +417,21 @@ func TestRunReconciliationResolvesLateReceiptAndClearsNonceFence(t *testing.T) {
 		t.Fatalf("late receipt status = %v, want RescueTokenReported", status)
 	}
 	if got := len(rig.broadcaster.snapshot()); got != 1 {
-		t.Fatalf("late receipt reconciliation rebroadcast count = %d, want 1", got)
+		t.Fatalf("rebroadcast count while reconciling late receipt = %d, want 1", got)
 	}
 
 	rig.broadcaster.setError(nil)
 	if err := rig.session.Handle(context.Background(), secondCandidate); err != nil {
-		t.Fatalf("next candidate after late receipt error = %v", err)
+		t.Fatalf("next candidate error after late receipt: %v", err)
 	}
 	transactions := rig.broadcaster.snapshot()
 	if len(transactions) != 2 || transactions[1].Nonce() != firstIncident.SponsorNonce+1 {
-		t.Fatalf("next transactions/nonces = %v, want next nonce %d", transactionNonces(transactions), firstIncident.SponsorNonce+1)
+		t.Fatalf("subsequent transactions/nonces = %v, want next nonce %d", transactionNonces(transactions), firstIncident.SponsorNonce+1)
 	}
 
 	cancel()
 	if err := <-runDone; !errors.Is(err, context.Canceled) {
-		t.Fatalf("RunReconciliation() cancellation error = %v", err)
+		t.Fatalf("RunReconciliation() cancellation error: %v", err)
 	}
 }
 
@@ -445,7 +445,7 @@ func TestRunReconciliationFailsOnFenceLossAndCorruptPayload(t *testing.T) {
 		go func() { done <- rig.session.RunReconciliation(context.Background()) }()
 		ticker.ticks <- rig.clock.Now()
 		if err := <-done; !IsLeaseLost(err) || !errors.Is(err, store.ErrFenceLost) {
-			t.Fatalf("RunReconciliation() fence error = %v", err)
+			t.Fatalf("RunReconciliation() fence error: %v", err)
 		}
 	})
 
@@ -467,10 +467,10 @@ func TestRunReconciliationFailsOnFenceLossAndCorruptPayload(t *testing.T) {
 		go func() { done <- rig.session.RunReconciliation(context.Background()) }()
 		ticker.ticks <- rig.clock.Now()
 		if err := <-done; errorCode(err) != codeSignedPayloadInvalid {
-			t.Fatalf("RunReconciliation() corrupt payload error = %v", err)
+			t.Fatalf("RunReconciliation() corrupt payload error: %v", err)
 		}
 		if got := len(rig.broadcaster.snapshot()); got != 1 {
-			t.Fatalf("corrupt payload reconciliation broadcast count = %d, want 1", got)
+			t.Fatalf("broadcast count while reconciling corrupt payload = %d, want 1", got)
 		}
 	})
 }
@@ -486,7 +486,7 @@ func TestReconciliationIntervalIsSparseAndBounded(t *testing.T) {
 	}
 	for _, test := range tests {
 		if got := reconciliationInterval(test.retry); got != test.want {
-			t.Fatalf("reconciliationInterval(%s) = %s, want %s", test.retry, got, test.want)
+			t.Fatalf("reconciliationInterval(%s) returned %s, want %s", test.retry, got, test.want)
 		}
 	}
 }
@@ -507,7 +507,7 @@ func TestSignerCryptographicIdentityIsEnforced(t *testing.T) {
 			test.change(rig)
 			assertCode(t, rig.session.Handle(context.Background(), rig.tokenCandidate(token, 1)), codeSignerMismatch)
 			if len(rig.broadcaster.snapshot()) != 0 {
-				t.Fatal("wrong signer identity reached broadcast")
+				t.Fatal("incorrect signer identity reached broadcast")
 			}
 		})
 	}
@@ -531,7 +531,7 @@ func TestMaxNoncesFailBeforeSigning(t *testing.T) {
 			assertCode(t, rig.session.Handle(context.Background(), candidate), codeNonceRead)
 			incident := rig.incident(candidate, domain.CandidateToken, token)
 			if incident.Status != store.RescueRetryable || rig.authorizer.count() != 0 || rig.transactioner.count() != 0 {
-				t.Fatalf("max nonce status/signatures = %v/%d/%d", incident.Status, rig.authorizer.count(), rig.transactioner.count())
+				t.Fatalf("status/signatures for maximum nonce = %v/%d/%d", incident.Status, rig.authorizer.count(), rig.transactioner.count())
 			}
 		})
 	}
@@ -584,7 +584,7 @@ func TestFinalizedRevertIsNonRetryableAndClearsPayload(t *testing.T) {
 	}
 	incident := rig.incident(candidate, domain.CandidateToken, token)
 	if incident.Status != store.RescueFailed || len(incident.SignedTransaction) != 0 || !incident.ReconcileUntil.IsZero() {
-		t.Fatalf("revert durable state = %v payload %d deadline %s", incident.Status, len(incident.SignedTransaction), incident.ReconcileUntil)
+		t.Fatalf("persistent revert state = %v, payload %d, deadline %s", incident.Status, len(incident.SignedTransaction), incident.ReconcileUntil)
 	}
 }
 
@@ -597,16 +597,16 @@ func TestTerminalPruneFailureNacksOnceWithoutResigning(t *testing.T) {
 	candidate := rig.tokenCandidate(token, 1)
 	assertCode(t, rig.session.Handle(context.Background(), candidate), codeStateWrite)
 	if status := rig.incident(candidate, domain.CandidateToken, token).Status; status != store.RescueTokenReported {
-		t.Fatalf("persisted terminal status = %v", status)
+		t.Fatalf("stored terminal status = %v", status)
 	}
 	state.mu.Lock()
 	state.pruneError = nil
 	state.mu.Unlock()
 	if err := rig.session.Handle(context.Background(), candidate); err != nil {
-		t.Fatalf("terminal replay prune error = %v", err)
+		t.Fatalf("terminal state replay cleanup error: %v", err)
 	}
 	if rig.authorizer.count() != 1 || rig.transactioner.count() != 1 {
-		t.Fatal("terminal prune replay resigned transaction")
+		t.Fatal("terminal state cleanup replay signed the transaction again")
 	}
 }
 
@@ -633,21 +633,21 @@ func TestRestartRebroadcastsExactSignedTransactionWithoutSigning(t *testing.T) {
 	restarted := newTestRig(t, rigOptions{tokens: []common.Address{token}, state: state, clock: serviceClock, receiptError: errors.New("still not finalized")})
 	transactions := restarted.broadcaster.snapshot()
 	if len(transactions) != 1 {
-		t.Fatalf("restart broadcast count = %d, want 1", len(transactions))
+		t.Fatalf("broadcast count after restart = %d, want 1", len(transactions))
 	}
 	gotPayload, err := transactions[0].MarshalBinary()
 	if err != nil {
-		t.Fatalf("MarshalBinary() error = %v", err)
+		t.Fatalf("MarshalBinary() returned an error: %v", err)
 	}
 	if !bytes.Equal(gotPayload, wantPayload) || transactions[0].Hash() != wantHash {
-		t.Fatalf("restart payload/hash changed: hash %s want %s", transactions[0].Hash(), wantHash)
+		t.Fatalf("payload/hash changed after restart: hash %s, want %s", transactions[0].Hash(), wantHash)
 	}
 	if restarted.authorizer.count() != 0 || restarted.transactioner.count() != 0 {
-		t.Fatal("restart rebroadcast called a signer")
+		t.Fatal("rebroadcast after restart invoked signer")
 	}
 	floor, _ := state.NonceFloor(context.Background())
 	if floor != incident.SponsorNonce+1 {
-		t.Fatalf("recovery nonce floor = %d, want %d", floor, incident.SponsorNonce+1)
+		t.Fatalf("nonce floor during recovery = %d, want %d", floor, incident.SponsorNonce+1)
 	}
 }
 
@@ -658,11 +658,11 @@ func TestPersistedNonceFloorSurvivesRestart(t *testing.T) {
 	rig := newTestRig(t, rigOptions{tokens: []common.Address{newToken}, state: state})
 	rig.chain.setToken(newToken, rig.source, 6)
 	if err := rig.session.Handle(context.Background(), rig.tokenCandidate(newToken, 2)); err != nil {
-		t.Fatalf("Handle() error = %v", err)
+		t.Fatalf("Handle() returned an error: %v", err)
 	}
 	transactions := rig.broadcaster.snapshot()
 	if len(transactions) != 1 || transactions[0].Nonce() != 13 {
-		t.Fatalf("restart sponsor nonce = %v, want 13", transactionNonces(transactions))
+		t.Fatalf("sponsor nonce after restart = %v, want 13", transactionNonces(transactions))
 	}
 }
 
@@ -676,14 +676,14 @@ func TestCoordinatorRequiresAndValidatesProcessFence(t *testing.T) {
 		}, rig.clock)
 	}
 	if coordinator, err := NewCoordinator(config(nil), rig.authorizer, rig.transactioner, rig.clock, observability.Discard{}); coordinator != nil || errorCode(err) != codeInvalidConfig {
-		t.Fatalf("NewCoordinator() without process fence = (%v, %v)", coordinator, err)
+		t.Fatalf("NewCoordinator() without process fence returned (%v, %v)", coordinator, err)
 	}
 
 	lostFence := newFakeProcessFence()
 	lostFence.lose()
 	coordinator, err := NewCoordinator(config(lostFence), rig.authorizer, rig.transactioner, rig.clock, observability.Discard{})
 	if coordinator != nil || !errors.Is(err, store.ErrFenceLost) || !IsLeaseLost(err) || lostFence.validationCount() != 1 {
-		t.Fatalf("NewCoordinator() with lost process fence = (%v, %v), validations=%d", coordinator, err, lostFence.validationCount())
+		t.Fatalf("NewCoordinator() with lost process fence returned (%v, %v), validations=%d", coordinator, err, lostFence.validationCount())
 	}
 }
 
@@ -691,12 +691,12 @@ func TestProcessFencePrecedesLeaseInSessionAndSigningGuards(t *testing.T) {
 	fence := newFakeProcessFence()
 	rig := newTestRig(t, rigOptions{fence: fence})
 	if fence.validationCount() < 2 {
-		t.Fatalf("constructor/session process fence validations = %d", fence.validationCount())
+		t.Fatalf("process fence validations in constructor/session = %d", fence.validationCount())
 	}
 	fence.lose()
 	leaseValidations := rig.lease.validationCount()
 	if err := rig.coordinator.guardSigning(context.Background()); !errors.Is(err, store.ErrFenceLost) || !IsLeaseLost(err) {
-		t.Fatalf("guardSigning() after process fence loss = %v", err)
+		t.Fatalf("guardSigning() after process fence loss returned an error: %v", err)
 	}
 	if rig.lease.validationCount() != leaseValidations {
 		t.Fatal("guardSigning() validated persistent lease after process fence loss")
@@ -704,7 +704,7 @@ func TestProcessFencePrecedesLeaseInSessionAndSigningGuards(t *testing.T) {
 
 	_, err := rig.coordinator.NewSession(context.Background(), 2, rig.primary, rig.chain, rig.broadcaster)
 	if !errors.Is(err, store.ErrFenceLost) || rig.lease.validationCount() != leaseValidations {
-		t.Fatalf("NewSession() after process fence loss = %v, lease validations=%d", err, rig.lease.validationCount())
+		t.Fatalf("NewSession() after process fence loss returned error %v, lease validations=%d", err, rig.lease.validationCount())
 	}
 }
 
@@ -718,11 +718,11 @@ func TestProcessFenceLossClosesPostSignerAndSendWindows(t *testing.T) {
 		candidate := rig.tokenCandidate(token, 1)
 		err := rig.session.Handle(context.Background(), candidate)
 		if !errors.Is(err, store.ErrFenceLost) || !IsLeaseLost(err) {
-			t.Fatalf("Handle() after signer fence loss = %v", err)
+			t.Fatalf("Handle() after signer fence loss returned an error: %v", err)
 		}
 		incident := rig.incident(candidate, domain.CandidateToken, token)
 		if incident.Status != store.RescueRetryable || incident.TxHash != (common.Hash{}) || len(incident.SignedTransaction) != 0 || len(rig.broadcaster.snapshot()) != 0 {
-			t.Fatalf("post-signer fence loss state = %v hash %s payload %d broadcasts %d", incident.Status, incident.TxHash, len(incident.SignedTransaction), len(rig.broadcaster.snapshot()))
+			t.Fatalf("state after signer fence loss = %v, hash %s, payload %d, broadcasts %d", incident.Status, incident.TxHash, len(incident.SignedTransaction), len(rig.broadcaster.snapshot()))
 		}
 	})
 
@@ -737,11 +737,11 @@ func TestProcessFenceLossClosesPostSignerAndSendWindows(t *testing.T) {
 		candidate := rig.tokenCandidate(token, 1)
 		err := rig.session.Handle(context.Background(), candidate)
 		if !errors.Is(err, store.ErrFenceLost) || !IsLeaseLost(err) {
-			t.Fatalf("Handle() before send fence loss = %v", err)
+			t.Fatalf("Handle() before broadcast fence loss returned an error: %v", err)
 		}
 		incident := rig.incident(candidate, domain.CandidateToken, token)
 		if incident.Status != store.RescueSigned || incident.LastCode != "" || len(incident.SignedTransaction) == 0 || len(rig.broadcaster.snapshot()) != 0 {
-			t.Fatalf("pre-send fence loss state = %v code %s payload %d broadcasts %d", incident.Status, incident.LastCode, len(incident.SignedTransaction), len(rig.broadcaster.snapshot()))
+			t.Fatalf("state at fence loss before broadcast = %v, code %s, payload %d, broadcasts %d", incident.Status, incident.LastCode, len(incident.SignedTransaction), len(rig.broadcaster.snapshot()))
 		}
 	})
 }
@@ -789,12 +789,12 @@ func TestReplacedProcessFenceStopsExistingCoordinatorBeforeSend(t *testing.T) {
 	}
 	defer replacement.Release()
 	if err := fence.Validate(); !errors.Is(err, store.ErrFenceLost) {
-		t.Fatalf("old fence Validate() after replacement = %v", err)
+		t.Fatalf("Validate() on old fence after replacement returned an error: %v", err)
 	}
 	candidate := domain.NewTokenReconciliationCandidate(chainID, rig.source, domain.Token{Address: token}, 1, 1)
 	err = session.Handle(context.Background(), candidate)
 	if !errors.Is(err, store.ErrFenceLost) || !IsLeaseLost(err) || len(rig.broadcaster.snapshot()) != 0 {
-		t.Fatalf("Handle() with replaced process fence = %v, broadcasts=%d", err, len(rig.broadcaster.snapshot()))
+		t.Fatalf("Handle() with replaced process fence returned error %v, broadcasts=%d", err, len(rig.broadcaster.snapshot()))
 	}
 }
 
@@ -804,7 +804,7 @@ func TestLeaseContentionAndLossBlockSigning(t *testing.T) {
 		lease.valid = false
 		_, err := buildTestRig(t, rigOptions{lease: lease})
 		if !IsLeaseLost(err) {
-			t.Fatalf("NewSession() error = %v, want lease loss", err)
+			t.Fatalf("NewSession() returned error %v, want lease loss", err)
 		}
 	})
 
@@ -816,7 +816,7 @@ func TestLeaseContentionAndLossBlockSigning(t *testing.T) {
 		lease.lose()
 		err := rig.session.Handle(context.Background(), rig.tokenCandidate(token, 1))
 		if !IsLeaseLost(err) || rig.authorizer.count() != 0 || rig.transactioner.count() != 0 {
-			t.Fatalf("lease loss error/signatures = %v/%d/%d", err, rig.authorizer.count(), rig.transactioner.count())
+			t.Fatalf("error/signatures on lease loss = %v/%d/%d", err, rig.authorizer.count(), rig.transactioner.count())
 		}
 	})
 }
@@ -831,11 +831,11 @@ func TestLeaseLossClosesPostSignerAndSendWindows(t *testing.T) {
 		candidate := rig.tokenCandidate(token, 1)
 		err := rig.session.Handle(context.Background(), candidate)
 		if !IsLeaseLost(err) {
-			t.Fatalf("Handle() error = %v, want lease loss", err)
+			t.Fatalf("Handle() returned error %v, want lease loss", err)
 		}
 		incident := rig.incident(candidate, domain.CandidateToken, token)
 		if incident.Status != store.RescueRetryable || incident.TxHash != (common.Hash{}) || len(incident.SignedTransaction) != 0 || len(rig.broadcaster.snapshot()) != 0 {
-			t.Fatalf("post-signer loss state = %v hash %s payload %d broadcasts %d", incident.Status, incident.TxHash, len(incident.SignedTransaction), len(rig.broadcaster.snapshot()))
+			t.Fatalf("state after signer loss = %v, hash %s, payload %d, broadcasts %d", incident.Status, incident.TxHash, len(incident.SignedTransaction), len(rig.broadcaster.snapshot()))
 		}
 	})
 
@@ -850,11 +850,11 @@ func TestLeaseLossClosesPostSignerAndSendWindows(t *testing.T) {
 		candidate := rig.tokenCandidate(token, 1)
 		err := rig.session.Handle(context.Background(), candidate)
 		if !IsLeaseLost(err) {
-			t.Fatalf("Handle() error = %v, want lease loss", err)
+			t.Fatalf("Handle() returned error %v, want lease loss", err)
 		}
 		incident := rig.incident(candidate, domain.CandidateToken, token)
 		if incident.Status != store.RescueSigned || incident.LastCode != "" || len(incident.SignedTransaction) == 0 || len(rig.broadcaster.snapshot()) != 0 {
-			t.Fatalf("pre-send loss state = %v code %s payload %d broadcasts %d", incident.Status, incident.LastCode, len(incident.SignedTransaction), len(rig.broadcaster.snapshot()))
+			t.Fatalf("state on loss before broadcast = %v, code %s, payload %d, broadcasts %d", incident.Status, incident.LastCode, len(incident.SignedTransaction), len(rig.broadcaster.snapshot()))
 		}
 	})
 
@@ -871,11 +871,11 @@ func TestLeaseLossClosesPostSignerAndSendWindows(t *testing.T) {
 		state.mu.Unlock()
 		restarted := newTestRig(t, rigOptions{tokens: []common.Address{token}, state: state, clock: serviceClock, lease: lease, receiptError: errors.New("not finalized")})
 		if len(restarted.broadcaster.snapshot()) != 0 || restarted.authorizer.count() != 0 || restarted.transactioner.count() != 0 {
-			t.Fatalf("lease-lost recovery broadcast/signatures = %d/%d/%d", len(restarted.broadcaster.snapshot()), restarted.authorizer.count(), restarted.transactioner.count())
+			t.Fatalf("broadcasts/signatures during recovery after lease loss = %d/%d/%d", len(restarted.broadcaster.snapshot()), restarted.authorizer.count(), restarted.transactioner.count())
 		}
 		incident := restarted.incident(first.tokenCandidate(token, 1), domain.CandidateToken, token)
 		if incident.Status != store.RescueAmbiguous || incident.LastCode != CodeLeaseLost {
-			t.Fatalf("rebroadcast lease state = %v code %s", incident.Status, incident.LastCode)
+			t.Fatalf("lease state on rebroadcast = %v, code %s", incident.Status, incident.LastCode)
 		}
 	})
 }
@@ -891,10 +891,10 @@ func TestNonceFenceDistinguishesSendErrorFromAcceptedTimeout(t *testing.T) {
 		second := rig.tokenCandidate(secondToken, 2)
 		assertCode(t, rig.session.Handle(context.Background(), second), codeRetryPending)
 		if rig.transactioner.count() != before {
-			t.Fatal("send-error nonce fence allowed next signature")
+			t.Fatal("nonce fence after send error allowed the next signature")
 		}
 		if incident := rig.incident(second, domain.CandidateToken, secondToken); incident.Status != store.RescuePending || incident.Attempts != 0 {
-			t.Fatalf("blocked second incident = %v attempts %d", incident.Status, incident.Attempts)
+			t.Fatalf("blocked second incident = %v, attempts %d", incident.Status, incident.Attempts)
 		}
 	})
 
@@ -905,7 +905,7 @@ func TestNonceFenceDistinguishesSendErrorFromAcceptedTimeout(t *testing.T) {
 		assertAmbiguous(t, rig.session.Handle(context.Background(), rig.tokenCandidate(firstToken, 1)))
 		assertAmbiguous(t, rig.session.Handle(context.Background(), rig.tokenCandidate(secondToken, 2)))
 		if rig.transactioner.count() != 2 {
-			t.Fatalf("accepted timeout signature count = %d, want 2", rig.transactioner.count())
+			t.Fatalf("signature count after accepted timeout = %d, want 2", rig.transactioner.count())
 		}
 	})
 }
@@ -921,7 +921,7 @@ func TestRestartReceiptClearsExpiredNonceFence(t *testing.T) {
 	incident := first.incident(firstCandidate, domain.CandidateToken, firstToken)
 	serviceClock.advance(incident.ReconcileUntil.Sub(serviceClock.Now()) + time.Second)
 	if err := first.session.Handle(context.Background(), firstCandidate); err != nil {
-		t.Fatalf("expired Handle() error = %v", err)
+		t.Fatalf("Handle() for expired state returned an error: %v", err)
 	}
 	first.chain.mu.Lock()
 	first.chain.receiptError = nil
@@ -933,11 +933,11 @@ func TestRestartReceiptClearsExpiredNonceFence(t *testing.T) {
 	}
 	restarted.chain.setToken(secondToken, restarted.source, 4)
 	if err := restarted.session.Handle(context.Background(), restarted.tokenCandidate(secondToken, 2)); err != nil {
-		t.Fatalf("next candidate after receipt proof error = %v", err)
+		t.Fatalf("next candidate error after receipt confirmation: %v", err)
 	}
 	transactions := restarted.broadcaster.snapshot()
 	if len(transactions) != 1 || transactions[0].Nonce() != incident.SponsorNonce+1 {
-		t.Fatalf("next transactions/nonces = %v, want one nonce %d", transactionNonces(transactions), incident.SponsorNonce+1)
+		t.Fatalf("subsequent transactions/nonces = %v, want single nonce %d", transactionNonces(transactions), incident.SponsorNonce+1)
 	}
 }
 
@@ -951,7 +951,7 @@ func TestReleaseLeaseUsesLatestLeaseAndStopsSigning(t *testing.T) {
 	rig.coordinator.leaseMu.Unlock()
 
 	if err := rig.coordinator.ReleaseLease(context.Background()); err != nil {
-		t.Fatalf("ReleaseLease() error = %v", err)
+		t.Fatalf("ReleaseLease() returned an error: %v", err)
 	}
 	if released := leaseManager.releasedLease(); released != renewed {
 		t.Fatalf("released lease = %#v, want renewed %#v", released, renewed)
@@ -960,7 +960,7 @@ func TestReleaseLeaseUsesLatestLeaseAndStopsSigning(t *testing.T) {
 		t.Fatal("ReleaseLease() released daemon-owned process fence")
 	}
 	if err := rig.coordinator.guardSigning(context.Background()); !IsLeaseLost(err) {
-		t.Fatalf("guardSigning() error = %v, want permanent stop", err)
+		t.Fatalf("guardSigning() returned error %v, want permanent stop", err)
 	}
 }
 
@@ -981,10 +981,10 @@ func TestMaintainLeaseCancellationDoesNotMarkLeaseLost(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		if err := rig.coordinator.MaintainLease(ctx); !errors.Is(err, context.Canceled) {
-			t.Fatalf("MaintainLease() error = %v, want context cancellation", err)
+			t.Fatalf("MaintainLease() returned error %v, want context cancellation", err)
 		}
 		if err := rig.coordinator.guardSigning(context.Background()); err != nil {
-			t.Fatalf("cancellation marked lease lost: %v", err)
+			t.Fatalf("cancellation marked lease as lost: %v", err)
 		}
 	})
 
@@ -1002,10 +1002,10 @@ func TestMaintainLeaseCancellationDoesNotMarkLeaseLost(t *testing.T) {
 		go func() { result <- rig.coordinator.MaintainLease(ctx) }()
 		ticker.ticks <- time.Now()
 		if err := <-result; !errors.Is(err, context.Canceled) {
-			t.Fatalf("MaintainLease() error = %v, want renewal cancellation", err)
+			t.Fatalf("MaintainLease() returned error %v, want renewal cancellation", err)
 		}
 		if err := rig.coordinator.guardSigning(context.Background()); err != nil {
-			t.Fatalf("renewal cancellation marked lease lost: %v", err)
+			t.Fatalf("renewal cancellation marked lease as lost: %v", err)
 		}
 	})
 }
@@ -1041,16 +1041,16 @@ func TestPeriodicCreatesSeparateNativeAndTokenIncidents(t *testing.T) {
 	}
 	candidate := domain.NewPeriodicCandidate(rig.chainID, rig.source, 1, 1)
 	if err := rig.session.Handle(context.Background(), candidate); err != nil {
-		t.Fatalf("Handle() error = %v", err)
+		t.Fatalf("Handle() returned an error: %v", err)
 	}
 	incidents := rig.state.snapshot()
 	if len(incidents) != 3 {
-		t.Fatalf("periodic incident count = %d, want 3", len(incidents))
+		t.Fatalf("polling incident count = %d, want 3", len(incidents))
 	}
 	parent := domain.NewIncidentID(candidate.ID)
 	for _, incident := range incidents {
 		if incident.Parent != parent {
-			t.Fatalf("child parent = %s, want %s", incident.Parent, parent)
+			t.Fatalf("child incident parent = %s, want %s", incident.Parent, parent)
 		}
 	}
 }
@@ -1061,7 +1061,7 @@ func TestFeeRPCErrorFailsClosedBeforeSigning(t *testing.T) {
 	rig.chain.setToken(token, rig.source, 5)
 	assertCode(t, rig.session.Handle(context.Background(), rig.tokenCandidate(token, 1)), codeFeeRead)
 	if rig.authorizer.count() != 0 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
-		t.Fatal("fee RPC error used a fallback and reached signing")
+		t.Fatal("fee RPC error used fallback path and reached signing")
 	}
 }
 
@@ -1083,7 +1083,7 @@ func TestBudgetExhaustionStopsBeforeEverySignatureAndKeepsIncident(t *testing.T)
 	assertCode(t, rig.session.Handle(context.Background(), candidate), codeBudgetExceeded)
 	incident := rig.incident(candidate, domain.CandidateToken, token)
 	if incident.Status != store.RescuePrepared || incident.Attempts != 1 || rig.authorizer.count() != 0 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
-		t.Fatalf("budget block: status=%v attempts=%d signatures=%d/%d broadcasts=%d", incident.Status, incident.Attempts, rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
+		t.Fatalf("budget block: status=%v, attempts=%d, signatures=%d/%d, broadcasts=%d", incident.Status, incident.Attempts, rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
 	}
 }
 
@@ -1095,7 +1095,7 @@ func TestSponsorReserveAndEmergencyStopProduceNoPaidActions(t *testing.T) {
 		rig.chain.setNative(rig.sponsor, 1)
 		assertCode(t, rig.session.Handle(context.Background(), rig.tokenCandidate(token, 1)), codeSponsorReserve)
 		if rig.authorizer.count() != 0 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
-			t.Fatal("sponsor reserve block reached a paid action")
+			t.Fatal("sponsor reserve block reached paid action")
 		}
 	})
 	t.Run("emergency stop", func(t *testing.T) {
@@ -1105,10 +1105,10 @@ func TestSponsorReserveAndEmergencyStopProduceNoPaidActions(t *testing.T) {
 		candidate := rig.tokenCandidate(token, 1)
 		assertCode(t, rig.session.Handle(context.Background(), candidate), codePaidActionsStopped)
 		if _, found, _ := rig.state.RescueIncident(context.Background(), domain.NewAssetIncidentID(candidate.ID, domain.CandidateToken, token)); found {
-			t.Fatal("emergency stop создал attempt вместо сохранения candidate в очереди")
+			t.Fatal("emergency stop created an attempt instead of keeping candidate queued")
 		}
 		if rig.authorizer.count() != 0 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
-			t.Fatal("emergency stop reached a paid action")
+			t.Fatal("emergency stop reached paid action")
 		}
 	})
 }
@@ -1124,7 +1124,7 @@ func TestSimulationFailureReleasesReservationBeforeSponsorSignature(t *testing.T
 		t.Fatal(err)
 	}
 	if rig.authorizer.count() != 1 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 || !snapshot.Global.Reserved.Cumulative.IsZero() {
-		t.Fatalf("simulation failure: signatures=%d/%d broadcasts=%d reserved=%s", rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()), snapshot.Global.Reserved.Cumulative.String())
+		t.Fatalf("simulation error: signatures=%d/%d, broadcasts=%d, reserved=%s", rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()), snapshot.Global.Reserved.Cumulative.String())
 	}
 }
 
@@ -1134,7 +1134,7 @@ func TestQuorumSimulationFailureStopsBeforeSponsorSignature(t *testing.T) {
 	rig.chain.setToken(token, rig.source, 5)
 	assertCode(t, rig.session.Handle(context.Background(), rig.tokenCandidate(token, 1)), codeSimulation)
 	if rig.authorizer.count() != 1 || rig.transactioner.count() != 0 || len(rig.broadcaster.snapshot()) != 0 {
-		t.Fatalf("quorum simulation failure: signatures=%d/%d broadcasts=%d", rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
+		t.Fatalf("quorum simulation error: signatures=%d/%d, broadcasts=%d", rig.authorizer.count(), rig.transactioner.count(), len(rig.broadcaster.snapshot()))
 	}
 }
 
@@ -1161,7 +1161,7 @@ func TestTerminalReplayDoesNotClearRPCDegradationWithoutRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !health.Snapshot().Chains[rig.chainID].Conditions.RPCDegraded {
-		t.Fatal("terminal replay cleared RPC degradation without a successful read")
+		t.Fatal("terminal state replay cleared RPC degradation without a successful read")
 	}
 }
 
@@ -1183,7 +1183,7 @@ func TestPeriodicFailureLogIsBoundToFailingChildIncident(t *testing.T) {
 		}
 	}
 	if len(failures) != 1 || failures[0] != nativeID {
-		t.Fatalf("periodic failure incidents = %v, want [%s] and never %s", failures, nativeID, tokenID)
+		t.Fatalf("polling failure incidents = %v, want [%s] and never %s", failures, nativeID, tokenID)
 	}
 }
 
@@ -1209,10 +1209,10 @@ func TestEveryPeriodicChildFailureUpdatesRPCTelemetry(t *testing.T) {
 	candidate := domain.NewPeriodicCandidate(rig.chainID, rig.source, 1, 1)
 	assertCode(t, rig.session.Handle(context.Background(), candidate), codeMinimumValue)
 	if got := metrics.Snapshot().Chains[rig.chainID].RPCErrors; got != 1 {
-		t.Fatalf("RPC errors = %d, want token child error", got)
+		t.Fatalf("RPC errors = %d, want child token error", got)
 	}
 	if !health.Snapshot().Chains[rig.chainID].Conditions.RPCDegraded {
-		t.Fatal("later periodic token RPC error did not degrade health")
+		t.Fatal("subsequent token polling RPC error did not degrade health")
 	}
 }
 
@@ -1228,7 +1228,7 @@ func TestFinalizedReceiptCommitsActualBudgetAndClearsReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if snapshot.Global.Spent.Cumulative.IsZero() || !snapshot.Global.Reserved.Cumulative.IsZero() {
-		t.Fatalf("finalized budget: spent=%s reserved=%s", snapshot.Global.Spent.Cumulative.String(), snapshot.Global.Reserved.Cumulative.String())
+		t.Fatalf("finalized budget: spent=%s, reserved=%s", snapshot.Global.Spent.Cumulative.String(), snapshot.Global.Reserved.Cumulative.String())
 	}
 }
 
@@ -1263,12 +1263,12 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 		MaxPending: 16, MaxDiscoveredTokens: 16, Clock: serviceClock,
 	})
 	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
+		t.Fatalf("store.Open() returned an error: %v", err)
 	}
 	defer state.Close()
 	lease, err := state.Acquire(context.Background(), store.LeaseKey{Network: 901, Sponsor: sponsor}, "test-owner", time.Second)
 	if err != nil {
-		t.Fatalf("Acquire() error = %v", err)
+		t.Fatalf("Acquire() returned an error: %v", err)
 	}
 
 	chain := newFakeFinality(source, sponsor, destination, rescuer)
@@ -1285,21 +1285,21 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 	}, serviceClock)
 	coordinator, err := NewCoordinator(coordinatorConfig, authorizer, transactioner, serviceClock, observability.Discard{})
 	if err != nil {
-		t.Fatalf("NewCoordinator() error = %v", err)
+		t.Fatalf("NewCoordinator() returned an error: %v", err)
 	}
 	primary := &fakePrimary{chainID: big.NewInt(901), source: source, sponsor: sponsor, sponsorNonce: 5, sourceNonce: 9}
 	session, err := coordinator.NewSession(context.Background(), 1, primary, chain, broadcaster)
 	if err != nil {
-		t.Fatalf("NewSession() error = %v", err)
+		t.Fatalf("NewSession() returned an error: %v", err)
 	}
 	candidate := domain.NewTokenReconciliationCandidate(901, source, domain.Token{Address: token}, 1, 1)
 	if err := session.Handle(context.Background(), candidate); err != nil {
 		incident, _, _ := state.RescueIncident(context.Background(), domain.NewAssetIncidentID(candidate.ID, domain.CandidateToken, token))
-		t.Fatalf("Handle() error = %v after status %v attempts %d code %s", err, incident.Status, incident.Attempts, incident.LastCode)
+		t.Fatalf("Handle() returned error %v after status %v, attempts %d, code %s", err, incident.Status, incident.Attempts, incident.LastCode)
 	}
 	incident, found, err := state.RescueIncident(context.Background(), domain.NewAssetIncidentID(candidate.ID, domain.CandidateToken, token))
 	if err != nil || !found || incident.Status != store.RescueTokenReported {
-		t.Fatalf("durable incident = found %t status %v error %v", found, incident.Status, err)
+		t.Fatalf("persistent incident: found=%t, status=%v, error=%v", found, incident.Status, err)
 	}
 
 	chain.setToken(token, source, 7)
@@ -1308,7 +1308,7 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 	assertCode(t, session.Handle(context.Background(), retryCandidate), codeFeeRead)
 	retryIncident, found, err := state.RescueIncident(context.Background(), domain.NewAssetIncidentID(retryCandidate.ID, domain.CandidateToken, token))
 	if err != nil || !found || retryIncident.Status != store.RescueRetryable || retryIncident.Attempts != 1 {
-		t.Fatalf("durable retry = found %t status %v attempts %d error %v", found, retryIncident.Status, retryIncident.Attempts, err)
+		t.Fatalf("persistent retry: found=%t, status=%v, attempts=%d, error=%v", found, retryIncident.Status, retryIncident.Attempts, err)
 	}
 	serviceClock.advance(time.Millisecond)
 	chain.advanceBlock()
@@ -1317,12 +1317,12 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 	primary.sponsorNonce = 7
 	primary.sourceNonce = 10
 	if err := session.Handle(context.Background(), retryCandidate); err != nil {
-		t.Fatalf("retry Handle() error = %v", err)
+		t.Fatalf("duplicate Handle() returned an error: %v", err)
 	}
 	retryIncident, found, err = state.RescueIncident(context.Background(), domain.NewAssetIncidentID(retryCandidate.ID, domain.CandidateToken, token))
 	if err != nil || !found || retryIncident.Status != store.RescueTokenReported || retryIncident.Attempts != 2 ||
 		retryIncident.SponsorNonce != 7 || retryIncident.SourceNonce != 10 || retryIncident.SnapshotBlockHash != testHash(12) {
-		t.Fatalf("reprepared incident = found %t status %v attempts %d nonces %d/%d snapshot %s error %v", found, retryIncident.Status, retryIncident.Attempts, retryIncident.SponsorNonce, retryIncident.SourceNonce, retryIncident.SnapshotBlockHash, err)
+		t.Fatalf("reprepared incident: found=%t, status=%v, attempts=%d, nonce=%d/%d, snapshot=%s, error=%v", found, retryIncident.Status, retryIncident.Attempts, retryIncident.SponsorNonce, retryIncident.SourceNonce, retryIncident.SnapshotBlockHash, err)
 	}
 
 	chain.setToken(token, source, 7)
@@ -1331,7 +1331,7 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 	assertCode(t, session.Handle(context.Background(), nonceCandidate), codeNonceRead)
 	nonceIncident, found, err := state.RescueIncident(context.Background(), domain.NewAssetIncidentID(nonceCandidate.ID, domain.CandidateToken, token))
 	if err != nil || !found || nonceIncident.Status != store.RescueRetryable || nonceIncident.LastCode != codeNonceRead {
-		t.Fatalf("durable nonce error = found %t status %v code %s error %v", found, nonceIncident.Status, nonceIncident.LastCode, err)
+		t.Fatalf("persistent nonce error: found=%t, status=%v, code=%s, error=%v", found, nonceIncident.Status, nonceIncident.LastCode, err)
 	}
 
 	primary.sponsorNonceError = nil
@@ -1343,16 +1343,16 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 		handleErr := session.Handle(context.Background(), prestateCandidate)
 		if errorCode(handleErr) != codeFinalityRead {
 			stored, _, _ := state.RescueIncident(context.Background(), domain.NewAssetIncidentID(prestateCandidate.ID, domain.CandidateNative, common.Address{}))
-			t.Fatalf("prestate attempt %d error = %v after status %v attempts %d code %s retry %s", attempt+1, handleErr, stored.Status, stored.Attempts, stored.LastCode, stored.RetryAt)
+			t.Fatalf("prestate attempt %d: error=%v after status %v, attempts %d, code %s, retry %s", attempt+1, handleErr, stored.Status, stored.Attempts, stored.LastCode, stored.RetryAt)
 		}
 		serviceClock.advance(time.Millisecond)
 	}
 	if err := session.Handle(context.Background(), prestateCandidate); err != nil {
-		t.Fatalf("prestate exhausted replay error = %v", err)
+		t.Fatalf("exhausted prestate replay error: %v", err)
 	}
 	prestateIncident, found, err := state.RescueIncident(context.Background(), domain.NewAssetIncidentID(prestateCandidate.ID, domain.CandidateNative, common.Address{}))
 	if err != nil || !found || prestateIncident.Status != store.RescueExhausted || prestateIncident.Attempts != 3 {
-		t.Fatalf("durable prestate failure = found %t status %v attempts %d error %v", found, prestateIncident.Status, prestateIncident.Attempts, err)
+		t.Fatalf("persistent prestate failure: found=%t, status=%v, attempts=%d, error=%v", found, prestateIncident.Status, prestateIncident.Attempts, err)
 	}
 }
 
@@ -1420,7 +1420,7 @@ func newTestRig(t *testing.T, options rigOptions) *testRig {
 	t.Helper()
 	rig, err := buildTestRig(t, options)
 	if err != nil {
-		t.Fatalf("buildTestRig() error = %v", err)
+		t.Fatalf("buildTestRig() returned an error: %v", err)
 	}
 	return rig
 }
@@ -1519,7 +1519,7 @@ func withTestEconomicPolicy(t testing.TB, config Config, serviceClock clock.Cloc
 			Now:               serviceClock.Now,
 		})
 		if err != nil {
-			t.Fatalf("budget.Open() error = %v", err)
+			t.Fatalf("budget.Open() returned an error: %v", err)
 		}
 		t.Cleanup(func() {
 			if err := ledger.Close(); err != nil {
@@ -1532,7 +1532,7 @@ func withTestEconomicPolicy(t testing.TB, config Config, serviceClock clock.Cloc
 		MaxAttemptsPerSourceEvent: 1024, MaxNewUnknownTokens: 1024, Capacity: 1024,
 	}, serviceClock)
 	if err != nil {
-		t.Fatalf("NewAdmissionController() error = %v", err)
+		t.Fatalf("NewAdmissionController() returned an error: %v", err)
 	}
 	config.Budget = ledger
 	config.Gate = observability.NewPaidActionGate()
@@ -1829,7 +1829,7 @@ func (reader *fakePrimary) EstimateGas(_ context.Context, call ethereum.CallMsg)
 		return reader.estimate, nil
 	}
 	if call.Gas == 0 {
-		return 0, errors.New("gas limit не задан")
+		return 0, errors.New("gas limit is not set")
 	}
 	return call.Gas, nil
 }

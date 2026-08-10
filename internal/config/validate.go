@@ -12,7 +12,7 @@ import (
 func requiredValue(lookup func(string) (string, bool), name string) (string, error) {
 	value, ok := lookup(name)
 	if !ok || value == "" {
-		return "", fmt.Errorf("не задана обязательная переменная окружения %s", name)
+		return "", fmt.Errorf("required environment variable %s is not set", name)
 	}
 	return value, nil
 }
@@ -23,11 +23,11 @@ func loadAddress(lookup func(string) (string, bool), name string) (common.Addres
 		return common.Address{}, err
 	}
 	if !common.IsHexAddress(value) {
-		return common.Address{}, fmt.Errorf("переменная %s содержит некорректный EVM-адрес", name)
+		return common.Address{}, fmt.Errorf("environment variable %s contains an invalid EVM address", name)
 	}
 	address := common.HexToAddress(value)
 	if address == (common.Address{}) {
-		return common.Address{}, fmt.Errorf("переменная %s содержит нулевой EVM-адрес", name)
+		return common.Address{}, fmt.Errorf("environment variable %s contains the zero EVM address", name)
 	}
 	return address, nil
 }
@@ -35,11 +35,11 @@ func loadAddress(lookup func(string) (string, bool), name string) (common.Addres
 func validateDistinctRoles(source, sponsor, destination common.Address) error {
 	switch {
 	case source == sponsor:
-		return fmt.Errorf("переменные SOURCE_ADDRESS и SPONSOR_ADDRESS должны задавать разные адреса")
+		return fmt.Errorf("SOURCE_ADDRESS and SPONSOR_ADDRESS must specify distinct addresses")
 	case source == destination:
-		return fmt.Errorf("переменные SOURCE_ADDRESS и DESTINATION_ADDRESS должны задавать разные адреса")
+		return fmt.Errorf("SOURCE_ADDRESS and DESTINATION_ADDRESS must specify distinct addresses")
 	case sponsor == destination:
-		return fmt.Errorf("переменные SPONSOR_ADDRESS и DESTINATION_ADDRESS должны задавать разные адреса")
+		return fmt.Errorf("SPONSOR_ADDRESS and DESTINATION_ADDRESS must specify distinct addresses")
 	default:
 		return nil
 	}
@@ -56,7 +56,7 @@ func loadPrivateKey(lookup func(string) (string, bool), name string) (*ecdsa.Pri
 	}
 	key, err := crypto.HexToECDSA(material)
 	if err != nil {
-		return nil, fmt.Errorf("переменная %s содержит некорректный приватный ключ", name)
+		return nil, fmt.Errorf("environment variable %s contains an invalid private key", name)
 	}
 	return key, nil
 }
@@ -99,7 +99,7 @@ var removedEnvironmentFields = []string{
 func rejectUnsupportedFields(lookup func(string) (string, bool)) error {
 	for _, name := range removedEnvironmentFields {
 		if _, ok := lookup(name); ok {
-			return fmt.Errorf("переменная окружения %s больше не поддерживается", name)
+			return fmt.Errorf("environment variable %s is no longer supported", name)
 		}
 	}
 	return nil
@@ -114,7 +114,7 @@ func rejectUnsupportedNames(names []string) error {
 		if _, ok := supported[name]; ok || !reservedEnvironmentName(name) {
 			continue
 		}
-		return fmt.Errorf("переменная окружения %s не поддерживается", name)
+		return fmt.Errorf("environment variable %s is not supported", name)
 	}
 	return nil
 }

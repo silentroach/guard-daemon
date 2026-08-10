@@ -13,10 +13,10 @@ import (
 )
 
 var (
-	ErrInvalidSimulationRequest = errors.New("rescue simulation: некорректный запрос")
-	ErrEstimateGasFailed        = errors.New("rescue simulation: EstimateGas завершился ошибкой")
-	ErrInvalidGasEstimate       = errors.New("rescue simulation: нулевая или чрезмерная оценка gas")
-	ErrQuorumSimulationFailed   = errors.New("rescue simulation: quorum simulation завершилась ошибкой")
+	ErrInvalidSimulationRequest = errors.New("rescue simulation: invalid request")
+	ErrEstimateGasFailed        = errors.New("rescue simulation: EstimateGas failed")
+	ErrInvalidGasEstimate       = errors.New("rescue simulation: gas estimate is zero or excessive")
+	ErrQuorumSimulationFailed   = errors.New("rescue simulation: quorum simulation failed")
 )
 
 type GasEstimator interface {
@@ -37,8 +37,8 @@ type EIP7702SimulationRequest struct {
 	AuthorizationList []types.SetCodeAuthorization
 }
 
-// EstimateEIP7702Gas performs exactly one read-only estimate. Authorization
-// tuples must already be provided; this helper has no signer dependency.
+// EstimateEIP7702Gas выполняет ровно один вызов оценки без изменения состояния.
+// Кортежи авторизации передаются заранее, поэтому функция не зависит от подписанта.
 func EstimateEIP7702Gas(ctx context.Context, estimator GasEstimator, request EIP7702SimulationRequest) (uint64, error) {
 	if ctx == nil || estimator == nil || !validSimulationRequest(request) {
 		return 0, ErrInvalidSimulationRequest
@@ -53,8 +53,8 @@ func EstimateEIP7702Gas(ctx context.Context, estimator GasEstimator, request EIP
 	return estimate, nil
 }
 
-// SimulateEIP7702At executes the exact call through a hash-pinned quorum
-// reader. The primary estimate remains only a bounded gas-sizing check.
+// SimulateEIP7702At повторяет вызов с теми же параметрами через кворум чтения,
+// привязанный к хешу блока. Предварительная оценка проверяет только требуемый объём gas.
 func SimulateEIP7702At(ctx context.Context, simulator PinnedCallSimulator, block rpc.BlockRef, request EIP7702SimulationRequest) error {
 	if ctx == nil || simulator == nil || block.Hash == (common.Hash{}) || !validSimulationRequest(request) {
 		return ErrInvalidSimulationRequest

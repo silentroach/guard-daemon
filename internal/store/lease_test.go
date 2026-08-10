@@ -30,18 +30,18 @@ func TestBoltStoreLeaseContentionAndExpiryTakeover(t *testing.T) {
 		t.Fatal("new lease is already lost")
 	}
 	if _, err := store.Acquire(ctx, key, "coordinator-b", time.Minute); !errors.Is(err, ErrLeaseHeld) {
-		t.Fatalf("contending Acquire error = %v, want ErrLeaseHeld", err)
+		t.Fatalf("contending Acquire returned error %v, want ErrLeaseHeld", err)
 	} else if strings.Contains(err.Error(), "coordinator") || strings.Contains(err.Error(), key.Sponsor.Hex()) {
-		t.Fatalf("safe contention error leaked lease identity: %v", err)
+		t.Fatalf("safe contention error exposed lease identifier: %v", err)
 	}
 
 	clock.Advance(time.Minute)
 	second, err := store.Acquire(ctx, key, "coordinator-b", time.Minute)
 	if err != nil {
-		t.Fatalf("expired lease takeover: %v", err)
+		t.Fatalf("taking over expired lease: %v", err)
 	}
 	if second.Owner == first.Owner || second.ExpiresAt.Equal(first.ExpiresAt) {
-		t.Fatalf("takeover lease = %v, want a new owner and expiry", second)
+		t.Fatalf("taken-over lease = %v, want new owner and expiration", second)
 	}
 	if !leaseSignalClosed(firstLost) {
 		t.Fatal("takeover did not close the expired owner's loss signal")
@@ -63,11 +63,11 @@ func TestBoltStoreLeaseIsDurableAcrossReopen(t *testing.T) {
 	store = reopenTestStore(t, store, path, options)
 	defer store.Close()
 	if _, err := store.Acquire(ctx, key, "coordinator-b", time.Minute); !errors.Is(err, ErrLeaseHeld) {
-		t.Fatalf("Acquire after reopen error = %v, want durable ErrLeaseHeld", err)
+		t.Fatalf("Acquire after reopening returned error %v, want persistent ErrLeaseHeld", err)
 	}
 	clock.Advance(time.Minute)
 	if _, err := store.Acquire(ctx, key, "coordinator-b", time.Minute); err != nil {
-		t.Fatalf("expired durable lease takeover: %v", err)
+		t.Fatalf("taking over expired persistent lease: %v", err)
 	}
 }
 
@@ -85,33 +85,33 @@ func TestBoltStoreLeaseRenewAndValidateExactRecord(t *testing.T) {
 	}
 	oldLost := store.Lost(lease)
 	if err := store.Validate(ctx, lease); err != nil {
-		t.Fatalf("Validate current lease: %v", err)
+		t.Fatalf("Validate on current lease returned an error: %v", err)
 	}
 	clock.Advance(30 * time.Second)
 	renewed, err := store.Renew(ctx, lease, time.Minute)
 	if err != nil {
-		t.Fatalf("Renew: %v", err)
+		t.Fatalf("Renew returned an error: %v", err)
 	}
 	if !renewed.ExpiresAt.After(lease.ExpiresAt) {
-		t.Fatalf("renewed expiry %s did not advance beyond %s", renewed.ExpiresAt, lease.ExpiresAt)
+		t.Fatalf("renewed expiration %s did not advance beyond %s", renewed.ExpiresAt, lease.ExpiresAt)
 	}
 	if !leaseSignalClosed(oldLost) {
-		t.Fatal("renewal did not invalidate the old exact lease signal")
+		t.Fatal("renewal did not invalidate the previous exact lease signal")
 	}
 	if err := store.Validate(ctx, lease); !errors.Is(err, ErrLeaseLost) {
-		t.Fatalf("Validate stale lease error = %v, want ErrLeaseLost", err)
+		t.Fatalf("Validate on stale lease returned error %v, want ErrLeaseLost", err)
 	}
 	if err := store.Release(ctx, lease); !errors.Is(err, ErrLeaseLost) {
-		t.Fatalf("Release stale lease error = %v, want ErrLeaseLost", err)
+		t.Fatalf("Release on stale lease returned error %v, want ErrLeaseLost", err)
 	}
 	if err := store.Validate(ctx, renewed); err != nil {
-		t.Fatalf("Validate renewed lease: %v", err)
+		t.Fatalf("Validate on renewed lease returned an error: %v", err)
 	}
 
 	mismatch := renewed
 	mismatch.Owner = "coordinator-b"
 	if err := store.Validate(ctx, mismatch); !errors.Is(err, ErrLeaseLost) {
-		t.Fatalf("Validate owner mismatch error = %v, want ErrLeaseLost", err)
+		t.Fatalf("Validate with owner mismatch returned error %v, want ErrLeaseLost", err)
 	}
 }
 
@@ -155,10 +155,10 @@ func TestBoltStoreLeaseLostSignalsOnExpiryReleaseAndClose(t *testing.T) {
 	expiredLost := store.Lost(expiring)
 	clock.Advance(time.Minute)
 	if err := store.Validate(ctx, expiring); !errors.Is(err, ErrLeaseLost) {
-		t.Fatalf("Validate expired lease error = %v, want ErrLeaseLost", err)
+		t.Fatalf("Validate on expired lease returned error %v, want ErrLeaseLost", err)
 	}
 	if !leaseSignalClosed(expiredLost) {
-		t.Fatal("expiry detection did not close loss signal")
+		t.Fatal("expiration detection did not close loss signal")
 	}
 
 	released, err := store.Acquire(ctx, key, "coordinator-b", time.Minute)
@@ -167,7 +167,7 @@ func TestBoltStoreLeaseLostSignalsOnExpiryReleaseAndClose(t *testing.T) {
 	}
 	releasedLost := store.Lost(released)
 	if err := store.Release(ctx, released); err != nil {
-		t.Fatalf("Release: %v", err)
+		t.Fatalf("Release returned an error: %v", err)
 	}
 	if !leaseSignalClosed(releasedLost) {
 		t.Fatal("Release did not close loss signal")

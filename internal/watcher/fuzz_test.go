@@ -59,10 +59,10 @@ func FuzzMalformedLog(f *testing.F) {
 		expected := count == 3 && len(data) == common.HashLength && validEvent && validSource && address != (common.Address{}) &&
 			blockHash != (common.Hash{}) && txHash != (common.Hash{})
 		if accepted != expected {
-			t.Fatalf("log acceptance = %v, нужно %v", accepted, expected)
+			t.Fatalf("log acceptance result = %v, want %v", accepted, expected)
 		}
 		if accepted && domain.ValidateCandidate(candidate) != nil {
-			t.Fatal("accepted malformed candidate")
+			t.Fatal("corrupted candidate accepted")
 		}
 	})
 }
@@ -82,7 +82,7 @@ func FuzzMetadataReturnData(f *testing.F) {
 		}
 		_ = service.resolveToken(context.Background(), testAddress(2))
 		if len(service.metadata) > metadataCacheLimit {
-			t.Fatal("metadata cache превысил limit")
+			t.Fatal("metadata cache exceeded its limit")
 		}
 	})
 }

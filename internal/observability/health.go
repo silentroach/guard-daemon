@@ -7,10 +7,10 @@ import (
 	"guard-daemon/internal/domain"
 )
 
-var ErrInvalidHealthCondition = errors.New("health condition недопустимо")
+var ErrInvalidHealthCondition = errors.New("invalid health condition")
 
-// HealthState имеет детерминированный приоритет: stopped, ambiguous rescue,
-// blocked budget, degraded RPC, healthy idle.
+// HealthState выбирается по неизменному порядку приоритетов: остановка, неопределённый
+// результат восстановления, заблокированный бюджет, деградация RPC, штатное ожидание.
 type HealthState uint8
 
 const (
@@ -63,7 +63,8 @@ type HealthSnapshot struct {
 	Chains map[domain.NetworkID]ChainHealth
 }
 
-// EvaluateHealth зависит только от текущих conditions, а не от свежести логов.
+// EvaluateHealth определяет состояние только по текущим условиям, не учитывая время
+// последних записей журнала.
 func EvaluateHealth(conditions HealthConditions) HealthState {
 	switch {
 	case conditions.Stopped:
@@ -79,7 +80,7 @@ func EvaluateHealth(conditions HealthConditions) HealthState {
 	}
 }
 
-// Health хранит conditions только для заранее настроенных chain ID.
+// Health хранит состояние только для заранее настроенных chain ID.
 type Health struct {
 	mu      sync.RWMutex
 	stopped bool
@@ -120,7 +121,7 @@ func (health *Health) SetCondition(chainID domain.NetworkID, condition HealthCon
 	return nil
 }
 
-// Stop необратимо переводит общий health state в stopped.
+// Stop необратимо переводит общее состояние службы в остановленное.
 func (health *Health) Stop() {
 	health.mu.Lock()
 	health.stopped = true

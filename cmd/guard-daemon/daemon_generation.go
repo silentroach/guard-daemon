@@ -183,7 +183,7 @@ func (network *networkProcess) openSession(ctx context.Context, client generatio
 			return nil, err
 		}
 		if session == nil {
-			return nil, errors.New("session factory вернула пустой результат")
+			return nil, errors.New("session factory returned nil")
 		}
 		return network.bindTokenPolicy(session), nil
 	}

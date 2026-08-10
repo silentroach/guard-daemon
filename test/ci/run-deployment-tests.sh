@@ -13,7 +13,7 @@ status=$?
 set -e
 
 if ((status != 0)); then
-  printf 'Тесты развёртывания завершились с кодом %d; Node.js %s.\n' \
+  printf 'Deployment tests exited with code %d; Node.js %s.\n' \
     "${status}" "$(node --version)" >&2
 
   shopt -s nullglob
@@ -21,8 +21,8 @@ if ((status != 0)); then
   shopt -u nullglob
   if ((${#reports[@]} > 0)); then
     report=${reports[${#reports[@]} - 1]}
-    printf 'Безопасная сводка диагностического отчёта Node.js:\n' >&2
-    # JavaScript template literal не обрабатывается shell.
+    printf 'Safe Node.js diagnostic report summary:\n' >&2
+    # Оболочка не должна подставлять значения в шаблонную строку JavaScript.
     # shellcheck disable=SC2016
     REPORT_PATH="${report}" node --input-type=module --eval '
       import { readFileSync } from "node:fs";
@@ -37,9 +37,9 @@ if ((status != 0)); then
         trigger: header.trigger,
       };
       process.stderr.write(`${JSON.stringify(summary, null, 2)}\n`);
-    ' || printf 'Не удалось прочитать диагностический отчёт без раскрытия окружения.\n' >&2
+    ' || printf 'Failed to read the diagnostic report without exposing the environment.\n' >&2
   else
-    printf 'Node.js не создал диагностический отчёт.\n' >&2
+    printf 'Node.js did not create a diagnostic report.\n' >&2
   fi
 fi
 

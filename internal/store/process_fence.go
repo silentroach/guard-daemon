@@ -12,23 +12,24 @@ import (
 )
 
 var (
-	ErrFenceHeld        = errors.New("хранилище: process fence уже удерживается")
-	ErrFenceLost        = errors.New("хранилище: process fence потерян")
-	ErrFenceUnsupported = errors.New("хранилище: process fence не поддерживается")
-	errFenceUnavailable = errors.New("хранилище: process fence недоступен")
+	ErrFenceHeld        = errors.New("store: process fence already held")
+	ErrFenceLost        = errors.New("store: process fence lost")
+	ErrFenceUnsupported = errors.New("store: process fence is not supported")
+	errFenceUnavailable = errors.New("store: process fence unavailable")
 )
 
 const processFenceRoot = "/var/tmp/guard-daemon-leases-v1"
 
-// ProcessFence is a host-local guard for one chain+sponsor pair. Multi-host
-// exclusivity still requires one active host/operator deployment (Task10).
+// ProcessFence обеспечивает на одном хосте исключительное владение для заданных
+// сети и спонсора. Между хостами исключительность по-прежнему обеспечивается тем,
+// что активен только один хост или один экземпляр оператора.
 type ProcessFence interface {
 	Validate() error
 	Release() error
 }
 
-// AcquireProcessFence obtains a nonblocking kernel-owned advisory lock at a
-// fixed host-wide path independent of process user environment and store files.
+// AcquireProcessFence получает неблокирующую файловую блокировку ядра по фиксированному
+// пути, общему для хоста и не зависящему от окружения процесса и файлов хранилища.
 func AcquireProcessFence(key LeaseKey) (ProcessFence, error) {
 	if !processFenceSupported() {
 		return nil, ErrFenceUnsupported

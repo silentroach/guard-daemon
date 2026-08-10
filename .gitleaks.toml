@@ -1,11 +1,11 @@
-title = "Проверка секретов guard-daemon"
+title = "guard-daemon secret scanning"
 
 [extend]
 useDefault = true
 
 [[rules]]
 id = "evm-private-key"
-description = "Приватный ключ EVM в присваивании конфигурации"
+description = "EVM private key in a configuration assignment"
 regex = '''(?i)private[_-]?key\s*[=:]\s*["']?(?:0x)?([0-9a-f]{64})\b'''
 secretGroup = 1
 keywords = ["private", "key"]

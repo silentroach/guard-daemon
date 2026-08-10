@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Создание и проверка детерминированных метаданных релиза guard-daemon."""
+"""Create and verify deterministic guard-daemon release metadata."""
 
 from __future__ import annotations
 
@@ -52,14 +52,14 @@ BUILDER_SCRIPT_NAME = "scripts/build-release-candidate.sh"
 
 
 class MetadataError(ValueError):
-    """Входные или выходные метаданные релиза некорректны."""
+    """Release input or output metadata is invalid."""
 
 
 def validate_full_hash(value: Any, label: str) -> str:
     if not isinstance(value, str) or not FULL_HASH.fullmatch(value):
         raise MetadataError(
-            f"Значение «{label}» должно состоять ровно из 40 шестнадцатеричных "
-            "символов в нижнем регистре"
+            f"Value '{label}' must contain exactly 40 lowercase hexadecimal "
+            "characters"
         )
     return value
 
@@ -68,7 +68,7 @@ def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise MetadataError(f"Повторяющийся ключ JSON: {key}")
+            raise MetadataError(f"Duplicate JSON key: {key}")
         result[key] = value
     return result
 
@@ -77,14 +77,14 @@ def load_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise MetadataError(f"Не удалось прочитать JSON из файла {path.name}: {error}") from error
+        raise MetadataError(f"Failed to read JSON from {path.name}: {error}") from error
 
 
 def load_json_stream(path: Path) -> list[dict[str, Any]]:
     try:
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
-        raise MetadataError(f"Не удалось прочитать список модулей Go: {error}") from error
+        raise MetadataError(f"Failed to read the Go module list: {error}") from error
 
     decoder = json.JSONDecoder(object_pairs_hook=reject_duplicate_keys)
     documents: list[dict[str, Any]] = []
@@ -97,14 +97,14 @@ def load_json_stream(path: Path) -> list[dict[str, Any]]:
                 break
             document, offset = decoder.raw_decode(source, offset)
             if not isinstance(document, dict):
-                raise MetadataError("Каждая запись модуля Go должна быть объектом JSON")
+                raise MetadataError("Every Go module entry must be a JSON object")
             documents.append(document)
     except json.JSONDecodeError as error:
         raise MetadataError(
-            f"Некорректная последовательность объектов JSON со списком модулей Go: {error}"
+            f"Invalid JSON object stream in the Go module list: {error}"
         ) from error
     if not documents:
-        raise MetadataError("Список модулей Go пуст")
+        raise MetadataError("Go module list is empty")
     return documents
 
 
@@ -124,7 +124,7 @@ def write_bytes(path: Path, content: bytes) -> None:
     try:
         path.write_bytes(content)
     except OSError as error:
-        raise MetadataError(f"Не удалось записать файл {path.name}: {error}") from error
+        raise MetadataError(f"Failed to write {path.name}: {error}") from error
 
 
 def sha256_file(path: Path) -> str:
@@ -134,7 +134,7 @@ def sha256_file(path: Path) -> str:
             for block in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(block)
     except OSError as error:
-        raise MetadataError(f"Не удалось вычислить хеш файла {path.name}: {error}") from error
+        raise MetadataError(f"Failed to hash {path.name}: {error}") from error
     return digest.hexdigest()
 
 
@@ -144,31 +144,31 @@ def sha256_archive_member(path: Path, member_name: str) -> str:
             members = [member for member in archive.getmembers() if member.name == member_name]
             if len(members) != 1 or not members[0].isreg():
                 raise MetadataError(
-                    f"Source archive не содержит единственный обычный файл: {member_name}"
+                    f"Source archive does not contain exactly one regular file: {member_name}"
                 )
             source = archive.extractfile(members[0])
             if source is None:
-                raise MetadataError(f"Не удалось прочитать файл из source archive: {member_name}")
+                raise MetadataError(f"Failed to read a file from the source archive: {member_name}")
             digest = hashlib.sha256()
             for block in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(block)
             return digest.hexdigest()
     except (OSError, tarfile.TarError) as error:
-        raise MetadataError(f"Не удалось проверить source archive: {error}") from error
+        raise MetadataError(f"Failed to inspect the source archive: {error}") from error
 
 
 def require_regular_file(path: Path) -> None:
     if path.is_symlink() or not path.is_file():
-        raise MetadataError(f"Отсутствует обязательный обычный файл: {path.name}")
+        raise MetadataError(f"Required regular file is missing: {path.name}")
 
 
 def package_name(package_path: str) -> str:
     marker = "node_modules/"
     if not package_path.startswith(marker):
-        raise MetadataError(f"Некорректный путь в package-lock: {package_path}")
+        raise MetadataError(f"Invalid package-lock path: {package_path}")
     name = package_path.rsplit(marker, 1)[1]
     if not name or name.startswith("/") or "node_modules/" in name:
-        raise MetadataError(f"Некорректный путь в package-lock: {package_path}")
+        raise MetadataError(f"Invalid package-lock path: {package_path}")
     return name
 
 
@@ -190,7 +190,7 @@ def integrity_hash(integrity: Any) -> list[dict[str, str]]:
     try:
         content = base64.b64decode(encoded, validate=True).hex()
     except (binascii.Error, ValueError):
-        raise MetadataError("Некорректное значение integrity в package-lock") from None
+        raise MetadataError("Invalid integrity value in package-lock") from None
     return [{"alg": cyclonedx_algorithm, "content": content}]
 
 
@@ -216,12 +216,12 @@ def npm_components(
 ) -> tuple[dict[str, dict[str, Any]], dict[str, set[str]], set[str]]:
     if lock.get("lockfileVersion") != 3 or not isinstance(lock.get("packages"), dict):
         raise MetadataError(
-            "Файл package-lock.json должен использовать lockfileVersion 3 и содержать packages"
+            "package-lock.json must use lockfileVersion 3 and contain packages"
         )
     packages: dict[str, Any] = lock["packages"]
     root = packages.get("")
     if not isinstance(root, dict):
-        raise MetadataError("В package-lock.json отсутствует корневой пакет")
+        raise MetadataError("package-lock.json does not contain a root package")
 
     components: dict[str, dict[str, Any]] = {}
     package_refs: dict[str, str] = {}
@@ -230,18 +230,18 @@ def npm_components(
         if package_path == "":
             continue
         if ABSOLUTE_PATH.match(package_path) or package_path.startswith("../"):
-            raise MetadataError(f"package-lock содержит небезопасный путь: {package_path}")
+            raise MetadataError(f"package-lock contains an unsafe path: {package_path}")
         data = packages[package_path]
         if not isinstance(data, dict):
-            raise MetadataError(f"Запись package-lock не является объектом: {package_path}")
+            raise MetadataError(f"package-lock entry is not an object: {package_path}")
         if data.get("link") is True:
             raise MetadataError(
-                f"Записи с полем link в package-lock недопустимы для релиза: {package_path}"
+                f"package-lock entries with link are not allowed in a release: {package_path}"
             )
         name = package_name(package_path)
         version = data.get("version")
         if not isinstance(version, str) or not version:
-            raise MetadataError(f"В записи package-lock отсутствует version: {package_path}")
+            raise MetadataError(f"package-lock entry has no version: {package_path}")
         reference = package_url("npm", name, version)
         component: dict[str, Any] = {
             "bom-ref": reference,
@@ -272,12 +272,12 @@ def npm_components(
         peer_metadata = data.get("peerDependenciesMeta", {})
         if not isinstance(peer_metadata, dict):
             raise MetadataError(
-                f"Поле peerDependenciesMeta для {package_path} должно содержать объект"
+                f"peerDependenciesMeta for {package_path} must contain an object"
             )
         for field in ("dependencies", "optionalDependencies", "peerDependencies"):
             declared = data.get(field, {})
             if not isinstance(declared, dict):
-                raise MetadataError(f"Поле {field} для {package_path} должно содержать объект")
+                raise MetadataError(f"Field {field} for {package_path} must contain an object")
             for dependency_name in sorted(declared):
                 dependency_ref = resolve_npm_dependency(package_path, dependency_name, package_refs)
                 if dependency_ref is None:
@@ -290,7 +290,7 @@ def npm_components(
                     if field == "optionalDependencies" or optional_peer:
                         continue
                     raise MetadataError(
-                        "Не удалось разрешить зависимость package-lock: "
+                        "Failed to resolve package-lock dependency: "
                         f"{package_path} -> {dependency_name}"
                     )
                 dependencies[source_ref].add(dependency_ref)
@@ -299,14 +299,14 @@ def npm_components(
     for field in ("dependencies", "devDependencies", "optionalDependencies"):
         declared = root.get(field, {})
         if not isinstance(declared, dict):
-            raise MetadataError(f"Корневое поле {field} должно содержать объект")
+            raise MetadataError(f"Root field {field} must contain an object")
         for dependency_name in sorted(declared):
             dependency_ref = resolve_npm_dependency("", dependency_name, package_refs)
             if dependency_ref is None:
                 if field == "optionalDependencies":
                     continue
                 raise MetadataError(
-                    f"Не удалось разрешить зависимость корневого пакета package-lock: {dependency_name}"
+                    f"Failed to resolve root package-lock dependency: {dependency_name}"
                 )
             root_dependencies.add(dependency_ref)
     return components, dependencies, root_dependencies
@@ -322,17 +322,17 @@ def go_components(
     for module in modules:
         path = module.get("Path")
         if not isinstance(path, str) or not path:
-            raise MetadataError("В записи модуля Go отсутствует Path")
+            raise MetadataError("Go module entry has no Path")
         if ABSOLUTE_PATH.match(path):
-            raise MetadataError("Значение Path модуля Go не должно быть абсолютным")
+            raise MetadataError("Go module Path must not be absolute")
         if module.get("Main") is True:
             if main_module is not None:
-                raise MetadataError("Список модулей Go содержит более одного основного модуля")
+                raise MetadataError("Go module list contains more than one main module")
             main_module = path
             continue
         version = module.get("Version")
         if not isinstance(version, str) or not version:
-            raise MetadataError(f"Для модуля Go не указана версия: {path}")
+            raise MetadataError(f"Go module has no version: {path}")
         component_path = path
         component_version = version
         module_sum = module.get("Sum")
@@ -344,14 +344,14 @@ def go_components(
                 or not isinstance(replacement.get("Path"), str)
                 or not replacement["Path"]
             ):
-                raise MetadataError(f"Некорректная замена модуля Go: {path}")
+                raise MetadataError(f"Invalid Go module replacement: {path}")
             replacement_path = replacement["Path"]
             if ABSOLUTE_PATH.match(replacement_path):
-                raise MetadataError(f"Абсолютный путь замены модуля Go недопустим: {path}")
+                raise MetadataError(f"Absolute Go module replacement path is not allowed: {path}")
             replacement_version = replacement.get("Version")
             if not isinstance(replacement_version, str) or not replacement_version:
                 raise MetadataError(
-                    f"Replacement модуля Go должен иметь закреплённую версию: {path}"
+                    f"Go module replacement must have a pinned version: {path}"
                 )
             component_path = replacement_path
             component_version = replacement_version
@@ -364,7 +364,7 @@ def go_components(
             )
         reference = package_url("golang", component_path, component_version)
         if reference in components:
-            raise MetadataError(f"Повторяющийся фактический модуль Go: {reference}")
+            raise MetadataError(f"Duplicate effective Go module: {reference}")
         component: dict[str, Any] = {
             "bom-ref": reference,
             "name": component_path,
@@ -376,7 +376,7 @@ def go_components(
             try:
                 sum_content = base64.b64decode(module_sum[3:], validate=True).hex()
             except (binascii.Error, ValueError):
-                raise MetadataError(f"Некорректная контрольная сумма модуля Go: {path}") from None
+                raise MetadataError(f"Invalid Go module checksum: {path}") from None
             component["hashes"] = [{"alg": "SHA-256", "content": sum_content}]
         if properties:
             component["properties"] = sorted(
@@ -391,17 +391,17 @@ def go_components(
         for alias in aliases:
             existing_ref = module_refs.get(alias)
             if existing_ref is not None and existing_ref != reference:
-                raise MetadataError(f"Путь модуля Go неоднозначен после replacement: {alias}")
+                raise MetadataError(f"Go module path is ambiguous after replacement: {alias}")
             module_refs[alias] = reference
         for source_node in source_nodes:
             existing_ref = selected_source_refs.get(source_node)
             if existing_ref is not None and existing_ref != reference:
                 raise MetadataError(
-                    f"Узел модуля Go неоднозначен после replacement: {source_node}"
+                    f"Go module node is ambiguous after replacement: {source_node}"
                 )
             selected_source_refs[source_node] = reference
     if main_module is None:
-        raise MetadataError("В списке модулей Go отсутствует основной модуль")
+        raise MetadataError("Go module list has no main module")
     return components, module_refs, selected_source_refs, main_module
 
 
@@ -411,7 +411,7 @@ def go_module_path(value: str) -> str:
         return path
     if value and "@" not in value:
         return value
-    raise MetadataError(f"Некорректный узел go mod graph: {value}")
+    raise MetadataError(f"Invalid go mod graph node: {value}")
 
 
 def go_dependencies(
@@ -424,26 +424,26 @@ def go_dependencies(
     try:
         lines = graph_path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as error:
-        raise MetadataError(f"Не удалось прочитать go mod graph: {error}") from error
+        raise MetadataError(f"Failed to read go mod graph: {error}") from error
     if not lines:
-        raise MetadataError("go mod graph пуст")
+        raise MetadataError("go mod graph is empty")
 
     dependencies = {reference: set() for reference in module_refs.values()}
     dependencies[root_ref] = set()
     for line in lines:
         fields = line.split()
         if len(fields) != 2:
-            raise MetadataError(f"Некорректная строка go mod graph: {line}")
+            raise MetadataError(f"Invalid go mod graph line: {line}")
         source_path = go_module_path(fields[0])
         target_path = go_module_path(fields[1])
         if source_path in {"go", "toolchain"} or target_path in {"go", "toolchain"}:
             continue
         known_source_ref = root_ref if source_path == main_module else module_refs.get(source_path)
         if known_source_ref is None:
-            raise MetadataError(f"go mod graph ссылается на неизвестный модуль: {source_path}")
+            raise MetadataError(f"go mod graph references an unknown module: {source_path}")
         target_ref = module_refs.get(target_path)
         if target_ref is None:
-            raise MetadataError(f"go mod graph ссылается на неизвестный модуль: {target_path}")
+            raise MetadataError(f"go mod graph references an unknown module: {target_path}")
         source_ref = (
             root_ref
             if fields[0] == main_module
@@ -462,17 +462,17 @@ def build_sbom(
     go_graph: Path,
     release_commit: str,
 ) -> dict[str, Any]:
-    validate_full_hash(release_commit, "коммит релиза")
+    validate_full_hash(release_commit, "release commit")
     lock = load_json(package_lock)
     if not isinstance(lock, dict):
-        raise MetadataError("Корень package-lock.json должен быть объектом")
+        raise MetadataError("package-lock.json root must be an object")
     npm, npm_dependencies, npm_root_dependencies = npm_components(lock)
     go, go_module_refs, go_selected_source_refs, main_module = go_components(
         load_json_stream(go_modules)
     )
     duplicate_refs = set(npm).intersection(go)
     if duplicate_refs:
-        raise MetadataError(f"Повторяющаяся ссылка на компонент: {min(duplicate_refs)}")
+        raise MetadataError(f"Duplicate component reference: {min(duplicate_refs)}")
 
     root_ref = package_url("generic", "guard-daemon", release_commit)
     components = {**npm, **go}
@@ -534,8 +534,8 @@ def artifact_record(directory: Path, name: str) -> dict[str, str]:
 
 
 def build_candidate(directory: Path, release_commit: str, release_tree: str) -> dict[str, Any]:
-    validate_full_hash(release_commit, "коммит релиза")
-    validate_full_hash(release_tree, "дерево релиза")
+    validate_full_hash(release_commit, "release commit")
+    validate_full_hash(release_tree, "release tree")
     artifacts = {
         field: artifact_record(directory, path) for field, path in ARTIFACT_PATHS.items()
     }
@@ -558,8 +558,8 @@ def build_provenance(
     release_tree: str,
     builder_script_sha256: str,
 ) -> dict[str, Any]:
-    validate_full_hash(release_commit, "коммит релиза")
-    validate_full_hash(release_tree, "дерево релиза")
+    validate_full_hash(release_commit, "release commit")
+    validate_full_hash(release_tree, "release tree")
     for name in PROVENANCE_SUBJECTS:
         require_regular_file(directory / name)
     subjects = [
@@ -620,11 +620,11 @@ def directory_names(directory: Path) -> set[str]:
     try:
         entries = list(directory.iterdir())
     except OSError as error:
-        raise MetadataError(f"Не удалось проверить выходной каталог: {error}") from error
+        raise MetadataError(f"Failed to inspect the output directory: {error}") from error
     names: set[str] = set()
     for entry in entries:
         if entry.name in names:
-            raise MetadataError(f"Повторяющееся имя выходного файла: {entry.name}")
+            raise MetadataError(f"Duplicate output filename: {entry.name}")
         names.add(entry.name)
         require_regular_file(entry)
     return names
@@ -637,11 +637,11 @@ def require_names(directory: Path, expected: set[str] | frozenset[str]) -> None:
     if missing or unknown:
         details = []
         if missing:
-            details.append("отсутствуют файлы: " + ", ".join(missing))
+            details.append("missing files: " + ", ".join(missing))
         if unknown:
-            details.append("неизвестные файлы: " + ", ".join(unknown))
+            details.append("unknown files: " + ", ".join(unknown))
         raise MetadataError(
-            "Недопустимый состав выходных файлов релиза (" + "; ".join(details) + ")"
+            "Invalid release output file set (" + "; ".join(details) + ")"
         )
 
 
@@ -654,7 +654,7 @@ def checksum_content(directory: Path) -> bytes:
 def write_checksums(directory: Path, output: Path) -> None:
     if output.parent != directory or output.name != "SHA256SUMS":
         raise MetadataError(
-            "Файл контрольных сумм должен находиться по пути "
+            "Checksum file must be located at "
             "<release-directory>/SHA256SUMS"
         )
     actual = directory_names(directory)
@@ -664,11 +664,11 @@ def write_checksums(directory: Path, output: Path) -> None:
     if missing or unknown:
         details = []
         if missing:
-            details.append("отсутствуют файлы: " + ", ".join(missing))
+            details.append("missing files: " + ", ".join(missing))
         if unknown:
-            details.append("неизвестные файлы: " + ", ".join(unknown))
+            details.append("unknown files: " + ", ".join(unknown))
         raise MetadataError(
-            "Недопустимый состав выходных файлов релиза (" + "; ".join(details) + ")"
+            "Invalid release output file set (" + "; ".join(details) + ")"
         )
     write_bytes(output, checksum_content(directory))
 
@@ -677,13 +677,13 @@ def assert_no_nondeterministic_fields(value: Any, path: str = "$") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             if key.lower() in {"timestamp", "startedon", "finishedon", "serialnumber"}:
-                raise MetadataError(f"Недетерминированное поле запрещено: {path}.{key}")
+                raise MetadataError(f"Nondeterministic field is forbidden: {path}.{key}")
             assert_no_nondeterministic_fields(child, f"{path}.{key}")
     elif isinstance(value, list):
         for index, child in enumerate(value):
             assert_no_nondeterministic_fields(child, f"{path}[{index}]")
     elif isinstance(value, str) and ABSOLUTE_PATH.match(value):
-        raise MetadataError(f"Абсолютный путь запрещён в метаданных: {path}")
+        raise MetadataError(f"Absolute path is forbidden in metadata: {path}")
 
 
 def properties_are_sorted(value: Any) -> bool:
@@ -702,92 +702,92 @@ def properties_are_sorted(value: Any) -> bool:
 def verify_sbom(path: Path, expected_commit: str | None = None) -> None:
     document = load_json(path)
     if not isinstance(document, dict):
-        raise MetadataError("Корень SBOM должен быть объектом")
+        raise MetadataError("SBOM root must be an object")
     if document.get("$schema") != CYCLONEDX_SCHEMA:
-        raise MetadataError("SBOM должен использовать схему CycloneDX 1.6")
+        raise MetadataError("SBOM must use the CycloneDX 1.6 schema")
     if document.get("bomFormat") != "CycloneDX" or document.get("specVersion") != "1.6":
-        raise MetadataError("Формат SBOM должен соответствовать CycloneDX 1.6")
+        raise MetadataError("SBOM format must be CycloneDX 1.6")
     if document.get("version") != 1:
-        raise MetadataError("Версия SBOM должна быть равна 1")
+        raise MetadataError("SBOM version must be 1")
     components = document.get("components")
     dependencies = document.get("dependencies")
     metadata = document.get("metadata")
     if not isinstance(components, list) or not isinstance(dependencies, list):
-        raise MetadataError("Поля components и dependencies в SBOM должны быть массивами")
+        raise MetadataError("SBOM components and dependencies fields must be arrays")
     if not isinstance(metadata, dict) or not isinstance(metadata.get("component"), dict):
-        raise MetadataError("В SBOM требуется поле metadata.component")
+        raise MetadataError("SBOM requires metadata.component")
     component_refs: list[str] = []
     for component in components:
         if not isinstance(component, dict):
-            raise MetadataError("Каждый компонент SBOM должен быть объектом")
+            raise MetadataError("Every SBOM component must be an object")
         reference = component.get("bom-ref")
         if not isinstance(reference, str) or not isinstance(component.get("name"), str):
-            raise MetadataError("Каждому компоненту SBOM требуются bom-ref и name")
+            raise MetadataError("Every SBOM component requires bom-ref and name")
         if not isinstance(component.get("version"), str) or component.get("type") != "library":
             raise MetadataError(
-                "Каждому компоненту-зависимости SBOM требуются type и version"
+                "Every SBOM dependency component requires type and version"
             )
         if component.get("purl") != reference:
             raise MetadataError(
-                "Каждому компоненту-зависимости SBOM требуется соответствующий purl"
+                "Every SBOM dependency component requires a matching purl"
             )
         component_refs.append(reference)
         properties = component.get("properties", [])
         if not properties_are_sorted(properties):
-            raise MetadataError("Свойства компонента SBOM не отсортированы")
+            raise MetadataError("SBOM component properties are not sorted")
     if component_refs != sorted(component_refs) or len(component_refs) != len(set(component_refs)):
-        raise MetadataError("Компоненты SBOM не отсортированы или содержат повторы")
+        raise MetadataError("SBOM components are unsorted or contain duplicates")
 
     root_ref = metadata["component"].get("bom-ref")
     if not isinstance(root_ref, str):
-        raise MetadataError("Корневому компоненту SBOM требуется bom-ref")
+        raise MetadataError("SBOM root component requires bom-ref")
     root_component = metadata["component"]
     root_version = root_component.get("version")
     validate_full_hash(
-        root_version if isinstance(root_version, str) else "", "коммит релиза в SBOM"
+        root_version if isinstance(root_version, str) else "", "SBOM release commit"
     )
     if expected_commit is not None and root_version != expected_commit:
-        raise MetadataError("Коммит релиза в SBOM не соответствует кандидату на релиз")
+        raise MetadataError("SBOM release commit does not match the release candidate")
     if root_component.get("name") != "guard-daemon" or root_component.get("type") != "application":
-        raise MetadataError("Корневой компонент SBOM должен описывать guard-daemon")
+        raise MetadataError("SBOM root component must describe guard-daemon")
     if root_ref != package_url("generic", "guard-daemon", root_version):
-        raise MetadataError("Ссылка на корневой компонент SBOM некорректна")
+        raise MetadataError("SBOM root component reference is invalid")
     if root_component.get("purl") != root_ref:
-        raise MetadataError("Поле purl корневого компонента SBOM некорректно")
+        raise MetadataError("SBOM root component purl is invalid")
     root_properties = root_component.get("properties")
     if not properties_are_sorted(root_properties):
-        raise MetadataError("Свойства корневого компонента SBOM не отсортированы")
+        raise MetadataError("SBOM root component properties are not sorted")
     property_map = {item["name"]: item["value"] for item in root_properties}
     if len(root_properties) != 2 or set(property_map) != {
         "guard-daemon:go:module",
         "guard-daemon:releaseCommit",
     }:
-        raise MetadataError("Свойства корневого компонента SBOM некорректны")
+        raise MetadataError("SBOM root component properties are invalid")
     if property_map["guard-daemon:releaseCommit"] != root_version or not isinstance(
         property_map["guard-daemon:go:module"], str
     ):
-        raise MetadataError("Свойства корневого компонента SBOM не соответствуют его версии")
+        raise MetadataError("SBOM root component properties do not match its version")
     known_refs = set(component_refs) | {root_ref}
     dependency_refs: list[str] = []
     for dependency in dependencies:
         if not isinstance(dependency, dict) or set(dependency) != {"dependsOn", "ref"}:
-            raise MetadataError("Некорректная запись зависимости SBOM")
+            raise MetadataError("Invalid SBOM dependency entry")
         reference = dependency["ref"]
         depends_on = dependency["dependsOn"]
         if reference not in known_refs or not isinstance(depends_on, list):
-            raise MetadataError("Зависимость SBOM ссылается на неизвестный компонент")
+            raise MetadataError("SBOM dependency references an unknown component")
         if depends_on != sorted(set(depends_on)) or not set(depends_on).issubset(known_refs):
             raise MetadataError(
-                "Цели зависимости SBOM не отсортированы или содержат повторы"
+                "SBOM dependency targets are unsorted or contain duplicates"
             )
         dependency_refs.append(reference)
     if dependency_refs != sorted(dependency_refs) or len(dependency_refs) != len(
         set(dependency_refs)
     ):
-        raise MetadataError("Зависимости SBOM не отсортированы или содержат повторы")
+        raise MetadataError("SBOM dependencies are unsorted or contain duplicates")
     assert_no_nondeterministic_fields(document)
     if path.read_bytes() != canonical_pretty(document):
-        raise MetadataError("SBOM в формате JSON сериализован не в каноническом виде")
+        raise MetadataError("JSON SBOM is not serialized canonically")
 
 
 def verify_candidate(directory: Path) -> dict[str, Any]:
@@ -800,28 +800,28 @@ def verify_candidate(directory: Path) -> dict[str, Any]:
         "target",
         "artifacts",
     }:
-        raise MetadataError("Кандидат на релиз не соответствует версии 1 схемы")
+        raise MetadataError("Release candidate does not match schema version 1")
     if document["schemaVersion"] != "1" or document["target"] != TARGET:
-        raise MetadataError("Поля schemaVersion или target кандидата на релиз некорректны")
-    validate_full_hash(document.get("releaseCommit", ""), "коммит релиза")
-    validate_full_hash(document.get("releaseTree", ""), "дерево релиза")
+        raise MetadataError("Release candidate schemaVersion or target field is invalid")
+    validate_full_hash(document.get("releaseCommit", ""), "release commit")
+    validate_full_hash(document.get("releaseTree", ""), "release tree")
     artifacts = document.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != set(ARTIFACT_PATHS):
-        raise MetadataError("У кандидата на релиз некорректный объект artifacts")
+        raise MetadataError("Release candidate has an invalid artifacts object")
     for field, expected_path in ARTIFACT_PATHS.items():
         record = artifacts[field]
         if not isinstance(record, dict) or set(record) != {"path", "sha256"}:
-            raise MetadataError(f"Некорректный артефакт кандидата на релиз: {field}")
+            raise MetadataError(f"Invalid release candidate artifact: {field}")
         if record["path"] != expected_path or record["sha256"] != (
             f"sha256:{sha256_file(directory / expected_path)}"
         ):
             raise MetadataError(
-                f"Артефакт кандидата на релиз не соответствует выходному файлу: {field}"
+                f"Release candidate artifact does not match the output file: {field}"
             )
     assert_no_nondeterministic_fields(document)
     if path.read_bytes() != canonical_pretty(document):
         raise MetadataError(
-            "Кандидат на релиз в формате JSON сериализован не в каноническом виде"
+            "JSON release candidate is not serialized canonically"
         )
     return document
 
@@ -831,9 +831,9 @@ def verify_provenance(directory: Path, candidate: dict[str, Any]) -> None:
     try:
         content = path.read_bytes()
     except OSError as error:
-        raise MetadataError(f"Не удалось прочитать сведения о происхождении: {error}") from error
+        raise MetadataError(f"Failed to read provenance: {error}") from error
     if not content.endswith(b"\n") or content.count(b"\n") != 1:
-        raise MetadataError("Сведения о происхождении должны содержать ровно одну строку JSON")
+        raise MetadataError("Provenance must contain exactly one JSON line")
     document = load_json(path)
     if not isinstance(document, dict) or set(document) != {
         "_type",
@@ -841,10 +841,10 @@ def verify_provenance(directory: Path, candidate: dict[str, Any]) -> None:
         "predicateType",
         "subject",
     }:
-        raise MetadataError("Сведения о происхождении не являются документом in-toto Statement")
+        raise MetadataError("Provenance is not an in-toto Statement document")
     if document["_type"] != INTOTO_STATEMENT or document["predicateType"] != SLSA_PROVENANCE:
         raise MetadataError(
-            "Сведения о происхождении должны соответствовать in-toto Statement v1 и "
+            "Provenance must conform to in-toto Statement v1 and "
             "SLSA Provenance v1"
         )
     expected_subjects = [
@@ -853,22 +853,22 @@ def verify_provenance(directory: Path, candidate: dict[str, Any]) -> None:
     ]
     if document["subject"] != expected_subjects:
         raise MetadataError(
-            "Поле subject в сведениях о происхождении не соответствует выходным файлам релиза"
+            "Provenance subject field does not match the release output files"
         )
     predicate = document.get("predicate")
     if not isinstance(predicate, dict) or set(predicate) != {"buildDefinition", "runDetails"}:
-        raise MetadataError("Некорректное поле predicate в SLSA Provenance")
+        raise MetadataError("Invalid predicate field in SLSA Provenance")
     definition = predicate["buildDefinition"]
     run_details = predicate["runDetails"]
     if not isinstance(definition, dict) or not isinstance(run_details, dict):
-        raise MetadataError("Некорректная структура SLSA Provenance")
+        raise MetadataError("Invalid SLSA Provenance structure")
     if set(definition) != {
         "buildType",
         "externalParameters",
         "internalParameters",
         "resolvedDependencies",
     }:
-        raise MetadataError("Некорректная схема buildDefinition в SLSA Provenance")
+        raise MetadataError("Invalid buildDefinition schema in SLSA Provenance")
     external = definition.get("externalParameters")
     if external != {
         "releaseCommit": candidate["releaseCommit"],
@@ -876,11 +876,10 @@ def verify_provenance(directory: Path, candidate: dict[str, Any]) -> None:
         "target": TARGET,
     }:
         raise MetadataError(
-            "Поле externalParameters в сведениях о происхождении "
-            "не соответствуют кандидату на релиз"
+            "Provenance externalParameters field does not match the release candidate"
         )
     if definition.get("buildType") != BUILD_TYPE or definition.get("internalParameters") != {}:
-        raise MetadataError("Некорректное поле buildDefinition в сведениях о происхождении")
+        raise MetadataError("Invalid buildDefinition field in provenance")
     if definition.get("resolvedDependencies") != [
         {
             "digest": {
@@ -900,16 +899,15 @@ def verify_provenance(directory: Path, candidate: dict[str, Any]) -> None:
         }
     ]:
         raise MetadataError(
-            "Некорректное поле resolvedDependencies в сведениях о происхождении"
+            "Invalid resolvedDependencies field in provenance"
         )
     if run_details != {"builder": {"id": BUILDER_ID}, "metadata": {}}:
         raise MetadataError(
-            "Поле runDetails в сведениях о происхождении содержит "
-            "некорректные детерминированные данные"
+            "Provenance runDetails field contains invalid deterministic data"
         )
     assert_no_nondeterministic_fields(document)
     if content != canonical_compact(document):
-        raise MetadataError("Сведения о происхождении сериализованы не в каноническом виде")
+        raise MetadataError("Provenance is not serialized canonically")
 
 
 def verify_release(directory: Path) -> None:
@@ -918,11 +916,10 @@ def verify_release(directory: Path) -> None:
     try:
         actual_checksums = (directory / "SHA256SUMS").read_bytes()
     except OSError as error:
-        raise MetadataError(f"Не удалось прочитать SHA256SUMS: {error}") from error
+        raise MetadataError(f"Failed to read SHA256SUMS: {error}") from error
     if actual_checksums != expected_checksums:
         raise MetadataError(
-            "SHA256SUMS некорректен, не отсортирован или не соответствует "
-            "выходным файлам релиза"
+            "SHA256SUMS is invalid, unsorted, or does not match the release output files"
         )
     candidate = verify_candidate(directory)
     verify_sbom(directory / "guard-daemon.cdx.json", candidate["releaseCommit"])
@@ -933,21 +930,21 @@ def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
-    sbom = commands.add_parser("sbom", help="создать SBOM CycloneDX 1.6")
+    sbom = commands.add_parser("sbom", help="create a CycloneDX 1.6 SBOM")
     sbom.add_argument("--package-lock", type=Path, required=True)
     sbom.add_argument("--go-modules", type=Path, required=True)
     sbom.add_argument("--go-graph", type=Path, required=True)
     sbom.add_argument("--release-commit", required=True)
     sbom.add_argument("--output", type=Path, required=True)
 
-    candidate = commands.add_parser("candidate", help="создать метаданные кандидата на релиз")
+    candidate = commands.add_parser("candidate", help="create release candidate metadata")
     candidate.add_argument("--directory", type=Path, required=True)
     candidate.add_argument("--release-commit", required=True)
     candidate.add_argument("--release-tree", required=True)
     candidate.add_argument("--output", type=Path, required=True)
 
     provenance = commands.add_parser(
-        "provenance", help="создать неподписанный документ SLSA Provenance"
+        "provenance", help="create an unsigned SLSA Provenance document"
     )
     provenance.add_argument("--directory", type=Path, required=True)
     provenance.add_argument("--builder-script", type=Path, required=True)
@@ -956,13 +953,13 @@ def create_parser() -> argparse.ArgumentParser:
     provenance.add_argument("--output", type=Path, required=True)
 
     checksums = commands.add_parser(
-        "checksums", help="создать отсортированный файл SHA256SUMS"
+        "checksums", help="create a sorted SHA256SUMS file"
     )
     checksums.add_argument("--directory", type=Path, required=True)
     checksums.add_argument("--output", type=Path, required=True)
 
     verify = commands.add_parser(
-        "verify", help="проверить полный набор выходных файлов релиза"
+        "verify", help="verify the complete release output file set"
     )
     verify.add_argument("--directory", type=Path, required=True)
     return parser
@@ -999,9 +996,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "verify":
             verify_release(args.directory)
         else:
-            raise MetadataError(f"Неподдерживаемая команда: {args.command}")
+            raise MetadataError(f"Unsupported command: {args.command}")
     except MetadataError as error:
-        print(f"Ошибка метаданных релиза: {error}", file=sys.stderr)
+        print(f"Release metadata error: {error}", file=sys.stderr)
         return 1
     return 0
 

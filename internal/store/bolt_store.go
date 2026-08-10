@@ -60,18 +60,19 @@ var (
 	promotionTurnKey     = []byte("promotion-turn")
 	nonceFloorKey        = []byte("nonce-floor")
 
-	errInvalidOptions = errors.New("хранилище: некорректные параметры")
-	errOpenFailed     = errors.New("хранилище: не удалось открыть state")
-	errBinding        = errors.New("хранилище: сохранённая привязка не совпадает")
-	errCorrupt        = errors.New("хранилище: state повреждён")
-	errClosed         = errors.New("хранилище: state закрыт")
-	errInvalidInput   = errors.New("хранилище: некорректные входные данные")
-	errConflict       = errors.New("хранилище: конфликт перехода состояния")
-	errJournalFull    = errors.New("хранилище: достигнут предел durable journal")
+	errInvalidOptions = errors.New("store: invalid options")
+	errOpenFailed     = errors.New("store: failed to open database")
+	errBinding        = errors.New("store: stored binding does not match")
+	errCorrupt        = errors.New("store: state data is corrupt")
+	errClosed         = errors.New("store: database is closed")
+	errInvalidInput   = errors.New("store: invalid input")
+	errConflict       = errors.New("store: state transition conflict")
+	errJournalFull    = errors.New("store: persistent journal capacity reached")
 
-	// ErrObservationSaturated means an untrusted provisional hint was dropped.
-	// Canonical scanning remains authoritative and will recover the candidate.
-	ErrObservationSaturated = errors.New("хранилище: достигнут предел provisional observations")
+	// ErrObservationSaturated означает, что предварительное недоверенное наблюдение
+	// отброшено. Каноническое сканирование остаётся источником достоверных данных
+	// и восстановит кандидата.
+	ErrObservationSaturated = errors.New("store: preliminary observation limit reached")
 )
 
 type storeClock interface {
@@ -82,7 +83,8 @@ type wallClock struct{}
 
 func (wallClock) Now() time.Time { return time.Now() }
 
-// BoltStore persists watcher handoff state in one ACID bbolt database.
+// BoltStore хранит состояние наблюдателя и координатора в одной базе bbolt
+// с транзакционными гарантиями ACID.
 type BoltStore struct {
 	db                  *bolt.DB
 	network             domain.NetworkID
@@ -110,7 +112,8 @@ type BoltStore struct {
 
 var _ HandoffStore = (*BoltStore)(nil)
 
-// Open opens or initializes a fail-closed, configuration-bound handoff store.
+// Open открывает либо инициализирует привязанное к конфигурации хранилище,
+// сохраняющее согласованность при сбоях.
 func Open(path string, options OpenOptions) (*BoltStore, error) {
 	if path == "" || options.Network <= 0 || options.Source == (common.Address{}) || options.Sponsor == (common.Address{}) ||
 		options.Destination == (common.Address{}) || options.Rescuer == (common.Address{}) ||

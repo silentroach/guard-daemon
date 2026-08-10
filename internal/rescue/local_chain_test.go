@@ -36,7 +36,7 @@ const (
 	localChainArtifactPath = "../../artifacts/contracts/RescuerV2.json"
 	localChainID           = domain.NetworkID(1337)
 
-	// These keys exist only for this deterministic local-chain test.
+	// Эти ключи используются только в данном детерминированном тесте локальной сети.
 	localChainSourceKeyHex      = "1111111111111111111111111111111111111111111111111111111111111111"
 	localChainSponsorKeyHex     = "2222222222222222222222222222222222222222222222222222222222222222"
 	localChainDestinationKeyHex = "3333333333333333333333333333333333333333333333333333333333333333"
@@ -46,8 +46,8 @@ const (
 
 var errLocalChainUnexpectedSleep = errors.New("local-chain test unexpectedly entered receipt polling")
 
-// Test-only fallback runtime increments storage slot zero in the caller's
-// execution context: PUSH0 SLOAD PUSH1 1 ADD PUSH0 SSTORE STOP.
+// Тестовый байткод вредоносного контракта увеличивает нулевой слот хранилища
+// в контексте вызывающей стороны: PUSH0 SLOAD PUSH1 1 ADD PUSH0 SSTORE STOP.
 var localChainMaliciousRuntime = []byte{0x5f, 0x54, 0x60, 0x01, 0x01, 0x5f, 0x55, 0x00}
 
 func TestLocalChain_AtomicNative(t *testing.T) {
@@ -75,25 +75,25 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 
 	chainID, err := client.ChainID(ctx)
 	if err != nil {
-		t.Fatalf("ChainID() error = %v", err)
+		t.Fatalf("ChainID() returned an error: %v", err)
 	}
 	if chainID.Cmp(big.NewInt(int64(localChainID))) != 0 {
-		t.Fatalf("chain ID = %s, want %d", chainID, localChainID)
+		t.Fatalf("network ID = %s, want %d", chainID, localChainID)
 	}
 
 	contractABI, bytecode := localChainArtifact(t)
 	deploymentNonce, err := client.PendingNonceAt(ctx, sponsor)
 	if err != nil {
-		t.Fatalf("deployment PendingNonceAt() error = %v", err)
+		t.Fatalf("PendingNonceAt() during deployment returned an error: %v", err)
 	}
 	constructor, err := contractABI.Pack("", destination, sponsor)
 	if err != nil {
-		t.Fatalf("pack RescuerV2 constructor: %v", err)
+		t.Fatalf("packing RescuerV2 constructor: %v", err)
 	}
 	deploymentData := append(append([]byte(nil), bytecode...), constructor...)
 	deploymentTransaction := localChainDeploymentTransaction(t, ctx, client, sponsorKey, sponsor, chainID, deploymentNonce, deploymentData)
 	if err := client.SendTransaction(ctx, deploymentTransaction); err != nil {
-		t.Fatalf("send RescuerV2 deployment: %v", err)
+		t.Fatalf("sending RescuerV2 deployment: %v", err)
 	}
 	deploymentBlockHash := backend.Commit()
 	deploymentReceipt, err := client.TransactionReceipt(ctx, deploymentTransaction.Hash())
@@ -106,7 +106,7 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 	}
 	rescuerCode, err := client.CodeAt(ctx, rescuer, deploymentReceipt.BlockNumber)
 	if err != nil {
-		t.Fatalf("deployed RescuerV2 CodeAt() error = %v", err)
+		t.Fatalf("CodeAt() for deployed RescuerV2 returned an error: %v", err)
 	}
 	if len(rescuerCode) == 0 {
 		t.Fatal("deployed RescuerV2 has empty code")
@@ -114,10 +114,10 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 
 	coordinatorSponsorNonce, err := client.PendingNonceAt(ctx, sponsor)
 	if err != nil {
-		t.Fatalf("post-deployment PendingNonceAt() error = %v", err)
+		t.Fatalf("PendingNonceAt() after deployment returned an error: %v", err)
 	}
 	if coordinatorSponsorNonce != deploymentNonce+1 {
-		t.Fatalf("post-deployment sponsor nonce = %d, want %d", coordinatorSponsorNonce, deploymentNonce+1)
+		t.Fatalf("sponsor nonce after deployment = %d, want %d", coordinatorSponsorNonce, deploymentNonce+1)
 	}
 
 	testClock := localChainClock{now: time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC)}
@@ -133,7 +133,7 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 		Clock:               testClock,
 	})
 	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
+		t.Fatalf("store.Open() returned an error: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := state.Close(); err != nil {
@@ -142,7 +142,7 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 	})
 	lease, err := state.Acquire(ctx, store.LeaseKey{Network: localChainID, Sponsor: sponsor}, "local-chain-test", time.Hour)
 	if err != nil {
-		t.Fatalf("Acquire() error = %v", err)
+		t.Fatalf("Acquire() returned an error: %v", err)
 	}
 	leaseReleased := false
 	t.Cleanup(func() {
@@ -155,11 +155,11 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 
 	authorizer, err := NewPrivateKeyAuthorizationSigner(sourceKey)
 	if err != nil {
-		t.Fatalf("NewPrivateKeyAuthorizationSigner() error = %v", err)
+		t.Fatalf("NewPrivateKeyAuthorizationSigner() returned an error: %v", err)
 	}
 	transactioner, err := NewPrivateKeyTransactionSigner(sponsorKey)
 	if err != nil {
-		t.Fatalf("NewPrivateKeyTransactionSigner() error = %v", err)
+		t.Fatalf("NewPrivateKeyTransactionSigner() returned an error: %v", err)
 	}
 	coordinatorConfig := withTestEconomicPolicy(t, Config{
 		Network: domain.Network{
@@ -185,7 +185,7 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 	}, testClock)
 	coordinator, err := NewCoordinator(coordinatorConfig, authorizer, transactioner, testClock, observability.Discard{})
 	if err != nil {
-		t.Fatalf("NewCoordinator() error = %v", err)
+		t.Fatalf("NewCoordinator() returned an error: %v", err)
 	}
 
 	primary := &localChainPrimary{client: client}
@@ -193,29 +193,29 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 	broadcaster := &localChainBroadcaster{client: client, backend: backend}
 	session, err := coordinator.NewSession(ctx, 1, primary, finality, broadcaster)
 	if err != nil {
-		t.Fatalf("NewSession() error = %v", err)
+		t.Fatalf("NewSession() returned an error: %v", err)
 	}
 	prestate, err := finality.Finalized(ctx)
 	if err != nil {
-		t.Fatalf("prestate Finalized() error = %v", err)
+		t.Fatalf("Finalized() for prestate returned an error: %v", err)
 	}
 	sourceBefore, err := finality.BalanceAt(ctx, prestate, source)
 	if err != nil {
-		t.Fatalf("prestate source BalanceAt() error = %v", err)
+		t.Fatalf("BalanceAt() for source in prestate returned an error: %v", err)
 	}
 	destinationBefore, err := finality.BalanceAt(ctx, prestate, destination)
 	if err != nil {
-		t.Fatalf("prestate destination BalanceAt() error = %v", err)
+		t.Fatalf("BalanceAt() for destination in prestate returned an error: %v", err)
 	}
 	if sourceBefore.Cmp(initialSourceBalance) != 0 {
-		t.Fatalf("prestate source balance = %s, want %s", sourceBefore, initialSourceBalance)
+		t.Fatalf("source balance in prestate = %s, want %s", sourceBefore, initialSourceBalance)
 	}
 
 	candidate := domain.NewBlockCandidate(localChainID, domain.CandidateNative, source, prestate.Hash, prestate.Number)
 	if err := session.Handle(ctx, candidate); err != nil {
 		transaction := broadcaster.Transaction()
 		if transaction == nil {
-			t.Fatalf("Handle() error = %v before broadcast", err)
+			t.Fatalf("Handle() returned error %v before broadcast", err)
 		}
 		receipt, receiptErr := client.TransactionReceipt(ctx, transaction.Hash())
 		code, codeErr := client.CodeAt(ctx, source, nil)
@@ -223,21 +223,21 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 		if receipt != nil {
 			receiptSummary = fmt.Sprintf("status=%d gasUsed=%d block=%s", receipt.Status, receipt.GasUsed, receipt.BlockHash)
 		}
-		t.Fatalf("Handle() error = %v; transaction gas = %d; receipt = %s; receipt error = %v; source code = %x; code error = %v", err, transaction.Gas(), receiptSummary, receiptErr, code, codeErr)
+		t.Fatalf("Handle() returned error %v; transaction gas = %d; receipt = %s; receipt error = %v; source code = %x; code error = %v", err, transaction.Gas(), receiptSummary, receiptErr, code, codeErr)
 	}
 	transaction := broadcaster.Transaction()
 	if transaction == nil {
 		t.Fatal("coordinator did not broadcast a transaction")
 	}
 	if transaction.Type() != types.SetCodeTxType || transaction.To() == nil || *transaction.To() != source {
-		t.Fatalf("broadcast transaction type/to = %d/%v, want SetCodeTx/%s", transaction.Type(), transaction.To(), source)
+		t.Fatalf("broadcast transaction type/destination = %d/%v, want SetCodeTx/%s", transaction.Type(), transaction.To(), source)
 	}
 	if transaction.Nonce() != coordinatorSponsorNonce {
 		t.Fatalf("coordinator sponsor nonce = %d, want next nonce %d", transaction.Nonce(), coordinatorSponsorNonce)
 	}
 	wantSweepEth, err := contractABI.Pack("sweepEth")
 	if err != nil {
-		t.Fatalf("pack sweepEth: %v", err)
+		t.Fatalf("packing sweepEth: %v", err)
 	}
 	if len(transaction.Data()) == 0 || !bytes.Equal(transaction.Data(), wantSweepEth) {
 		t.Fatalf("SetCodeTx data = %x, want sweepEth data %x", transaction.Data(), wantSweepEth)
@@ -249,14 +249,14 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 	authorization := authorizations[0]
 	authority, err := authorization.Authority()
 	if err != nil {
-		t.Fatalf("authorization Authority() error = %v", err)
+		t.Fatalf("authorization Authority() returned an error: %v", err)
 	}
 	if authority != source || authorization.Address != rescuer || authorization.ChainID.ToBig().Cmp(chainID) != 0 || authorization.Nonce != 0 {
-		t.Fatalf("authorization authority/target/chain/nonce = %s/%s/%s/%d, want %s/%s/%s/0", authority, authorization.Address, authorization.ChainID.ToBig(), authorization.Nonce, source, rescuer, chainID)
+		t.Fatalf("authorization authority/target/network/nonce = %s/%s/%s/%d, want %s/%s/%s/0", authority, authorization.Address, authorization.ChainID.ToBig(), authorization.Nonce, source, rescuer, chainID)
 	}
 	transactionSender, err := types.Sender(types.LatestSignerForChainID(chainID), transaction)
 	if err != nil {
-		t.Fatalf("recover transaction sender: %v", err)
+		t.Fatalf("recovering transaction sender: %v", err)
 	}
 	if transactionSender != sponsor {
 		t.Fatalf("transaction sender = %s, want sponsor %s", transactionSender, sponsor)
@@ -271,14 +271,14 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 	}
 	poststate, err := finality.Finalized(ctx)
 	if err != nil {
-		t.Fatalf("poststate Finalized() error = %v", err)
+		t.Fatalf("Finalized() for poststate returned an error: %v", err)
 	}
 	if poststate.Number < receipt.BlockNumber.Uint64() {
 		t.Fatalf("finalized block %d precedes receipt block %d", poststate.Number, receipt.BlockNumber.Uint64())
 	}
 	delegationCode, err := finality.CodeAt(ctx, poststate, source)
 	if err != nil {
-		t.Fatalf("poststate source CodeAt() error = %v", err)
+		t.Fatalf("CodeAt() for source in poststate returned an error: %v", err)
 	}
 	delegationTarget, err := contracts.ParseDelegation(delegationCode)
 	if err != nil {
@@ -289,7 +289,7 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 	}
 	destinationAfter, err := finality.BalanceAt(ctx, poststate, destination)
 	if err != nil {
-		t.Fatalf("poststate destination BalanceAt() error = %v", err)
+		t.Fatalf("BalanceAt() for destination in poststate returned an error: %v", err)
 	}
 	destinationDelta := new(big.Int).Sub(destinationAfter, destinationBefore)
 	if destinationDelta.Cmp(initialSourceBalance) != 0 {
@@ -299,13 +299,13 @@ func TestLocalChain_AtomicNative(t *testing.T) {
 	incidentID := domain.NewAssetIncidentID(candidate.ID, domain.CandidateNative, common.Address{})
 	incident, found, err := state.RescueIncident(ctx, incidentID)
 	if err != nil {
-		t.Fatalf("RescueIncident() error = %v", err)
+		t.Fatalf("RescueIncident() returned an error: %v", err)
 	}
 	if !found || incident.Status != store.RescueTrustedSuccess || incident.TxHash != transaction.Hash() || incident.SponsorNonce != coordinatorSponsorNonce {
-		t.Fatalf("durable incident found/status/hash/nonce = %t/%v/%s/%d, want true/%v/%s/%d", found, incident.Status, incident.TxHash, incident.SponsorNonce, store.RescueTrustedSuccess, transaction.Hash(), coordinatorSponsorNonce)
+		t.Fatalf("persistent incident found/status/hash/nonce = %t/%v/%s/%d, want true/%v/%s/%d", found, incident.Status, incident.TxHash, incident.SponsorNonce, store.RescueTrustedSuccess, transaction.Hash(), coordinatorSponsorNonce)
 	}
 	if err := coordinator.ReleaseLease(ctx); err != nil {
-		t.Fatalf("ReleaseLease() error = %v", err)
+		t.Fatalf("ReleaseLease() returned an error: %v", err)
 	}
 	leaseReleased = true
 }
@@ -338,32 +338,32 @@ func TestLocalChain_NoProactiveRenewalWithMaliciousDelegation(t *testing.T) {
 	counterBefore := localChainCounter(t, ctx, client, source)
 	sourceNonceBefore, err := client.PendingNonceAt(ctx, source)
 	if err != nil {
-		t.Fatalf("pre-session source PendingNonceAt() error = %v", err)
+		t.Fatalf("PendingNonceAt() for source before session returned an error: %v", err)
 	}
 	if _, err := coordinator.NewSession(ctx, 1, primary, finality, broadcaster); err != nil {
-		t.Fatalf("NewSession() error = %v", err)
+		t.Fatalf("NewSession() returned an error: %v", err)
 	}
 	if calls := broadcaster.Calls(); calls != 0 {
-		t.Fatalf("NewSession() broadcast %d transactions, want zero", calls)
+		t.Fatalf("NewSession() broadcast %d transactions, want 0", calls)
 	}
 	counterAfter := localChainCounter(t, ctx, client, source)
 	if counterBefore.Cmp(big.NewInt(1)) != 0 || counterAfter.Cmp(counterBefore) != 0 {
-		t.Fatalf("source fallback counter before/after NewSession = %s/%s, want unchanged 1", counterBefore, counterAfter)
+		t.Fatalf("source fallback handler counter before/after NewSession = %s/%s, want unchanged value 1", counterBefore, counterAfter)
 	}
 	sourceNonceAfter, err := client.PendingNonceAt(ctx, source)
 	if err != nil {
-		t.Fatalf("post-session source PendingNonceAt() error = %v", err)
+		t.Fatalf("PendingNonceAt() for source after session returned an error: %v", err)
 	}
 	if sourceNonceAfter != sourceNonceBefore {
-		t.Fatalf("source nonce after NewSession = %d, want unchanged %d", sourceNonceAfter, sourceNonceBefore)
+		t.Fatalf("source nonce after NewSession = %d, want unchanged value %d", sourceNonceAfter, sourceNonceBefore)
 	}
 	code, err := client.CodeAt(ctx, source, nil)
 	if err != nil {
-		t.Fatalf("post-session source CodeAt() error = %v", err)
+		t.Fatalf("CodeAt() for source after session returned an error: %v", err)
 	}
 	target, parseErr := contracts.ParseDelegation(code)
 	if parseErr != nil || !bytes.Equal(code, maliciousDelegation) || target != maliciousDelegate {
-		t.Fatalf("post-session source delegation = %x target %s error %v, want malicious target %s", code, target, parseErr, maliciousDelegate)
+		t.Fatalf("source delegation after session = %x, target %s, error %v, want malicious target %s", code, target, parseErr, maliciousDelegate)
 	}
 }
 
@@ -399,22 +399,22 @@ func TestLocalChain_CompetingAuthorizationIsLostRace(t *testing.T) {
 	}
 	session, err := coordinator.NewSession(ctx, 1, primary, finality, broadcaster)
 	if err != nil {
-		t.Fatalf("NewSession() error = %v", err)
+		t.Fatalf("NewSession() returned an error: %v", err)
 	}
 	prestate, err := finality.Finalized(ctx)
 	if err != nil {
-		t.Fatalf("prestate Finalized() error = %v", err)
+		t.Fatalf("Finalized() for prestate returned an error: %v", err)
 	}
 	destinationBefore, err := finality.BalanceAt(ctx, prestate, destination)
 	if err != nil {
-		t.Fatalf("prestate destination BalanceAt() error = %v", err)
+		t.Fatalf("BalanceAt() for destination in prestate returned an error: %v", err)
 	}
 	sourceNonce, err := client.PendingNonceAt(ctx, source)
 	if err != nil {
-		t.Fatalf("prestate source PendingNonceAt() error = %v", err)
+		t.Fatalf("PendingNonceAt() for source in prestate returned an error: %v", err)
 	}
 	if counter := localChainCounter(t, ctx, client, source); counter.Cmp(big.NewInt(1)) != 0 {
-		t.Fatalf("prestate source fallback counter = %s, want 1", counter)
+		t.Fatalf("source fallback handler counter in prestate = %s, want 1", counter)
 	}
 
 	candidate := domain.NewBlockCandidate(localChainID, domain.CandidateNative, source, prestate.Hash, prestate.Number)
@@ -430,7 +430,7 @@ func TestLocalChain_CompetingAuthorizationIsLostRace(t *testing.T) {
 				receiptSummary = receiptErr.Error()
 			}
 		}
-		t.Fatalf("Handle() classification = %#v error %v receipt %s, want definitive LostRace", classified, handleErr, receiptSummary)
+		t.Fatalf("Handle() classification = %#v, error %v, receipt %s, want terminal LostRace", classified, handleErr, receiptSummary)
 	}
 	evidence := broadcaster.Evidence()
 	if len(evidence.production) != 1 {
@@ -439,13 +439,13 @@ func TestLocalChain_CompetingAuthorizationIsLostRace(t *testing.T) {
 	production := evidence.production[0]
 	wantSweepEth, err := contractABI.Pack("sweepEth")
 	if err != nil {
-		t.Fatalf("pack sweepEth: %v", err)
+		t.Fatalf("packing sweepEth: %v", err)
 	}
 	if production.Type() != types.SetCodeTxType || production.To() == nil || *production.To() != source || len(production.Data()) == 0 || !bytes.Equal(production.Data(), wantSweepEth) {
-		t.Fatalf("production transaction type/to/data = %d/%v/%x, want atomic SetCodeTx to source with sweepEth", production.Type(), production.To(), production.Data())
+		t.Fatalf("production transaction type/destination/data = %d/%v/%x, want atomic SetCodeTx to source with sweepEth", production.Type(), production.To(), production.Data())
 	}
 	if production.Nonce() != coordinatorSponsorNonce {
-		t.Fatalf("production sponsor nonce = %d, want %d", production.Nonce(), coordinatorSponsorNonce)
+		t.Fatalf("production transaction sponsor nonce = %d, want %d", production.Nonce(), coordinatorSponsorNonce)
 	}
 	productionAuthorizations := production.SetCodeAuthorizations()
 	if len(productionAuthorizations) != 1 {
@@ -455,10 +455,10 @@ func TestLocalChain_CompetingAuthorizationIsLostRace(t *testing.T) {
 		t.Fatalf("production authorization nonce/target = %d/%s, want %d/%s", productionAuthorizations[0].Nonce, productionAuthorizations[0].Address, sourceNonce, rescuer)
 	}
 	if evidence.competing == nil {
-		t.Fatal("competing transaction was not submitted")
+		t.Fatal("competing transaction was not broadcast")
 	}
 	if evidence.competing.To() == nil || *evidence.competing.To() == source || len(evidence.competing.Data()) != 0 {
-		t.Fatalf("competing outer transaction To/data = %v/%x, want non-source target and empty data", evidence.competing.To(), evidence.competing.Data())
+		t.Fatalf("competing external transaction destination/data = %v/%x, want non-source destination and empty data", evidence.competing.To(), evidence.competing.Data())
 	}
 	competingAuthorizations := evidence.competing.SetCodeAuthorizations()
 	if len(competingAuthorizations) != 1 {
@@ -471,60 +471,60 @@ func TestLocalChain_CompetingAuthorizationIsLostRace(t *testing.T) {
 		t.Fatalf("competing receipt = %+v, want status 1", evidence.competingReceipt)
 	}
 	if counter := new(big.Int).SetBytes(evidence.storageAfterCompeting); counter.Cmp(big.NewInt(1)) != 0 {
-		t.Fatalf("source counter after non-source competing outer call = %s, want unchanged 1", counter)
+		t.Fatalf("source counter after competing external call not to source = %s, want unchanged value 1", counter)
 	}
 
 	receipt, err := finality.Receipt(ctx, production.Hash())
 	if err != nil {
-		t.Fatalf("production finalized receipt: %v", err)
+		t.Fatalf("finalized production receipt: %v", err)
 	}
 	if receipt.Status != types.ReceiptStatusSuccessful {
-		t.Fatalf("production outer receipt status = %d, want 1 despite LostRace outcome", receipt.Status)
+		t.Fatalf("production external receipt status = %d, want 1 despite LostRace result", receipt.Status)
 	}
 	poststate, err := finality.Finalized(ctx)
 	if err != nil {
-		t.Fatalf("poststate Finalized() error = %v", err)
+		t.Fatalf("Finalized() for poststate returned an error: %v", err)
 	}
 	code, err := finality.CodeAt(ctx, poststate, source)
 	if err != nil {
-		t.Fatalf("poststate source CodeAt() error = %v", err)
+		t.Fatalf("CodeAt() for source in poststate returned an error: %v", err)
 	}
 	target, parseErr := contracts.ParseDelegation(code)
 	if parseErr != nil || target != maliciousDelegate {
-		t.Fatalf("poststate source delegation target/error = %s/%v, want malicious target %s", target, parseErr, maliciousDelegate)
+		t.Fatalf("source delegation target/error in poststate = %s/%v, want malicious target %s", target, parseErr, maliciousDelegate)
 	}
 	if counter := localChainCounter(t, ctx, client, source); counter.Cmp(big.NewInt(2)) != 0 {
-		t.Fatalf("source fallback counter after production asset call = %s, want 2", counter)
+		t.Fatalf("source fallback handler counter after production asset call = %s, want 2", counter)
 	}
 	sourceNonceAfter, err := client.NonceAt(ctx, source, nil)
 	if err != nil {
-		t.Fatalf("poststate source NonceAt() error = %v", err)
+		t.Fatalf("NonceAt() for source in poststate returned an error: %v", err)
 	}
 	if sourceNonceAfter != sourceNonce+1 {
 		t.Fatalf("source nonce after competing and skipped production authorizations = %d, want %d", sourceNonceAfter, sourceNonce+1)
 	}
 	destinationAfter, err := finality.BalanceAt(ctx, poststate, destination)
 	if err != nil {
-		t.Fatalf("poststate destination BalanceAt() error = %v", err)
+		t.Fatalf("BalanceAt() for destination in poststate returned an error: %v", err)
 	}
 	if delta := new(big.Int).Sub(destinationAfter, destinationBefore); delta.Sign() != 0 || delta.Cmp(initialSourceBalance) >= 0 {
 		t.Fatalf("destination delta after lost race = %s, want zero and less than source balance %s", delta, initialSourceBalance)
 	}
 	sourceAfter, err := finality.BalanceAt(ctx, poststate, source)
 	if err != nil {
-		t.Fatalf("poststate source BalanceAt() error = %v", err)
+		t.Fatalf("BalanceAt() for source in poststate returned an error: %v", err)
 	}
 	if sourceAfter.Cmp(initialSourceBalance) != 0 {
-		t.Fatalf("source balance after malicious fallback = %s, want unchanged %s", sourceAfter, initialSourceBalance)
+		t.Fatalf("source balance after malicious fallback handler = %s, want unchanged %s", sourceAfter, initialSourceBalance)
 	}
 
 	incidentID := domain.NewAssetIncidentID(candidate.ID, domain.CandidateNative, common.Address{})
 	incident, found, err := state.RescueIncident(ctx, incidentID)
 	if err != nil {
-		t.Fatalf("RescueIncident() error = %v", err)
+		t.Fatalf("RescueIncident() returned an error: %v", err)
 	}
 	if !found || incident.Status != store.RescueLostRace || incident.Status == store.RescueTrustedSuccess || incident.LastCode != codeLostRace || incident.TxHash != production.Hash() {
-		t.Fatalf("durable incident found/status/code/hash = %t/%v/%s/%s, want LostRace/%s/%s", found, incident.Status, incident.LastCode, incident.TxHash, codeLostRace, production.Hash())
+		t.Fatalf("persistent incident found/status/code/hash = %t/%v/%s/%s, want LostRace/%s/%s", found, incident.Status, incident.LastCode, incident.TxHash, codeLostRace, production.Hash())
 	}
 }
 
@@ -556,25 +556,25 @@ func localChainDeployRescuer(t *testing.T, ctx context.Context, backend *simulat
 	client := backend.Client()
 	chainID, err := client.ChainID(ctx)
 	if err != nil {
-		t.Fatalf("deployment ChainID() error = %v", err)
+		t.Fatalf("ChainID() during deployment returned an error: %v", err)
 	}
 	if chainID.Cmp(big.NewInt(int64(localChainID))) != 0 {
-		t.Fatalf("chain ID = %s, want %d", chainID, localChainID)
+		t.Fatalf("network ID = %s, want %d", chainID, localChainID)
 	}
 	sponsor := crypto.PubkeyToAddress(sponsorKey.PublicKey)
 	contractABI, bytecode := localChainArtifact(t)
 	deploymentNonce, err := client.PendingNonceAt(ctx, sponsor)
 	if err != nil {
-		t.Fatalf("deployment PendingNonceAt() error = %v", err)
+		t.Fatalf("PendingNonceAt() during deployment returned an error: %v", err)
 	}
 	constructor, err := contractABI.Pack("", destination, sponsor)
 	if err != nil {
-		t.Fatalf("pack RescuerV2 constructor: %v", err)
+		t.Fatalf("packing RescuerV2 constructor: %v", err)
 	}
 	data := append(append([]byte(nil), bytecode...), constructor...)
 	transaction := localChainDeploymentTransaction(t, ctx, client, sponsorKey, sponsor, chainID, deploymentNonce, data)
 	if err := client.SendTransaction(ctx, transaction); err != nil {
-		t.Fatalf("send RescuerV2 deployment: %v", err)
+		t.Fatalf("sending RescuerV2 deployment: %v", err)
 	}
 	blockHash := backend.Commit()
 	receipt, err := client.TransactionReceipt(ctx, transaction.Hash())
@@ -587,17 +587,17 @@ func localChainDeployRescuer(t *testing.T, ctx context.Context, backend *simulat
 	}
 	code, err := client.CodeAt(ctx, rescuer, receipt.BlockNumber)
 	if err != nil {
-		t.Fatalf("deployed RescuerV2 CodeAt() error = %v", err)
+		t.Fatalf("CodeAt() for deployed RescuerV2 returned an error: %v", err)
 	}
 	if len(code) == 0 {
 		t.Fatal("deployed RescuerV2 has empty code")
 	}
 	nextNonce, err := client.PendingNonceAt(ctx, sponsor)
 	if err != nil {
-		t.Fatalf("post-deployment PendingNonceAt() error = %v", err)
+		t.Fatalf("PendingNonceAt() after deployment returned an error: %v", err)
 	}
 	if nextNonce != deploymentNonce+1 {
-		t.Fatalf("post-deployment sponsor nonce = %d, want %d", nextNonce, deploymentNonce+1)
+		t.Fatalf("sponsor nonce after deployment = %d, want %d", nextNonce, deploymentNonce+1)
 	}
 	return contractABI, rescuer, nextNonce
 }
@@ -620,7 +620,7 @@ func localChainCoordinator(t *testing.T, sourceKey, sponsorKey *ecdsa.PrivateKey
 		Clock:               testClock,
 	})
 	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
+		t.Fatalf("store.Open() returned an error: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := state.Close(); err != nil {
@@ -629,7 +629,7 @@ func localChainCoordinator(t *testing.T, sourceKey, sponsorKey *ecdsa.PrivateKey
 	})
 	lease, err := state.Acquire(ctx, store.LeaseKey{Network: localChainID, Sponsor: sponsor}, "local-chain-"+policy, time.Hour)
 	if err != nil {
-		t.Fatalf("Acquire() error = %v", err)
+		t.Fatalf("Acquire() returned an error: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := state.Release(context.Background(), lease); err != nil {
@@ -638,11 +638,11 @@ func localChainCoordinator(t *testing.T, sourceKey, sponsorKey *ecdsa.PrivateKey
 	})
 	authorizer, err := NewPrivateKeyAuthorizationSigner(sourceKey)
 	if err != nil {
-		t.Fatalf("NewPrivateKeyAuthorizationSigner() error = %v", err)
+		t.Fatalf("NewPrivateKeyAuthorizationSigner() returned an error: %v", err)
 	}
 	transactioner, err := NewPrivateKeyTransactionSigner(sponsorKey)
 	if err != nil {
-		t.Fatalf("NewPrivateKeyTransactionSigner() error = %v", err)
+		t.Fatalf("NewPrivateKeyTransactionSigner() returned an error: %v", err)
 	}
 	coordinatorConfig := withTestEconomicPolicy(t, Config{
 		Network: domain.Network{
@@ -668,7 +668,7 @@ func localChainCoordinator(t *testing.T, sourceKey, sponsorKey *ecdsa.PrivateKey
 	}, testClock)
 	coordinator, err := NewCoordinator(coordinatorConfig, authorizer, transactioner, testClock, observability.Discard{})
 	if err != nil {
-		t.Fatalf("NewCoordinator() error = %v", err)
+		t.Fatalf("NewCoordinator() returned an error: %v", err)
 	}
 	return coordinator, state
 }
@@ -677,7 +677,7 @@ func localChainCounter(t *testing.T, ctx context.Context, client simulated.Clien
 	t.Helper()
 	value, err := client.StorageAt(ctx, source, common.Hash{}, nil)
 	if err != nil {
-		t.Fatalf("source StorageAt(slot 0) error = %v", err)
+		t.Fatalf("StorageAt(source slot 0) returned an error: %v", err)
 	}
 	return new(big.Int).SetBytes(value)
 }
@@ -686,7 +686,7 @@ func localChainPrivateKey(t *testing.T, encoded string) *ecdsa.PrivateKey {
 	t.Helper()
 	key, err := crypto.HexToECDSA(encoded)
 	if err != nil {
-		t.Fatalf("parse deterministic test private key: %v", err)
+		t.Fatalf("parsing deterministic test private key: %v", err)
 	}
 	return key
 }
@@ -695,22 +695,22 @@ func localChainArtifact(t *testing.T) (abi.ABI, []byte) {
 	t.Helper()
 	data, err := os.ReadFile(localChainArtifactPath)
 	if err != nil {
-		t.Fatalf("read canonical RescuerV2 artifact %q: %v", localChainArtifactPath, err)
+		t.Fatalf("reading canonical RescuerV2 artifact %q: %v", localChainArtifactPath, err)
 	}
 	var artifact struct {
 		ABI      json.RawMessage `json:"abi"`
 		Bytecode string          `json:"bytecode"`
 	}
 	if err := json.Unmarshal(data, &artifact); err != nil {
-		t.Fatalf("decode canonical RescuerV2 artifact: %v", err)
+		t.Fatalf("decoding canonical RescuerV2 artifact: %v", err)
 	}
 	contractABI, err := abi.JSON(bytes.NewReader(artifact.ABI))
 	if err != nil {
-		t.Fatalf("decode RescuerV2 ABI: %v", err)
+		t.Fatalf("decoding RescuerV2 ABI: %v", err)
 	}
 	bytecode, err := hexutil.Decode(artifact.Bytecode)
 	if err != nil {
-		t.Fatalf("decode RescuerV2 bytecode: %v", err)
+		t.Fatalf("decoding RescuerV2 bytecode: %v", err)
 	}
 	if len(contractABI.Constructor.Inputs) != 2 || len(bytecode) == 0 {
 		t.Fatal("canonical RescuerV2 artifact is missing constructor inputs or bytecode")
@@ -722,7 +722,7 @@ func localChainDeploymentTransaction(t *testing.T, ctx context.Context, client s
 	t.Helper()
 	header, err := client.HeaderByNumber(ctx, nil)
 	if err != nil {
-		t.Fatalf("deployment HeaderByNumber() error = %v", err)
+		t.Fatalf("HeaderByNumber() during deployment returned an error: %v", err)
 	}
 	if header.BaseFee == nil {
 		t.Fatal("deployment header has no base fee")
@@ -731,7 +731,7 @@ func localChainDeploymentTransaction(t *testing.T, ctx context.Context, client s
 	feeCap := new(big.Int).Add(new(big.Int).Mul(header.BaseFee, big.NewInt(2)), tip)
 	gas, err := client.EstimateGas(ctx, ethereum.CallMsg{From: sponsor, GasTipCap: tip, GasFeeCap: feeCap, Data: data})
 	if err != nil {
-		t.Fatalf("estimate RescuerV2 deployment gas: %v", err)
+		t.Fatalf("estimating gas for RescuerV2 deployment: %v", err)
 	}
 	transaction := types.NewTx(&types.DynamicFeeTx{
 		ChainID:   chainID,
@@ -743,7 +743,7 @@ func localChainDeploymentTransaction(t *testing.T, ctx context.Context, client s
 	})
 	signed, err := types.SignTx(transaction, types.LatestSignerForChainID(chainID), sponsorKey)
 	if err != nil {
-		t.Fatalf("sign RescuerV2 deployment: %v", err)
+		t.Fatalf("signing RescuerV2 deployment: %v", err)
 	}
 	return signed
 }

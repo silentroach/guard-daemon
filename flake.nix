@@ -1,5 +1,5 @@
 {
-  description = "Необязательное локальное окружение разработки guard-daemon";
+  description = "Optional local guard-daemon development environment";
 
   inputs.nixpkgs.url = "git+https://github.com/NixOS/nixpkgs?ref=nixos-unstable&shallow=1";
 

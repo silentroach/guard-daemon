@@ -8,9 +8,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// AcquireBudgetFence obtains one host-wide fence for the sponsor shared by all
-// configured networks. It prevents independent state directories from creating
-// separate ledgers for the same hot wallet on one host.
+// AcquireBudgetFence получает общую для всех настроенных сетей блокировку спонсора
+// на уровне хоста. Благодаря ей разные каталоги состояния не могут создавать отдельные
+// реестры для одного горячего кошелька на одном хосте.
 func AcquireBudgetFence(sponsor common.Address) (ProcessFence, error) {
 	if !processFenceSupported() {
 		return nil, ErrFenceUnsupported

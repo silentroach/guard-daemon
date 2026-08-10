@@ -28,7 +28,7 @@ func TestERC20Packing(t *testing.T) {
 	}
 	wantBalanceOf := mustDecodeHex(t, "70a0823100000000000000000000000000000000000000000000000000000000000000a1")
 	if !bytes.Equal(balanceOf, wantBalanceOf) {
-		t.Fatalf("balanceOf calldata = %x, want %x", balanceOf, wantBalanceOf)
+		t.Fatalf("balanceOf input = %x, want %x", balanceOf, wantBalanceOf)
 	}
 
 	symbolCall, err := codec.PackSymbol()
@@ -58,20 +58,20 @@ func TestERC20StrictDecoding(t *testing.T) {
 	big.NewInt(123456).FillBytes(balanceData)
 	balance, err := codec.DecodeBalanceOf(balanceData)
 	if err != nil || balance.Cmp(big.NewInt(123456)) != 0 {
-		t.Fatalf("DecodeBalanceOf() = %v, %v", balance, err)
+		t.Fatalf("DecodeBalanceOf() returned %v, %v", balance, err)
 	}
 
 	symbolData := mustDecodeHex(t, "000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000034c4f430000000000000000000000000000000000000000000000000000000000")
 	symbol, err := codec.DecodeSymbol(symbolData)
 	if err != nil || symbol != "LOC" {
-		t.Fatalf("DecodeSymbol() = %q, %v", symbol, err)
+		t.Fatalf("DecodeSymbol() returned %q, %v", symbol, err)
 	}
 
 	decimalsData := make([]byte, 32)
 	decimalsData[31] = 6
 	decimals, err := codec.DecodeDecimals(decimalsData)
 	if err != nil || decimals != 6 {
-		t.Fatalf("DecodeDecimals() = %d, %v", decimals, err)
+		t.Fatalf("DecodeDecimals() returned %d, %v", decimals, err)
 	}
 
 	for name, decode := range map[string]func([]byte) error{
@@ -136,7 +136,7 @@ func TestRescuerPackingAndDestinationDecoding(t *testing.T) {
 	copy(destinationData[12:], destination[:])
 	got, err := codec.DecodeDestination(destinationData)
 	if err != nil || got != destination {
-		t.Fatalf("DecodeDestination() = %s, %v", got, err)
+		t.Fatalf("DecodeDestination() returned %s, %v", got, err)
 	}
 	if _, err := codec.DecodeDestination(append(destinationData, 0)); !errors.Is(err, contracts.ErrInvalidReturnData) {
 		t.Fatalf("trailing data error = %v, want ErrInvalidReturnData", err)

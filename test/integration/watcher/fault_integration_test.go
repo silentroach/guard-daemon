@@ -55,7 +55,7 @@ func TestWatcherQuorumFaultRecoveryAndReorg(t *testing.T) {
 	providers[0].hangFinalized.Store(true)
 	timedOut := newService(t, network, source, codec, quorum, handoff, newControlledClock(), newSetupFailureSubscriptions())
 	if err := timedOut.Run(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("watcher quorum timeout error = %v, want deadline", err)
+		t.Fatalf("watcher quorum timeout error = %v, want deadline exceeded", err)
 	}
 	assertStoreState(t, handoff, network.ChainID, store.Checkpoint{}, nil)
 	providers[0].hangFinalized.Store(false)
@@ -64,7 +64,7 @@ func TestWatcherQuorumFaultRecoveryAndReorg(t *testing.T) {
 	providers[1].setOverride(10, staleBlock10)
 	disagreed := newService(t, network, source, codec, quorum, handoff, newControlledClock(), newSetupFailureSubscriptions())
 	if err := disagreed.Run(ctx); !errors.Is(err, rpc.ErrQuorumMismatch) {
-		t.Fatalf("watcher accepted Byzantine finalized fork: %v", err)
+		t.Fatalf("watcher accepted Byzantine finalized branch: %v", err)
 	}
 	assertStoreState(t, handoff, network.ChainID, store.Checkpoint{}, nil)
 	providers[1].setOverride(10, nil)
@@ -87,7 +87,7 @@ func TestWatcherQuorumFaultRecoveryAndReorg(t *testing.T) {
 	waitEvent(t, observer, func(event observability.Event) bool { return event.Candidate == wantLog11.ID })
 	cancel()
 	if err := waitResult(t, runResult); !errors.Is(err, context.Canceled) {
-		t.Fatalf("polling watcher shutdown error = %v", err)
+		t.Fatalf("polling watcher shutdown error: %v", err)
 	}
 
 	wantCanonical := []domain.RescueCandidate{
@@ -120,7 +120,7 @@ func TestWatcherQuorumFaultRecoveryAndReorg(t *testing.T) {
 	logSink <- types.Log{}
 	waitEventCode(t, liveObserver, domain.CandidateID{}, "watcher_log_rejected")
 
-	// The removed observation was deleted, so the same hint is inserted anew.
+	// После удаления предварительного наблюдения ту же подсказку можно добавить заново.
 	logSink <- orphanLog
 	waitEventCode(t, liveObserver, orphanCandidate.ID, "watcher_candidate_inserted")
 	logSink <- removed
@@ -129,14 +129,14 @@ func TestWatcherQuorumFaultRecoveryAndReorg(t *testing.T) {
 	waitEventCode(t, liveObserver, domain.CandidateID{}, "watcher_log_rejected")
 	stopLive()
 	if err := waitResult(t, liveResult); !errors.Is(err, context.Canceled) {
-		t.Fatalf("subscription watcher shutdown error = %v", err)
+		t.Fatalf("subscribing watcher shutdown error: %v", err)
 	}
 	assertStoreState(t, handoff, network.ChainID, checkpoint(network.ChainID, block11), wantCanonical)
 
 	providers[1].setOverride(11, testHeader(11, block10.Hash(), 0xb1))
 	byzantineAfterCommit := newService(t, network, source, codec, quorum, handoff, newControlledClock(), newSetupFailureSubscriptions())
 	if err := byzantineAfterCommit.Run(ctx); !errors.Is(err, rpc.ErrQuorumMismatch) {
-		t.Fatalf("persisted cursor accepted Byzantine fork: %v", err)
+		t.Fatalf("persisted cursor accepted Byzantine branch: %v", err)
 	}
 	providers[1].setOverride(11, nil)
 	assertStoreState(t, handoff, network.ChainID, checkpoint(network.ChainID, block11), wantCanonical)
@@ -147,7 +147,7 @@ func TestWatcherQuorumFaultRecoveryAndReorg(t *testing.T) {
 	err := reorg.Run(ctx)
 	var classified *domain.ClassifiedError
 	if !errors.As(err, &classified) || classified.Class != domain.ErrorRPCInvalidResponse || classified.Code != "watcher_finalized_reorg" {
-		t.Fatalf("agreed finalized reorg error = %v", err)
+		t.Fatalf("agreed finalized reorganization error: %v", err)
 	}
 	assertStoreState(t, handoff, network.ChainID, checkpoint(network.ChainID, block11), wantCanonical)
 }
@@ -180,7 +180,7 @@ func TestWatcherCrashConsistentQueueCheckpointAndIncidentRestore(t *testing.T) {
 	waitEvent(t, observer, func(event observability.Event) bool { return event.Candidate == tokenCandidate.ID })
 	cancel()
 	if err := waitResult(t, runResult); !errors.Is(err, context.Canceled) {
-		t.Fatalf("watcher shutdown error = %v", err)
+		t.Fatalf("watcher shutdown error: %v", err)
 	}
 	wantCandidates := []domain.RescueCandidate{nativeCandidate, tokenCandidate}
 	assertStoreState(t, handoff, network.ChainID, checkpoint(network.ChainID, block), wantCandidates)
@@ -218,7 +218,7 @@ func TestWatcherCrashConsistentQueueCheckpointAndIncidentRestore(t *testing.T) {
 	assertConfirmedCheckpoint(t, handoff, network.ChainID, store.Checkpoint{})
 	second, err := handoff.Next(ctx, network.ChainID)
 	if err != nil || second.ID == first.ID || !containsCandidate(wantCandidates, second.ID) {
-		t.Fatalf("staged candidate after saturated slot was released = %s, %v", second.ID, err)
+		t.Fatalf("prepared candidate after releasing saturated slot = %s, %v", second.ID, err)
 	}
 	secondHandoffIncident := handoffIncident(second, 2)
 	if err := handoff.PutIncident(ctx, secondHandoffIncident); err != nil {
@@ -599,7 +599,7 @@ func assertConfirmedCheckpoint(t *testing.T, handoff *store.BoltStore, network d
 	got, found, err := handoff.LoadCheckpoint(context.Background(), network)
 	wantFound := want != (store.Checkpoint{})
 	if err != nil || found != wantFound || got != want {
-		t.Fatalf("confirmed checkpoint = (%v, %v, %v), want (%v, %v, nil)", got, found, err, want, wantFound)
+		t.Fatalf("committed checkpoint = (%v, %v, %v), want (%v, %v, nil)", got, found, err, want, wantFound)
 	}
 }
 
@@ -725,7 +725,7 @@ func waitTicker(t *testing.T, testClock *controlledClock, duration time.Duration
 				return ticker
 			}
 		case <-deadline.C:
-			t.Fatalf("ticker %s was not created", duration)
+			t.Fatalf("timer %s was not created", duration)
 		}
 	}
 }
@@ -758,7 +758,7 @@ func waitSignal(t *testing.T, signal <-chan struct{}) {
 	select {
 	case <-signal:
 	case <-time.After(testTimeout):
-		t.Fatal("expected test signal was not received")
+		t.Fatal("expected test signal not received")
 	}
 }
 

@@ -56,9 +56,9 @@ type RescuePolicySnapshot struct {
 	FinalityTimeout time.Duration
 }
 
-// RescueIncident является crash-consistent состоянием одной asset operation.
-// Amount-поля хранят unsigned uint256 в big-endian форме без доверия к token
-// metadata.
+// RescueIncident хранит состояние одной операции с активом, сохраняя согласованность
+// при сбоях. Поля с суммами содержат беззнаковые uint256, записанные от старшего байта
+// к младшему, и не зависят от метаданных токена.
 type RescueIncident struct {
 	ID         domain.IncidentID
 	Parent     domain.IncidentID
@@ -67,8 +67,9 @@ type RescueIncident struct {
 	Kind       domain.CandidateKind
 	Asset      common.Address
 	Generation uint64
-	// Trusted означает наличие доверенной оценки для admission и budget policy,
-	// но не превращает отчёт token contract в доказанный экономический результат.
+	// Trusted означает, что для проверки допустимости операции и бюджета доступна
+	// доверенная оценка. Это не доказывает фактический экономический результат,
+	// о котором сообщил контракт токена.
 	Trusted      bool
 	Policy       RescuePolicySnapshot
 	Status       RescueStatus
@@ -76,7 +77,8 @@ type RescueIncident struct {
 	SponsorNonce uint64
 	SourceNonce  uint64
 	TxHash       common.Hash
-	// SignedTransaction is sensitive local recovery state and must never be logged.
+	// SignedTransaction содержит конфиденциальное локальное состояние восстановления
+	// и никогда не должно попадать в журнал.
 	SignedTransaction   []byte
 	SnapshotBlockNumber uint64
 	SnapshotBlockHash   common.Hash
@@ -95,8 +97,8 @@ type Checkpoint struct {
 	BlockHash   common.Hash
 }
 
-// CanonicalBlock является атомарной единицей scanner: заголовок, полный набор
-// candidates и seal пустого блока сохраняются одной транзакцией.
+// CanonicalBlock объединяет заголовок, полный набор кандидатов и отметку пустого
+// блока; все эти данные сохраняются одной транзакцией.
 type CanonicalBlock struct {
 	Checkpoint
 	ParentHash common.Hash

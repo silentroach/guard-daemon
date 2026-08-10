@@ -21,7 +21,7 @@ type RescuerCodec struct {
 func NewRescuerCodec() (*RescuerCodec, error) {
 	contractABI, err := abi.JSON(strings.NewReader(rescuerABI))
 	if err != nil {
-		return nil, fmt.Errorf("parse Rescuer ABI: %w", err)
+		return nil, fmt.Errorf("failed to parse Rescuer ABI: %w", err)
 	}
 	return &RescuerCodec{contractABI: contractABI}, nil
 }

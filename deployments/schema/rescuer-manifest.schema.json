@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://guard-daemon.invalid/schemas/rescuer-manifest-v1.json",
-  "title": "Проверяемый deployment manifest RescuerV2",
+  "title": "Verifiable RescuerV2 deployment manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [

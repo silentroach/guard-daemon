@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 if [[ -n "${BASH_ENV:-}" || -n "${ENV:-}" || -n "$(builtin declare -F)" ]]; then
-  builtin printf 'Ошибка проверки воспроизводимости: shell должен быть запущен через clean environment.\n' >&2
+  builtin printf 'Reproducibility check error: the shell must start in a clean environment.\n' >&2
   builtin exit 1
 fi
 
@@ -31,7 +31,7 @@ cleanup() {
 trap cleanup EXIT
 
 fail() {
-  printf 'Ошибка проверки воспроизводимости: %s\n' "$1" >&2
+  printf 'Reproducibility check error: %s\n' "$1" >&2
   exit 1
 }
 
@@ -59,11 +59,11 @@ check_rejected_index_flag() {
     "${temporary_directory}/${flag_name}-output" \
     >"${temporary_directory}/${flag_name}.stdout" \
     2>"${temporary_directory}/${flag_name}.stderr"; then
-    fail "builder принял Git index flag ${flag_name}"
+    fail "build script accepted Git index flag ${flag_name}"
   fi
   error=$(<"${temporary_directory}/${flag_name}.stderr")
   [[ "${error}" == *"${flag_name}"* ]] || \
-    fail "builder завершился не из-за Git index flag ${flag_name}"
+    fail "build script did not fail because of Git index flag ${flag_name}"
   git -C "${index_flags_checkout}" update-index "${unset_option}" -- "${flagged_path}"
 }
 
@@ -74,7 +74,7 @@ else
 fi
 if [[ ! "${commit}" =~ ^[0-9a-f]{40}$ ]] ||
   [[ "$(git -C "${root}" rev-parse --verify "${commit}^{commit}")" != "${commit}" ]]; then
-  printf 'Снимок воспроизводимости должен быть полным существующим SHA commit.\n' >&2
+  printf 'Reproducibility snapshot must specify the full SHA of an existing commit.\n' >&2
   exit 1
 fi
 
@@ -89,11 +89,11 @@ if run_builder \
   "${temporary_directory}/attributes-output" \
   >"${temporary_directory}/attributes-file.stdout" \
   2>"${temporary_directory}/attributes-file.stderr"; then
-  fail "builder принял локальный Git-файл info/attributes"
+  fail "build script accepted a local Git info/attributes file"
 fi
 attributes_error=$(<"${temporary_directory}/attributes-file.stderr")
 [[ "${attributes_error}" == *"info/attributes"* ]] || \
-  fail "builder завершился не из-за локального Git-файла attributes"
+  fail "build script did not fail because of a local Git info/attributes file"
 rm "${attributes_path}"
 ln -s /dev/null "${attributes_path}"
 if run_builder \
@@ -101,11 +101,11 @@ if run_builder \
   "${temporary_directory}/attributes-output" \
   >"${temporary_directory}/attributes-symlink.stdout" \
   2>"${temporary_directory}/attributes-symlink.stderr"; then
-  fail "builder принял символическую ссылку info/attributes"
+  fail "build script accepted an info/attributes symbolic link"
 fi
 attributes_error=$(<"${temporary_directory}/attributes-symlink.stderr")
 [[ "${attributes_error}" == *"info/attributes"* ]] || \
-  fail "builder завершился не из-за символической ссылки attributes"
+  fail "build script did not fail because of the info/attributes symbolic link"
 rm "${attributes_path}"
 git -C "${root}" worktree remove --force "${attributes_checkout}" >/dev/null
 attributes_checkout=""
@@ -133,7 +133,7 @@ git -C "${second_checkout}" checkout --quiet --detach "${commit}"
 git -C "${first_checkout}" config --local tar.umask 0077
 git -C "${second_checkout}" config --local tar.umask 0002
 
-# Invoked indirectly after export by the builder child.
+# После экспорта функция вызывается дочерним процессом сборки.
 # shellcheck disable=SC2329
 env() {
   if [[ "${1:-}" == "-i" ]]; then
@@ -142,7 +142,7 @@ env() {
   /usr/bin/env "$@"
 }
 export -f env
-# Invoked indirectly after export by the builder child.
+# После экспорта функция вызывается дочерним процессом сборки.
 # shellcheck disable=SC2329
 strings() {
   return 1
@@ -192,16 +192,16 @@ gitleaks dir --no-banner --redact --max-archive-depth=1 \
 
 binary_strings="${temporary_directory}/binary.strings"
 if ! strings "${first}/guard-daemon-linux-amd64" >"${binary_strings}"; then
-  fail "не удалось проверить строки исполняемого файла"
+  fail "failed to inspect executable strings"
 fi
 while IFS= read -r binary_string; do
   if [[ "${binary_string}" =~ (PermitSweeper|permitAndTransfer|permitAndSweep) ]]; then
-    printf 'Удалённый путь permit найден в исполняемом файле кандидата.\n' >&2
+    printf 'Removed permit path found in the candidate executable.\n' >&2
     exit 1
   fi
 done <"${binary_strings}"
 
-printf 'Commit снимка: %s\n' "${commit}"
+printf 'Snapshot commit: %s\n' "${commit}"
 while IFS= read -r checksum; do
   printf '%s\n' "${checksum}"
 done <"${first}/SHA256SUMS"

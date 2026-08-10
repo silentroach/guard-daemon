@@ -50,7 +50,7 @@ func TestSessionPlansAndSimulatesOnly(t *testing.T) {
 			reader := &fakeReader{chainID: big.NewInt(int64(config.Network))}
 			session, err := NewSession(context.Background(), 7, reader, config)
 			if err != nil {
-				t.Fatalf("NewSession() error = %v", err)
+				t.Fatalf("NewSession() returned an error: %v", err)
 			}
 			_, _, _, attempts := NewGuards(config.Source, config.Sponsor)
 			candidate := domain.RescueCandidate{
@@ -61,7 +61,7 @@ func TestSessionPlansAndSimulatesOnly(t *testing.T) {
 				Token:      domain.Token{Address: test.token},
 			}
 			if err := session.Handle(context.Background(), candidate); err != nil {
-				t.Fatalf("Handle() error = %v", err)
+				t.Fatalf("Handle() returned an error: %v", err)
 			}
 
 			wantCall := ethereum.CallMsg{From: config.Sponsor, To: &config.Source, Data: test.data}
@@ -69,10 +69,10 @@ func TestSessionPlansAndSimulatesOnly(t *testing.T) {
 				t.Fatalf("EstimateGas calls = %#v, want exactly %#v", reader.calls, wantCall)
 			}
 			if attempts.AuthorizationSignatures() != 0 || attempts.TransactionSignatures() != 0 || attempts.Broadcasts() != 0 {
-				t.Fatalf("guard attempts = (%d, %d, %d), want all zero", attempts.AuthorizationSignatures(), attempts.TransactionSignatures(), attempts.Broadcasts())
+				t.Fatalf("guard attempts = (%d, %d, %d), want all zeros", attempts.AuthorizationSignatures(), attempts.TransactionSignatures(), attempts.Broadcasts())
 			}
 			if session.Generation() != 7 {
-				t.Fatalf("Generation() = %d, want 7", session.Generation())
+				t.Fatalf("Generation() returned %d, want 7", session.Generation())
 			}
 			session.Close()
 		})
@@ -98,7 +98,7 @@ func TestNewSessionFailsClosed(t *testing.T) {
 			_, err := NewSession(context.Background(), 1, test.reader, config)
 			assertErrorCode(t, err, test.code)
 			if bytes.Contains([]byte(err.Error()), []byte(rawRPCError.Error())) {
-				t.Fatal("classified error exposed raw RPC detail")
+				t.Fatal("classified error exposed source RPC details")
 			}
 		})
 	}
@@ -126,7 +126,7 @@ func TestNewSessionRejectsInvalidConfigBeforeRPC(t *testing.T) {
 			_, err := NewSession(context.Background(), 1, reader, config)
 			assertErrorCode(t, err, codeInvalidConfig)
 			if reader.chainCalls != 0 {
-				t.Fatalf("ChainID calls = %d, want zero", reader.chainCalls)
+				t.Fatalf("ChainID calls = %d, want 0", reader.chainCalls)
 			}
 		})
 	}
@@ -161,7 +161,7 @@ func TestHandleRejectsInvalidCandidateWithoutSimulation(t *testing.T) {
 			err = session.Handle(context.Background(), test.candidate)
 			assertErrorCode(t, err, test.code)
 			if len(reader.calls) != 0 {
-				t.Fatalf("EstimateGas calls = %d, want zero", len(reader.calls))
+				t.Fatalf("EstimateGas calls = %d, want 0", len(reader.calls))
 			}
 		})
 	}

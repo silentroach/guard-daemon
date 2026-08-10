@@ -45,16 +45,16 @@ func TestDeadlineBroadcasterCancelsCallContextAfterReturn(t *testing.T) {
 		t.Fatal(err)
 	}
 	if backend.ctx == nil {
-		t.Fatal("SendTransaction() не передал context")
+		t.Fatal("SendTransaction() did not propagate context")
 	}
 	if _, ok := backend.ctx.Deadline(); !ok {
-		t.Fatal("SendTransaction() context не содержит deadline")
+		t.Fatal("SendTransaction() context has no deadline")
 	}
 	if !errors.Is(backend.ctx.Err(), context.Canceled) {
-		t.Fatalf("SendTransaction() context error = %v", backend.ctx.Err())
+		t.Fatalf("SendTransaction() context error: %v", backend.ctx.Err())
 	}
 	if parent.Err() != nil {
-		t.Fatalf("parent context отменён: %v", parent.Err())
+		t.Fatalf("parent context canceled: %v", parent.Err())
 	}
 }
 
@@ -66,7 +66,7 @@ func TestDeadlineBroadcasterCancelsHungSend(t *testing.T) {
 		}
 		err = broadcaster.SendTransaction(context.Background(), types.NewTx(&types.LegacyTx{}))
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("SendTransaction() error = %v", err)
+			t.Fatalf("SendTransaction() returned an error: %v", err)
 		}
 	})
 }
@@ -181,14 +181,14 @@ func TestDeadlineReaderGivesEveryUnaryCallItsOwnCanceledDeadline(t *testing.T) {
 	for _, callCtx := range contexts {
 		unique[callCtx] = struct{}{}
 		if !errors.Is(callCtx.Err(), context.Canceled) {
-			t.Fatalf("call context error = %v, want canceled after return", callCtx.Err())
+			t.Fatalf("call context error = %v, want cancellation after return", callCtx.Err())
 		}
 	}
 	if len(unique) != len(contexts) {
-		t.Fatalf("unary calls shared deadline contexts: %d unique of %d", len(unique), len(contexts))
+		t.Fatalf("unary calls shared deadline contexts: %d unique out of %d", len(unique), len(contexts))
 	}
 	if ctx.Err() != nil {
-		t.Fatalf("parent context was canceled: %v", ctx.Err())
+		t.Fatalf("parent context canceled: %v", ctx.Err())
 	}
 }
 
@@ -210,7 +210,7 @@ func TestDeadlineReaderCancelsHungUnaryCall(t *testing.T) {
 		}
 		_, err = reader.HeaderByNumber(context.Background(), big.NewInt(1))
 		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("HeaderByNumber() error = %v", err)
+			t.Fatalf("HeaderByNumber() returned an error: %v", err)
 		}
 	})
 }
@@ -302,7 +302,7 @@ func TestDeadlineSubscribersCancelHungSetup(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := logs.SubscribeFilterLogs(context.Background(), ethereum.FilterQuery{}, make(chan types.Log)); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("SubscribeFilterLogs() error = %v", err)
+			t.Fatalf("SubscribeFilterLogs() returned an error: %v", err)
 		}
 
 		heads, err := NewDeadlineHeadSubscriber(&setupHeadSubscriber{block: true}, time.Second)
@@ -310,33 +310,33 @@ func TestDeadlineSubscribersCancelHungSetup(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := heads.SubscribeNewHead(context.Background(), make(chan *types.Header)); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("SubscribeNewHead() error = %v", err)
+			t.Fatalf("SubscribeNewHead() returned an error: %v", err)
 		}
 	})
 }
 
 func TestDeadlineConstructorsRejectInvalidConfiguration(t *testing.T) {
 	if _, err := NewDeadlineBroadcaster(nil, time.Second); !errors.Is(err, ErrInvalidDeadlineWrapper) {
-		t.Fatalf("NewDeadlineBroadcaster(nil) error = %v", err)
+		t.Fatalf("NewDeadlineBroadcaster(nil) returned an error: %v", err)
 	}
 	var nilBroadcaster *deadlineProbeBroadcaster
 	if _, err := NewDeadlineBroadcaster(nilBroadcaster, time.Second); !errors.Is(err, ErrInvalidDeadlineWrapper) {
-		t.Fatalf("NewDeadlineBroadcaster(typed nil) error = %v", err)
+		t.Fatalf("NewDeadlineBroadcaster(typed nil) returned an error: %v", err)
 	}
 	if _, err := NewDeadlineBroadcaster(&deadlineProbeBroadcaster{}, 0); !errors.Is(err, ErrInvalidDeadlineWrapper) {
-		t.Fatalf("NewDeadlineBroadcaster(timeout=0) error = %v", err)
+		t.Fatalf("NewDeadlineBroadcaster(timeout=0) returned an error: %v", err)
 	}
 	if _, err := NewDeadlineReader(nil, time.Second); !errors.Is(err, ErrInvalidDeadlineWrapper) {
-		t.Fatalf("NewDeadlineReader(nil) error = %v", err)
+		t.Fatalf("NewDeadlineReader(nil) returned an error: %v", err)
 	}
 	if _, err := NewDeadlineReader(&deadlineProbeReader{}, 0); !errors.Is(err, ErrInvalidDeadlineWrapper) {
-		t.Fatalf("NewDeadlineReader(timeout=0) error = %v", err)
+		t.Fatalf("NewDeadlineReader(timeout=0) returned an error: %v", err)
 	}
 	if _, err := NewDeadlineLogSubscriber(nil, time.Second); !errors.Is(err, ErrInvalidDeadlineWrapper) {
-		t.Fatalf("NewDeadlineLogSubscriber(nil) error = %v", err)
+		t.Fatalf("NewDeadlineLogSubscriber(nil) returned an error: %v", err)
 	}
 	if _, err := NewDeadlineHeadSubscriber(nil, time.Second); !errors.Is(err, ErrInvalidDeadlineWrapper) {
-		t.Fatalf("NewDeadlineHeadSubscriber(nil) error = %v", err)
+		t.Fatalf("NewDeadlineHeadSubscriber(nil) returned an error: %v", err)
 	}
 }
 
@@ -362,7 +362,7 @@ func TestGenerationClientCloseIsConcurrentAndIdempotent(t *testing.T) {
 	}
 	wait.Wait()
 	if closes.Load() != 1 {
-		t.Fatalf("Close() calls = %d, want 1", closes.Load())
+		t.Fatalf("Close() call count = %d, want 1", closes.Load())
 	}
 }
 
@@ -379,7 +379,7 @@ func assertSetupContextCanceled(t *testing.T, ctx context.Context) {
 		t.Fatal("setup context has no deadline")
 	}
 	if !errors.Is(ctx.Err(), context.Canceled) {
-		t.Fatalf("setup context error = %v", ctx.Err())
+		t.Fatalf("setup context error: %v", ctx.Err())
 	}
 }
 

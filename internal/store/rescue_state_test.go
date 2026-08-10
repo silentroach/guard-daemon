@@ -63,7 +63,7 @@ func TestBoltStoreMigratesV1WithoutStateLoss(t *testing.T) {
 	assertCheckpoint(t, store, false, baseline.Checkpoint)
 	gotIncident, found, err := store.IncidentByCandidate(ctx, candidate.ID)
 	if err != nil || !found || gotIncident != incident {
-		t.Fatalf("IncidentByCandidate after migration = (%v, %v, %v), want (%v, true, nil)", gotIncident, found, err, incident)
+		t.Fatalf("IncidentByCandidate after migration returned (%v, %v, %v), want (%v, true, nil)", gotIncident, found, err, incident)
 	}
 	if got := candidateData(t, store, candidate.ID); !bytes.Equal(got, wantCandidateRecord) {
 		t.Fatal("candidate record changed during migration")
@@ -104,7 +104,7 @@ func TestBoltStoreMigratesV2TokenSuccessToReportedOutcome(t *testing.T) {
 	store = openTestStore(t, path, options)
 	migrated, found, err := store.RescueIncident(ctx, incident.ID)
 	if err != nil || !found || migrated.Status != RescueTokenReported || !migrated.Trusted || migrated.UpdatedAt != incident.UpdatedAt {
-		t.Fatalf("migrated v2 token outcome = found %t status %v trusted %t updated %s error %v", found, migrated.Status, migrated.Trusted, migrated.UpdatedAt, err)
+		t.Fatalf("migrated v2 token result: found=%t, status=%v, trusted=%t, updated=%s, error=%v", found, migrated.Status, migrated.Trusted, migrated.UpdatedAt, err)
 	}
 	if err := store.db.View(func(tx *bolt.Tx) error {
 		if !bytes.Equal(tx.Bucket(metaBucket).Get(schemaKey), encodeUint32(schemaVersion)) {
@@ -122,7 +122,7 @@ func TestBoltStoreMigratesV2TokenSuccessToReportedOutcome(t *testing.T) {
 	defer store.Close()
 	reopened, found, err := store.RescueIncident(ctx, incident.ID)
 	if err != nil || !found || reopened.Status != RescueTokenReported || !reopened.Trusted {
-		t.Fatalf("reopened migrated outcome = found %t status %v trusted %t error %v", found, reopened.Status, reopened.Trusted, err)
+		t.Fatalf("reopened migrated result: found=%t, status=%v, trusted=%t, error=%v", found, reopened.Status, reopened.Trusted, err)
 	}
 }
 
@@ -158,7 +158,7 @@ func TestBoltStoreV2TokenOutcomeMigrationRejectsCorruptionAtomically(t *testing.
 	if err := raw.View(func(tx *bolt.Tx) error {
 		if !bytes.Equal(tx.Bucket(metaBucket).Get(schemaKey), encodeUint32(schemaVersionV2)) ||
 			!bytes.Equal(tx.Bucket(rescueStateBucket).Get(incident.ID[:]), encoded) {
-			t.Fatal("failed v2 migration partially modified the database")
+			t.Fatal("failed v2 migration partially changed the database")
 		}
 		return nil
 	}); err != nil {
@@ -190,7 +190,7 @@ func TestBoltStoreV2MigrationRejectsTrustedReportedOutcome(t *testing.T) {
 
 	if opened, err := Open(path, options); err == nil {
 		opened.Close()
-		t.Fatal("v2 database with trusted token-reported outcome migrated")
+		t.Fatal("v2 database with a trusted token-reported result migrated")
 	}
 	raw, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
@@ -199,7 +199,7 @@ func TestBoltStoreV2MigrationRejectsTrustedReportedOutcome(t *testing.T) {
 	if err := raw.View(func(tx *bolt.Tx) error {
 		if !bytes.Equal(tx.Bucket(metaBucket).Get(schemaKey), encodeUint32(schemaVersionV2)) ||
 			!bytes.Equal(tx.Bucket(rescueStateBucket).Get(incident.ID[:]), encoded) {
-			t.Fatal("rejected semantic v2 migration modified the database")
+			t.Fatal("rejected semantic v2 migration changed the database")
 		}
 		return nil
 	}); err != nil {
@@ -243,7 +243,7 @@ func TestBoltStoreV1MigrationRejectsCorruptionAtomically(t *testing.T) {
 			tx.Bucket(rescueStateBucket) != nil || tx.Bucket(leasesBucket) != nil || tx.Bucket(metaBucket).Get(sponsorKey) != nil ||
 			tx.Bucket(metaBucket).Get(destinationKey) != nil || tx.Bucket(metaBucket).Get(rescuerKey) != nil ||
 			tx.Bucket(metaBucket).Get(nonceFloorKey) != nil {
-			t.Fatal("failed migration partially modified the v1 database")
+			t.Fatal("failed migration partially changed the v1 database")
 		}
 		return nil
 	}); err != nil {
@@ -264,7 +264,7 @@ func TestBoltStoreRescueIncidentSurvivesAmbiguousRestart(t *testing.T) {
 	incident := testRescueIncident(options, 1, true)
 	stored, err := store.PutRescueIncident(ctx, incident)
 	if err != nil || !sameRescueIncident(stored, incident) {
-		t.Fatalf("PutRescueIncident failed: found=%v error=%v", sameRescueIncident(stored, incident), err)
+		t.Fatalf("PutRescueIncident failed: matches=%v, error=%v", sameRescueIncident(stored, incident), err)
 	}
 
 	duplicate := incident
@@ -272,7 +272,7 @@ func TestBoltStoreRescueIncidentSurvivesAmbiguousRestart(t *testing.T) {
 	duplicate.UpdatedAt = duplicate.UpdatedAt.Add(time.Minute)
 	stored, err = store.PutRescueIncident(ctx, duplicate)
 	if err != nil || !sameRescueIncident(stored, incident) {
-		t.Fatalf("idempotent PutRescueIncident failed: original=%v error=%v", sameRescueIncident(stored, incident), err)
+		t.Fatalf("idempotent PutRescueIncident failed: original=%v, error=%v", sameRescueIncident(stored, incident), err)
 	}
 	conflict := incident
 	conflict.Policy.MaxAttempts++
@@ -301,7 +301,7 @@ func TestBoltStoreRescueIncidentSurvivesAmbiguousRestart(t *testing.T) {
 	defer store.Close()
 	got, found, err := store.RescueIncident(ctx, ambiguous.ID)
 	if err != nil || !found || !sameRescueIncident(got, ambiguous) {
-		t.Fatalf("RescueIncident after restart mismatch: found=%v equal=%v error=%v", found, sameRescueIncident(got, ambiguous), err)
+		t.Fatalf("RescueIncident after restart does not match: found=%v, equal=%v, error=%v", found, sameRescueIncident(got, ambiguous), err)
 	}
 	if got.TxHash == (common.Hash{}) {
 		t.Fatal("ambiguous transaction lost its hash")
@@ -335,7 +335,7 @@ func TestBoltStoreRescueIncidentsAreDeterministicallySorted(t *testing.T) {
 	}
 	for index := range incidents {
 		if !sameRescueIncident(got[index], incidents[index]) {
-			t.Fatalf("RescueIncidents[%d] mismatch", index)
+			t.Fatalf("RescueIncidents[%d] does not match", index)
 		}
 	}
 }
@@ -357,7 +357,7 @@ func TestBoltStoreRescueIncidentRejectsBackwardAndTerminalTransitions(t *testing
 	}
 
 	if err := store.UpdateRescueIncident(ctx, incident); !errors.Is(err, errConflict) {
-		t.Fatalf("Prepared -> Pending error = %v, want errConflict", err)
+		t.Fatalf("Prepared -> Pending transition returned error %v, want errConflict", err)
 	}
 	signed := signTestRescueIncident(t, prepared)
 	if err := store.UpdateRescueIncident(ctx, signed); err != nil {
@@ -366,7 +366,7 @@ func TestBoltStoreRescueIncidentRejectsBackwardAndTerminalTransitions(t *testing
 	backward := prepared
 	backward.UpdatedAt = signed.UpdatedAt.Add(time.Second)
 	if err := store.UpdateRescueIncident(ctx, backward); !errors.Is(err, errConflict) {
-		t.Fatalf("Signed -> Prepared error = %v, want errConflict", err)
+		t.Fatalf("Signed -> Prepared transition returned error %v, want errConflict", err)
 	}
 	broadcast := signed
 	broadcast.Status = RescueBroadcast
@@ -380,7 +380,7 @@ func TestBoltStoreRescueIncidentRejectsBackwardAndTerminalTransitions(t *testing
 	falseSuccess.ReconcileUntil = time.Time{}
 	falseSuccess.UpdatedAt = falseSuccess.UpdatedAt.Add(time.Second)
 	if err := store.UpdateRescueIncident(ctx, falseSuccess); !errors.Is(err, errInvalidInput) {
-		t.Fatalf("token TrustedSuccess error = %v, want errInvalidInput", err)
+		t.Fatalf("token TrustedSuccess returned error %v, want errInvalidInput", err)
 	}
 	success := broadcast
 	success.Status = RescueTokenReported
@@ -395,7 +395,7 @@ func TestBoltStoreRescueIncidentRejectsBackwardAndTerminalTransitions(t *testing
 	afterTerminal.LastCode = "late-reconciliation"
 	afterTerminal.UpdatedAt = success.UpdatedAt.Add(time.Second)
 	if err := store.UpdateRescueIncident(ctx, afterTerminal); !errors.Is(err, errConflict) {
-		t.Fatalf("terminal transition error = %v, want errConflict", err)
+		t.Fatalf("terminal state transition error = %v, want errConflict", err)
 	}
 }
 
@@ -422,10 +422,10 @@ func TestBoltStoreRescueIncidentAllowsBoundedRetryToPrepared(t *testing.T) {
 	invalidPreparationFailure := retryable
 	invalidPreparationFailure.TxHash = testHash(0xee)
 	if err := store.UpdateRescueIncident(ctx, invalidPreparationFailure); !errors.Is(err, errInvalidInput) {
-		t.Fatalf("Prepared -> Retryable with new TxHash error = %v, want errInvalidInput", err)
+		t.Fatalf("Prepared -> Retryable transition with new TxHash returned error %v, want errInvalidInput", err)
 	}
 	if err := store.UpdateRescueIncident(ctx, retryable); err != nil {
-		t.Fatalf("Prepared -> Retryable: %v", err)
+		t.Fatalf("Prepared -> Retryable transition returned an error: %v", err)
 	}
 	nextAttempt := retryable
 	nextAttempt.Status = RescuePrepared
@@ -444,19 +444,19 @@ func TestBoltStoreRescueIncidentAllowsBoundedRetryToPrepared(t *testing.T) {
 	early := nextAttempt
 	early.UpdatedAt = retryable.RetryAt.Add(-time.Nanosecond)
 	if err := store.UpdateRescueIncident(ctx, early); !errors.Is(err, errConflict) {
-		t.Fatalf("Retryable -> Prepared before RetryAt error = %v, want errConflict", err)
+		t.Fatalf("Retryable -> Prepared transition before RetryAt returned error %v, want errConflict", err)
 	}
 	skippedAttempt := nextAttempt
 	skippedAttempt.Attempts++
 	if err := store.UpdateRescueIncident(ctx, skippedAttempt); !errors.Is(err, errConflict) {
-		t.Fatalf("Retryable -> Prepared attempts jump error = %v, want errConflict", err)
+		t.Fatalf("Retryable -> Prepared transition with attempt count jump returned error %v, want errConflict", err)
 	}
 	if err := store.UpdateRescueIncident(ctx, nextAttempt); err != nil {
-		t.Fatalf("Retryable -> Prepared: %v", err)
+		t.Fatalf("Retryable -> Prepared transition returned an error: %v", err)
 	}
 	got, found, err := store.RescueIncident(ctx, nextAttempt.ID)
 	if err != nil || !found || !sameRescueIncident(got, nextAttempt) {
-		t.Fatalf("fresh retry preparation mismatch: found=%v equal=%v error=%v", found, sameRescueIncident(got, nextAttempt), err)
+		t.Fatalf("new retry preparation does not match: found=%v, equal=%v, error=%v", found, sameRescueIncident(got, nextAttempt), err)
 	}
 }
 
@@ -488,7 +488,7 @@ func TestBoltStoreRescueIncidentRejectsReSigningHashedRetry(t *testing.T) {
 	retryable.UpdatedAt = retryable.UpdatedAt.Add(time.Second)
 	retryable.RetryAt = retryable.UpdatedAt.Add(retryable.Policy.RetryDelay)
 	if err := store.UpdateRescueIncident(ctx, retryable); !errors.Is(err, errConflict) {
-		t.Fatalf("Signed -> Retryable error = %v, want errConflict", err)
+		t.Fatalf("Signed -> Retryable transition returned error %v, want errConflict", err)
 	}
 }
 
@@ -515,27 +515,27 @@ func TestBoltStoreSignedTransactionRoundTripOwnsPayload(t *testing.T) {
 	signed.SignedTransaction[0] ^= 0xff
 	stored, found, err := store.RescueIncident(ctx, signed.ID)
 	if err != nil || !found || !bytes.Equal(stored.SignedTransaction, wantPayload) {
-		t.Fatalf("stored payload ownership failed: found=%v error=%v", found, err)
+		t.Fatalf("stored payload ownership check failed: found=%v, error=%v", found, err)
 	}
 	stored.SignedTransaction[0] ^= 0xff
 	stored, found, err = store.RescueIncident(ctx, signed.ID)
 	if err != nil || !found || !bytes.Equal(stored.SignedTransaction, wantPayload) {
-		t.Fatalf("returned payload ownership failed: found=%v error=%v", found, err)
+		t.Fatalf("returned payload ownership check failed: found=%v, error=%v", found, err)
 	}
 	listed, err := store.RescueIncidents(ctx, options.Network)
 	if err != nil || len(listed) != 1 {
-		t.Fatalf("RescueIncidents payload read failed: count=%d error=%v", len(listed), err)
+		t.Fatalf("reading RescueIncidents payload failed: count=%d, error=%v", len(listed), err)
 	}
 	listed[0].SignedTransaction[0] ^= 0xff
 	stored, found, err = store.RescueIncident(ctx, signed.ID)
 	if err != nil || !found || !bytes.Equal(stored.SignedTransaction, wantPayload) {
-		t.Fatalf("listed payload ownership failed: found=%v error=%v", found, err)
+		t.Fatalf("listed payload ownership check failed: found=%v, error=%v", found, err)
 	}
 	store = reopenTestStore(t, store, path, options)
 	defer store.Close()
 	stored, found, err = store.RescueIncident(ctx, signed.ID)
 	if err != nil || !found || !bytes.Equal(stored.SignedTransaction, wantPayload) || stored.TxHash != storedTransactionHash(t, wantPayload) {
-		t.Fatalf("signed payload did not survive reopen: found=%v error=%v", found, err)
+		t.Fatalf("signed payload was not preserved after reopening: found=%v, error=%v", found, err)
 	}
 }
 
@@ -638,7 +638,7 @@ func TestBoltStoreAtomicPreparationFailureAndRetryFailure(t *testing.T) {
 	failure.LastCode = "snapshot-read"
 	failure.RetryAt = failure.UpdatedAt.Add(failure.Policy.RetryDelay)
 	if err := store.UpdateRescueIncident(ctx, failure); err != nil {
-		t.Fatalf("atomic Pending -> Retryable: %v", err)
+		t.Fatalf("atomic Pending -> Retryable transition returned an error: %v", err)
 	}
 	arbitraryMutation := failure
 	arbitraryMutation.LastCode = "different"
@@ -657,7 +657,7 @@ func TestBoltStoreAtomicPreparationFailureAndRetryFailure(t *testing.T) {
 	nextFailure.UpdatedAt = failure.RetryAt
 	nextFailure.RetryAt = nextFailure.UpdatedAt.Add(nextFailure.Policy.RetryDelay)
 	if err := store.UpdateRescueIncident(ctx, nextFailure); err != nil {
-		t.Fatalf("bounded Retryable -> Retryable: %v", err)
+		t.Fatalf("restricted Retryable -> Retryable transition returned an error: %v", err)
 	}
 }
 
@@ -695,7 +695,7 @@ func TestBoltStoreAmbiguousReconciliationCannotExhaust(t *testing.T) {
 	exhausted.LastCode = "quorum-timeout"
 	exhausted.UpdatedAt = exhausted.UpdatedAt.Add(time.Second)
 	if err := store.UpdateRescueIncident(ctx, exhausted); !errors.Is(err, errConflict) {
-		t.Fatalf("Ambiguous -> Exhausted error = %v, want errConflict", err)
+		t.Fatalf("Ambiguous -> Exhausted transition returned error %v, want errConflict", err)
 	}
 	extended := ambiguous
 	extended.LastCode = "receipt-still-unknown"
@@ -703,7 +703,7 @@ func TestBoltStoreAmbiguousReconciliationCannotExhaust(t *testing.T) {
 	extended.ReconcileUntil = extended.ReconcileUntil.Add(time.Minute)
 	extended.RetryAt = extended.UpdatedAt.Add(30 * time.Second)
 	if err := store.UpdateRescueIncident(ctx, extended); err != nil {
-		t.Fatalf("bounded Ambiguous -> Ambiguous: %v", err)
+		t.Fatalf("restricted Ambiguous -> Ambiguous transition returned an error: %v", err)
 	}
 	rebroadcast := extended
 	rebroadcast.Status = RescueBroadcast
@@ -711,7 +711,7 @@ func TestBoltStoreAmbiguousReconciliationCannotExhaust(t *testing.T) {
 	rebroadcast.RetryAt = time.Time{}
 	rebroadcast.UpdatedAt = rebroadcast.UpdatedAt.Add(time.Second)
 	if err := store.UpdateRescueIncident(ctx, rebroadcast); err != nil {
-		t.Fatalf("exact Ambiguous -> Broadcast rebroadcast: %v", err)
+		t.Fatalf("exact Ambiguous -> Broadcast resubmission returned an error: %v", err)
 	}
 }
 
@@ -733,7 +733,7 @@ func TestBoltStoreNonceFloorIsMonotonicAndDurable(t *testing.T) {
 	}
 	store = reopenTestStore(t, store, path, options)
 	if floor, err := store.NonceFloor(ctx); err != nil || floor != 12 {
-		t.Fatalf("durable NonceFloor = (%d, %v), want (12, nil)", floor, err)
+		t.Fatalf("persistent NonceFloor = (%d, %v), want (12, nil)", floor, err)
 	}
 	if err := store.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(metaBucket).Put(nonceFloorKey, []byte{1})
@@ -848,7 +848,7 @@ func TestBoltStorePrunesOnlyOldTerminalIncidents(t *testing.T) {
 	defer store.Close()
 	assertRetainedRescueIncidents(t, store, append(terminals[2:], unresolved...))
 	if floor, err := store.NonceFloor(ctx); err != nil || floor != 44 {
-		t.Fatalf("NonceFloor after prune/reopen = (%d, %v), want (44, nil)", floor, err)
+		t.Fatalf("NonceFloor after cleanup and reopening = (%d, %v), want (44, nil)", floor, err)
 	}
 }
 
@@ -971,7 +971,7 @@ func testSignedSetCodeTransaction(t *testing.T, network domain.NetworkID, sponso
 	chainID := big.NewInt(int64(network))
 	chainU256, overflow := uint256.FromBig(chainID)
 	if overflow {
-		t.Fatal("local chain ID does not fit uint256")
+		t.Fatal("local network ID does not fit in uint256")
 	}
 	sourceKey := testPrivateKey(t, 1)
 	sponsorKey := testPrivateKey(t, 2)
@@ -983,7 +983,7 @@ func testSignedSetCodeTransaction(t *testing.T, network domain.NetworkID, sponso
 		Nonce:   sourceNonce,
 	})
 	if err != nil {
-		t.Fatalf("sign local authorization: %v", err)
+		t.Fatalf("signing local authorization: %v", err)
 	}
 	var target common.Address
 	target[len(target)-1] = 0x32
@@ -999,11 +999,11 @@ func testSignedSetCodeTransaction(t *testing.T, network domain.NetworkID, sponso
 	})
 	signed, err := types.SignTx(transaction, types.LatestSignerForChainID(chainID), sponsorKey)
 	if err != nil {
-		t.Fatalf("sign local transaction: %v", err)
+		t.Fatalf("signing local transaction: %v", err)
 	}
 	payload, err := signed.MarshalBinary()
 	if err != nil {
-		t.Fatalf("marshal local transaction: %v", err)
+		t.Fatalf("marshaling local transaction: %v", err)
 	}
 	return payload, signed.Hash()
 }
@@ -1024,11 +1024,11 @@ func testSignedDynamicFeeTransaction(t *testing.T, network domain.NetworkID, non
 	})
 	signed, err := types.SignTx(transaction, types.LatestSignerForChainID(chainID), testPrivateKey(t, 2))
 	if err != nil {
-		t.Fatalf("sign local dynamic fee transaction: %v", err)
+		t.Fatalf("signing local dynamic-fee transaction: %v", err)
 	}
 	payload, err := signed.MarshalBinary()
 	if err != nil {
-		t.Fatalf("marshal local dynamic fee transaction: %v", err)
+		t.Fatalf("marshaling local dynamic-fee transaction: %v", err)
 	}
 	return payload, signed.Hash()
 }
@@ -1037,7 +1037,7 @@ func storedTransactionHash(t *testing.T, payload []byte) common.Hash {
 	t.Helper()
 	var transaction types.Transaction
 	if err := transaction.UnmarshalBinary(payload); err != nil {
-		t.Fatalf("decode stored local transaction: %v", err)
+		t.Fatalf("decoding stored local transaction: %v", err)
 	}
 	return transaction.Hash()
 }
@@ -1049,7 +1049,7 @@ func assertRetainedRescueIncidents(t *testing.T, store *BoltStore, want []Rescue
 		t.Fatal(err)
 	}
 	if len(got) != len(want) {
-		t.Fatalf("retained incident count = %d, want %d", len(got), len(want))
+		t.Fatalf("stored incident count = %d, want %d", len(got), len(want))
 	}
 	wanted := make(map[domain.IncidentID]RescueIncident, len(want))
 	for _, incident := range want {
@@ -1058,7 +1058,7 @@ func assertRetainedRescueIncidents(t *testing.T, store *BoltStore, want []Rescue
 	for _, incident := range got {
 		expected, ok := wanted[incident.ID]
 		if !ok || !sameRescueIncident(incident, expected) {
-			t.Fatalf("unexpected retained incident %s", incident.ID)
+			t.Fatalf("unexpected stored incident %s", incident.ID)
 		}
 	}
 }
@@ -1069,7 +1069,7 @@ func testPrivateKey(t *testing.T, marker byte) *ecdsa.PrivateKey {
 	encoded[len(encoded)-1] = marker
 	key, err := crypto.ToECDSA(encoded)
 	if err != nil {
-		t.Fatalf("construct deterministic local key: %v", err)
+		t.Fatalf("creating deterministic local key: %v", err)
 	}
 	return key
 }
