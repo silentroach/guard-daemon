@@ -1,14 +1,13 @@
 module guard-daemon
 
-go 1.26.0
-
-toolchain go1.26.5
+go 1.26.9
 
 require (
 	github.com/ethereum/go-ethereum v1.17.5
 	github.com/holiman/uint256 v1.3.2
 	github.com/joho/godotenv v1.5.1
 	go.etcd.io/bbolt v1.5.0
+	golang.org/x/sys v0.45.0
 )
 
 require (
@@ -52,7 +51,7 @@ require (
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golang/snappy v1.0.1-0.20260716114414-9ae09f520e93 // indirect
-	github.com/gorilla/websocket v1.4.2 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grafana/pyroscope-go v1.2.7 // indirect
 	github.com/grafana/pyroscope-go/godeltaprof v0.1.9 // indirect
 	github.com/hashicorp/go-bexpr v0.1.10 // indirect
@@ -98,7 +97,6 @@ require (
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20230626212559-97b1e661b5df // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/time v0.10.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

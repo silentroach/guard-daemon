@@ -11,7 +11,7 @@ Workflow `.github/workflows/release.yml` публикует сборки по я
 
 ## Платформы и содержимое
 
-Сборка Go 1.26.5 выполняется из `./cmd/guard-daemon` с `CGO_ENABLED=0` для
+Сборка Go 1.26.9 выполняется из `./cmd/guard-daemon` с `CGO_ENABLED=0` для
 Linux, macOS (`darwin`) и Windows, для `amd64` и `arm64`. Бинарник содержит полный
 SHA коммита, доступный через `--version`.
 
