@@ -149,8 +149,10 @@ func TestAdmissionControllerBoundsThousandsOfUnknownTokensWithoutGoroutines(t *t
 		}
 	}
 	runtime.Gosched()
-	if after := runtime.NumGoroutine(); after != before {
-		t.Fatalf("goroutines after load = %d, want %d", after, before)
+	// Фоновые горутины других тестов могут завершиться во время нагрузки.
+	// Проверяем отсутствие роста, а не точное совпадение общего количества.
+	if after := runtime.NumGoroutine(); after > before {
+		t.Fatalf("goroutines after load = %d, want at most %d", after, before)
 	}
 	if tracked := controller.TrackedAttempts(); tracked != 64 {
 		t.Fatalf("TrackedAttempts() returned %d, want capacity 64", tracked)
