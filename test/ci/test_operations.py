@@ -444,9 +444,9 @@ class OperationsPolicyTests(unittest.TestCase):
         )
         release_binary = "/usr/lib/guard-daemon/releases/ci-placeholder/guard-daemon"
         current_link = "sudo ln -s releases/ci-placeholder /usr/lib/guard-daemon/current"
-        sysusers = "sudo systemd-sysusers packaging/systemd/guard-daemon.sysusers"
+        sysusers = 'sudo systemd-sysusers "$GITHUB_WORKSPACE/packaging/systemd/guard-daemon.sysusers"'
         account_check = "scripts/verify-systemd-account.sh"
-        tmpfiles = "sudo systemd-tmpfiles --create packaging/systemd/guard-daemon.tmpfiles"
+        tmpfiles = 'sudo systemd-tmpfiles --create "$GITHUB_WORKSPACE/packaging/systemd/guard-daemon.tmpfiles"'
         self.assertIn(state_install, step)
         self.assertIn(release_binary, step)
         self.assertIn(current_link, step)
