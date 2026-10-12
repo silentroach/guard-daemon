@@ -82,16 +82,25 @@ The daemon verifies at startup (before watching/sweeping on a network) that the 
 
 ### 1. Prerequisites
 
-- **Go 1.22+** installed
+- **Go 1.23+** installed (only needed when building from source)
 - **Compromised EOA private key** (source)
 - **Sponsor wallet** with native gas on each network (~0.01 ETH per network recommended)
 - **Safe destination wallet** (where tokens will be sent)
 
 ### 2. Setup
 
+Download the archive for your OS and CPU from
+[GitHub Releases](https://github.com/silentroach/guard-daemon/releases), then extract it.
+Linux and macOS archives use `.tar.gz`; Windows archives use `.zip`.
+`amd64` is for Intel/AMD x64; `arm64` is for ARM64, including Apple Silicon.
+Each archive includes the binary, `.env.example`, documentation, and license.
+Go is not required to run a prebuilt binary.
+
+To build from source instead:
+
 ```bash
 # Clone or extract files
-git clone https://github.com/Serge693/guard-daemon.git
+git clone https://github.com/silentroach/guard-daemon.git
 cd guard-daemon
 
 # Install Go dependencies
@@ -382,7 +391,7 @@ An address in `.env` isn't a well-formed `0x`-prefixed 40-hex-character address 
 
 ## Architecture
 
-- **Language:** Go 1.22+
+- **Language:** Go 1.23+
 - **Dependencies:** go-ethereum, uint256, godotenv
 - **Concurrency:** One goroutine per network
 - **Event source:** WebSocket (fallback to polling)
@@ -443,6 +452,39 @@ DRY_RUN=true
 DRY_RUN=false
 ./guard-daemon.exe
 ```
+
+## Releases
+
+The workflow in `.github/workflows/release.yml` automatically publishes a release
+when a version tag is pushed to this repository. Commit and push the workflow
+before creating the first tag, so it is included in the tagged commit.
+
+```bash
+git tag -a v1.0.0 -m "Release v1.0.0"
+git push origin v1.0.0
+```
+
+Use `vMAJOR.MINOR.PATCH` for stable releases or a tag such as `v1.1.0-rc.1`
+for a prerelease. Version numbers are chosen manually; everything after the tag
+push is automated:
+
+- Verify Go modules, run Go tests and `go vet`.
+- Build Linux, macOS (`darwin`), and Windows binaries for `amd64` and `arm64`.
+- Attach six archives and `SHA256SUMS` to a release with generated release notes.
+- Publish only after all builds and asset uploads succeed; prereleases are not
+  marked as Latest.
+
+The workflow uses GitHub's built-in `GITHUB_TOKEN`; no custom secrets are needed.
+GitHub Actions must be enabled in the repository, and repository/organization
+policies must allow the publishing job's `contents: write` permission. No wallet
+keys or live RPC connections are needed to build a release.
+
+If uploading fails, rerun the failed jobs in Actions to resume the draft release.
+Published releases are not overwritten: use a new version tag for changes.
+
+To verify downloaded archives on Linux, place `SHA256SUMS` alongside the archives
+and run `sha256sum --ignore-missing -c SHA256SUMS`. On macOS, use
+`shasum -a 256 <archive>` and compare the result with the matching entry.
 
 ## Related Work
 
