@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+
+if [[ -n "${BASH_ENV:-}" || -n "${ENV:-}" || -n "$(builtin declare -F)" ]]; then
+  builtin printf 'Reproducibility check error: the shell must start in a clean environment.\n' >&2
+  builtin exit 1
+fi
+
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+temporary_directory=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/guard-reproducibility.XXXXXX")
+attributes_checkout=""
+index_flags_checkout=""
+flagged_path=""
+cleanup() {
+  if [[ -n "${index_flags_checkout}" ]]; then
+    if [[ -n "${flagged_path}" ]]; then
+      git -C "${index_flags_checkout}" update-index --no-assume-unchanged \
+        -- "${flagged_path}" >/dev/null 2>&1 || true
+      git -C "${index_flags_checkout}" update-index --no-skip-worktree \
+        -- "${flagged_path}" >/dev/null 2>&1 || true
+    fi
+    git -C "${root}" worktree remove --force "${index_flags_checkout}" \
+      >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${attributes_checkout}" ]]; then
+    git -C "${root}" worktree remove --force "${attributes_checkout}" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${temporary_directory}"
+}
+trap cleanup EXIT
+
+fail() {
+  printf 'Reproducibility check error: %s\n' "$1" >&2
+  exit 1
+}
+
+run_builder() {
+  local checkout=$1
+  local output=$2
+
+  /usr/bin/env -i \
+    PATH="${PATH}" \
+    RELEASE_COMMIT="${commit}" \
+    RELEASE_OUTPUT_ROOT="${output}" \
+    /bin/bash --noprofile --norc \
+    "${checkout}/scripts/build-release-candidate.sh"
+}
+
+check_rejected_index_flag() {
+  local set_option=$1
+  local unset_option=$2
+  local flag_name=$3
+  local error
+
+  git -C "${index_flags_checkout}" update-index "${set_option}" -- "${flagged_path}"
+  if run_builder \
+    "${index_flags_checkout}" \
+    "${temporary_directory}/${flag_name}-output" \
+    >"${temporary_directory}/${flag_name}.stdout" \
+    2>"${temporary_directory}/${flag_name}.stderr"; then
+    fail "build script accepted Git index flag ${flag_name}"
+  fi
+  error=$(<"${temporary_directory}/${flag_name}.stderr")
+  [[ "${error}" == *"${flag_name}"* ]] || \
+    fail "build script did not fail because of Git index flag ${flag_name}"
+  git -C "${index_flags_checkout}" update-index "${unset_option}" -- "${flagged_path}"
+}
+
+if [[ -n "${GITHUB_SHA:-}" ]]; then
+  commit=${GITHUB_SHA}
+else
+  commit=$(git -C "${root}" rev-parse --verify HEAD)
+fi
+if [[ ! "${commit}" =~ ^[0-9a-f]{40}$ ]] ||
+  [[ "$(git -C "${root}" rev-parse --verify "${commit}^{commit}")" != "${commit}" ]]; then
+  printf 'Reproducibility snapshot must specify the full SHA of an existing commit.\n' >&2
+  exit 1
+fi
+
+attributes_checkout="${temporary_directory}/attributes-checkout"
+git -C "${root}" worktree add --detach "${attributes_checkout}" "${commit}" >/dev/null
+attributes_git_dir=$(git -C "${attributes_checkout}" rev-parse --absolute-git-dir)
+mkdir -p "${attributes_git_dir}/info"
+attributes_path="${attributes_git_dir}/info/attributes"
+printf '* export-ignore\n' >"${attributes_path}"
+if run_builder \
+  "${attributes_checkout}" \
+  "${temporary_directory}/attributes-output" \
+  >"${temporary_directory}/attributes-file.stdout" \
+  2>"${temporary_directory}/attributes-file.stderr"; then
+  fail "build script accepted a local Git info/attributes file"
+fi
+attributes_error=$(<"${temporary_directory}/attributes-file.stderr")
+[[ "${attributes_error}" == *"info/attributes"* ]] || \
+  fail "build script did not fail because of a local Git info/attributes file"
+rm "${attributes_path}"
+ln -s /dev/null "${attributes_path}"
+if run_builder \
+  "${attributes_checkout}" \
+  "${temporary_directory}/attributes-output" \
+  >"${temporary_directory}/attributes-symlink.stdout" \
+  2>"${temporary_directory}/attributes-symlink.stderr"; then
+  fail "build script accepted an info/attributes symbolic link"
+fi
+attributes_error=$(<"${temporary_directory}/attributes-symlink.stderr")
+[[ "${attributes_error}" == *"info/attributes"* ]] || \
+  fail "build script did not fail because of the info/attributes symbolic link"
+rm "${attributes_path}"
+git -C "${root}" worktree remove --force "${attributes_checkout}" >/dev/null
+attributes_checkout=""
+
+index_flags_checkout="${temporary_directory}/index-flags-checkout"
+git -C "${root}" worktree add --detach "${index_flags_checkout}" "${commit}" >/dev/null
+flagged_path="scripts/release_metadata.py"
+check_rejected_index_flag \
+  --assume-unchanged --no-assume-unchanged assume-unchanged
+check_rejected_index_flag \
+  --skip-worktree --no-skip-worktree skip-worktree
+git -C "${root}" worktree remove --force "${index_flags_checkout}" >/dev/null
+index_flags_checkout=""
+flagged_path=""
+
+first_root="${temporary_directory}/first"
+second_root="${temporary_directory}/second"
+mkdir -p "${first_root}" "${second_root}"
+first_checkout="${temporary_directory}/first-checkout"
+second_checkout="${temporary_directory}/second-checkout"
+git clone --quiet --no-local --no-checkout -- "${root}" "${first_checkout}"
+git clone --quiet --no-local --no-checkout -- "${root}" "${second_checkout}"
+git -C "${first_checkout}" checkout --quiet --detach "${commit}"
+git -C "${second_checkout}" checkout --quiet --detach "${commit}"
+git -C "${first_checkout}" config --local tar.umask 0077
+git -C "${second_checkout}" config --local tar.umask 0002
+
+# После экспорта функция вызывается дочерним процессом сборки.
+# shellcheck disable=SC2329
+env() {
+  if [[ "${1:-}" == "-i" ]]; then
+    shift
+  fi
+  /usr/bin/env "$@"
+}
+export -f env
+# После экспорта функция вызывается дочерним процессом сборки.
+# shellcheck disable=SC2329
+strings() {
+  return 1
+}
+export -f strings
+builtin eval 'git() { return 97; }'
+export -f git
+BASH_ENV=/guard-daemon-forbidden-bash-env \
+GOCACHEPROG=/usr/bin/false \
+GOFIPS140=latest \
+GOWORK=/dev/null \
+NODE_OPTIONS=--require=/guard-daemon-forbidden-node-hook \
+NPM_CONFIG_SCRIPT_SHELL=/usr/bin/false \
+PYTHONHOME=/guard-daemon-forbidden-python-home \
+  run_builder "${first_checkout}" "${first_root}"
+unset -f env
+unset -f strings
+unset -f git
+GOFIPS140=off \
+npm_config_script_shell=/usr/bin/false \
+  run_builder "${second_checkout}" "${second_root}"
+
+first="${first_root}/${commit}"
+second="${second_root}/${commit}"
+artifacts=(
+  LICENSE
+  RescuerV2.json
+  SHA256SUMS
+  guard-daemon-linux-amd64
+  guard-daemon-source.tar
+  guard-daemon.cdx.json
+  guard-daemon.intoto.jsonl
+  release-candidate.json
+  rescuer-manifest.schema.json
+)
+
+for artifact in "${artifacts[@]}"; do
+  cmp "${first}/${artifact}" "${second}/${artifact}"
+done
+
+python3 -I -B "${root}/scripts/release_metadata.py" verify --directory "${first}"
+python3 -I -B "${root}/scripts/release_metadata.py" verify --directory "${second}"
+gitleaks dir --no-banner --redact --max-archive-depth=1 \
+  --config="${root}/.gitleaks.toml" "${first}"
+gitleaks dir --no-banner --redact --max-archive-depth=1 \
+  --config="${root}/.gitleaks.toml" "${second}"
+
+binary_strings="${temporary_directory}/binary.strings"
+if ! strings "${first}/guard-daemon-linux-amd64" >"${binary_strings}"; then
+  fail "failed to inspect executable strings"
+fi
+while IFS= read -r binary_string; do
+  if [[ "${binary_string}" =~ (PermitSweeper|permitAndTransfer|permitAndSweep) ]]; then
+    printf 'Removed permit path found in the candidate executable.\n' >&2
+    exit 1
+  fi
+done <"${binary_strings}"
+
+printf 'Snapshot commit: %s\n' "${commit}"
+while IFS= read -r checksum; do
+  printf '%s\n' "${checksum}"
+done <"${first}/SHA256SUMS"

@@ -1,0 +1,200 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26.5"
+  NODE_VERSION: "24.18.1"
+  NPM_VERSION: "11.16.0"
+  ACTIONLINT_VERSION: "v1.7.12"
+  FOUNDRY_VERSION: "v1.7.1"
+  FOUNDRY_SHA256: "cf7e688ed0c4c48adffca788b496076e31060b67ac5afe1e43dbb5499c20c88b"
+  SHELLCHECK_VERSION: "0.11.0"
+  SHELLCHECK_SHA256: "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  formatting:
+    name: Formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install npm
+        run: npm install --global "npm@${NPM_VERSION}"
+      - name: Install Node.js dependencies
+        run: npm ci
+      - name: Install Foundry
+        run: bash scripts/install-foundry-ci.sh
+      - name: Install actionlint
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin"
+          GOBIN="${RUNNER_TEMP}/bin" go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+      - name: Install ShellCheck
+        run: |
+          archive="${RUNNER_TEMP}/shellcheck.tar.xz"
+          curl --fail --location --silent --show-error \
+            --output "${archive}" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xJf "${archive}" -C "${RUNNER_TEMP}"
+          install "${RUNNER_TEMP}/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" "${RUNNER_TEMP}/bin/shellcheck"
+      - name: Check formatting
+        run: make format-check
+
+  go:
+    name: Go Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Build and test Go
+        run: make go-ci
+
+  release-build:
+    name: Release Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Verify release compilation
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          GOTOOLCHAIN: local
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          go build -mod=readonly -trimpath -buildvcs=false \
+            -ldflags="-s -w -buildid= -X guard-daemon/internal/buildinfo.ReleaseCommit=$RELEASE_COMMIT" \
+            -o "$RUNNER_TEMP/guard-daemon" ./cmd/guard-daemon
+
+  typescript-contracts:
+    name: TypeScript and Contract Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      FOUNDRY_PROFILE: ci
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install npm
+        run: npm install --global "npm@${NPM_VERSION}"
+      - name: Install Node.js dependencies
+        run: npm ci
+      - name: Install Foundry
+        run: bash scripts/install-foundry-ci.sh
+      - name: Check TypeScript and contracts
+        run: make typecheck lint contracts-build contracts-test contracts-lint artifacts-verify
+
+  adversarial-go:
+    name: Adversarial Go Integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Test the explicit adversarial package set
+        run: bash test/ci/adversarial-go.sh
+
+  go-fuzz:
+    name: Bounded Go Fuzzing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Run bounded fuzz campaigns
+        run: bash test/ci/go-fuzz.sh
+
+  local-chain:
+    name: Isolated Local Deployment Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install npm
+        run: npm install --global "npm@${NPM_VERSION}"
+      - name: Install Node.js dependencies
+        run: npm ci
+      - name: Install Foundry
+        run: bash scripts/install-foundry-ci.sh
+      - name: Test local-chain-only deployment
+        run: bash test/ci/run-deployment-tests.sh
