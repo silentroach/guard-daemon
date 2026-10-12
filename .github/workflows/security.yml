@@ -147,9 +147,9 @@ jobs:
       - name: Statically verify systemd configuration
         run: |
           set -euo pipefail
-          sudo systemd-sysusers packaging/systemd/guard-daemon.sysusers
+          sudo systemd-sysusers "$GITHUB_WORKSPACE/packaging/systemd/guard-daemon.sysusers"
           sudo /usr/bin/env -i PATH=/usr/bin:/bin /bin/bash --noprofile --norc scripts/verify-systemd-account.sh
-          sudo systemd-tmpfiles --create packaging/systemd/guard-daemon.tmpfiles
+          sudo systemd-tmpfiles --create "$GITHUB_WORKSPACE/packaging/systemd/guard-daemon.tmpfiles"
           sudo install -d -o root -g root -m 0755 /usr/lib/guard-daemon/releases/ci-placeholder/artifacts/contracts
           sudo install -o root -g root -m 0755 /bin/true /usr/lib/guard-daemon/releases/ci-placeholder/guard-daemon
           sudo install -o root -g root -m 0644 /dev/null /usr/lib/guard-daemon/releases/ci-placeholder/artifacts/contracts/RescuerV2.json
