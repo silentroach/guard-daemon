@@ -100,6 +100,8 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 		return err
 	}
 	watcherService, err := dependencies.newWatcher(watcher.Dependencies{
+		Fast:           network.configured.LatestState,
+		DryRun:         network.mode.IsDryRun(),
 		Contracts:      reader,
 		Finalized:      quorum,
 		LogSubscriber:  logSubscriber,

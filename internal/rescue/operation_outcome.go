@@ -53,6 +53,24 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 		}
 		return newError("rescue.receipt", domain.ErrorPostcondition, codeReverted, false, false, nil)
 	}
+	if incident.Policy.LatestState {
+		orphaned := incident.SnapshotBlockNumber >= receipt.BlockNumber.Uint64()
+		if !orphaned {
+			header, err := session.finality.Header(ctx, incident.SnapshotBlockNumber)
+			if err != nil {
+				return session.postconditionAmbiguous(ctx, incident, err)
+			}
+			orphaned = header.Hash != incident.SnapshotBlockHash
+		}
+		if orphaned {
+			// The fee is final even when the earlier balance snapshot belonged to
+			// an orphaned branch. Do not claim a successful asset transfer from it.
+			if err := session.setTerminal(ctx, incident, store.RescueFailed, "rescue_prestate_reorg"); err != nil {
+				return err
+			}
+			return newError("rescue.prestate_reorg", domain.ErrorPostcondition, codePostcondition, false, false, nil)
+		}
+	}
 
 	code, err := session.finality.CodeAt(ctx, postBlock, session.coordinator.source)
 	if err != nil {
@@ -207,11 +225,13 @@ func (session *Session) blockTime(block rpc.BlockRef) time.Time {
 
 func (session *Session) canonicalProofStart(ctx context.Context, incident *store.RescueIncident, receipt *types.Receipt) (rpc.BlockRef, error) {
 	postBlock, err := session.finality.Finalized(ctx)
-	if err != nil || postBlock.Hash == (common.Hash{}) || postBlock.Number < incident.SnapshotBlockNumber || postBlock.Number < receipt.BlockNumber.Uint64() {
+	if err != nil || postBlock.Hash == (common.Hash{}) || (!incident.Policy.LatestState && postBlock.Number < incident.SnapshotBlockNumber) || postBlock.Number < receipt.BlockNumber.Uint64() {
 		return rpc.BlockRef{}, contextOrError(ctx, "rescue.post_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err)
 	}
-	if err := session.requireCanonicalHeader(ctx, incident.SnapshotBlockNumber, incident.SnapshotBlockHash); err != nil {
-		return rpc.BlockRef{}, err
+	if !incident.Policy.LatestState {
+		if err := session.requireCanonicalHeader(ctx, incident.SnapshotBlockNumber, incident.SnapshotBlockHash); err != nil {
+			return rpc.BlockRef{}, err
+		}
 	}
 	if err := session.requireCanonicalHeader(ctx, receipt.BlockNumber.Uint64(), receipt.BlockHash); err != nil {
 		return rpc.BlockRef{}, err
@@ -220,8 +240,10 @@ func (session *Session) canonicalProofStart(ctx context.Context, incident *store
 }
 
 func (session *Session) canonicalProofEnd(ctx context.Context, incident *store.RescueIncident, receipt *types.Receipt, expectedFinalized rpc.BlockRef) error {
-	if err := session.requireCanonicalHeader(ctx, incident.SnapshotBlockNumber, incident.SnapshotBlockHash); err != nil {
-		return err
+	if !incident.Policy.LatestState {
+		if err := session.requireCanonicalHeader(ctx, incident.SnapshotBlockNumber, incident.SnapshotBlockHash); err != nil {
+			return err
+		}
 	}
 	if err := session.requireCanonicalHeader(ctx, receipt.BlockNumber.Uint64(), receipt.BlockHash); err != nil {
 		return err

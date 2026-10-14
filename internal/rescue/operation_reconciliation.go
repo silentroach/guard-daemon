@@ -8,6 +8,7 @@ import (
 	"guard-daemon/internal/budget"
 	"guard-daemon/internal/domain"
 	"guard-daemon/internal/observability"
+	"guard-daemon/internal/rpc"
 	"guard-daemon/internal/store"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -43,6 +44,11 @@ func (session *Session) broadcastAndWait(ctx context.Context, incident *store.Re
 		if err := session.refreshNonceBlock(ctx); err != nil {
 			return err
 		}
+	}
+	if session.coordinator.latestState || incident.Policy.LatestState {
+		// The durable coordinator owns reconciliation from here. Do not hold the
+		// signing mutex or watcher queue while waiting for L1 finality.
+		return sendFailure
 	}
 
 	receipt, err := session.waitReceipt(ctx, incident.TxHash, incident.ReconcileUntil)
@@ -87,6 +93,9 @@ func (session *Session) reconcileOnce(ctx context.Context, incident *store.Rescu
 	}
 	if err := session.ensureDurableNonceFloor(ctx, incident.SponsorNonce); err != nil {
 		return err
+	}
+	if session.coordinator.latestState || incident.Policy.LatestState {
+		return session.reconcileUnfinalized(ctx, incident, transaction)
 	}
 
 	if incident.Status == store.RescueSigned || incident.Status == store.RescueAmbiguous {
@@ -201,6 +210,19 @@ func (session *Session) sendPersisted(ctx context.Context, incident *store.Rescu
 	if session.claimExpired(incident) {
 		return false, newError("rescue.claim_expired", domain.ErrorConfiguration, codeNoPaidAction, false, true, nil)
 	}
+	if session.coordinator.feePolicy.EstimatedBaseFees && session.cachedAttempt(incident) == nil {
+		block, err := session.preflightBlock(ctx)
+		if err != nil {
+			return false, err
+		}
+		extra, err := rpc.EstimateBaseAdditionalFee(ctx, session.finality, block, len(transaction.Data()), transaction.Gas())
+		if err != nil {
+			return false, err
+		}
+		if extra.Cmp(session.coordinator.feePolicy.Overhead.ToBig()) > 0 {
+			return false, newError("rescue.l2_fee_estimate", domain.ErrorBudget, codeBudgetExceeded, true, true, nil)
+		}
+	}
 	reservation, err := session.ensureReservation(ctx, incident, transaction)
 	if err != nil {
 		return false, err
@@ -232,7 +254,20 @@ func (session *Session) sendPersisted(ctx context.Context, incident *store.Rescu
 }
 
 func (session *Session) recheckSponsorReserve(ctx context.Context, reservationID budget.ReservationID) error {
-	block, err := session.finality.Finalized(ctx)
+	if snapshot := session.attempt; snapshot != nil && budget.NewReservationID(budget.Attempt{Incident: snapshot.incident, Number: snapshot.attempt}) == reservationID {
+		age := session.coordinator.clock.Now().Sub(snapshot.started)
+		if age >= 0 && age <= maxAttemptSnapshotAge {
+			balance, overflow := uint256.FromBig(snapshot.sponsor)
+			if overflow {
+				return newError("rescue.sponsor_balance", domain.ErrorRPCInvalidResponse, codeBalanceDecode, true, true, nil)
+			}
+			if err := session.coordinator.budget.CheckSponsorCapacity(ctx, reservationID, *balance); err != nil {
+				return session.budgetError("rescue.sponsor_capacity", err)
+			}
+			return nil
+		}
+	}
+	block, err := session.preflightBlock(ctx)
 	if err != nil || block.Hash == (common.Hash{}) {
 		return contextOrError(ctx, "rescue.sponsor_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err)
 	}

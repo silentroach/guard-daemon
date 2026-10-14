@@ -90,7 +90,7 @@ func (session *Session) Handle(ctx context.Context, candidate domain.RescueCandi
 		err  error
 	)
 	switch candidate.Kind {
-	case domain.CandidateToken:
+	case domain.CandidateToken, domain.CandidateFastToken:
 		if candidate.Token.Address == (common.Address{}) {
 			return newError("dry_run.plan", domain.ErrorConfiguration, codePlanFailed, false)
 		}

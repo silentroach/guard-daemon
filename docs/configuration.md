@@ -116,6 +116,7 @@ MAX_TRANSACTION_COST_WEI <= HOURLY_BUDGET_WEI <= DAILY_BUDGET_WEI <= CUMULATIVE_
 | `MAX_PRIORITY_FEE_PER_GAS_WEI_<N>` | зависит от сети | Положительный `uint256`, не больше `MAX_FEE_PER_GAS_WEI_<N>`. |
 | `MIN_PRIORITY_FEE_PER_GAS_WEI_<N>` | `0` | Нижняя граница выбранной приоритетной комиссии, не больше `MAX_PRIORITY_FEE_PER_GAS_WEI_<N>`. Ноль отключает нижнюю границу. |
 | `NETWORK_FEE_MODE_<N>` | `bounded` | `bounded` сохраняет строгую модель комиссий. Только для Base разрешено `estimated`: оценка L1/operator fee перед подписью и полный учёт после квитанции. |
+| `NETWORK_CONFIRMATION_MODE_<N>` | `finalized` | `latest` включает раннюю обработку ERC-20 по согласованному свежему блоку двух RPC и параллельную подготовку. Квитанции, итог операции и списание расходов по-прежнему требуют финализации. [Подробности](operations/fast-rescue.md). |
 | `CLAIM_REQUEST_<N>` | нет | Путь к одному JSON-запросу атомарного клейма с переводом ERC-20. Формат и запуск: [атомарные клеймы](operations/atomic-claims.md). |
 | `TOKEN_GAS_LIMIT_<N>` | `300000` | Положительное десятичное целое `uint64`. |
 | `TOKEN_VALUE_RULES_<N>` | нет | Необязательный список правил `address:minimum_raw_balance:max_cost_wei`. Для обычного запуска в рабочем режиме правило требуется для каждого доверенного токена. |

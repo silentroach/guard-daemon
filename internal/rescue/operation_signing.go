@@ -21,6 +21,10 @@ import (
 
 func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *store.RescueIncident) error {
 	coordinator := session.coordinator
+	snapshot := session.cachedAttempt(incident)
+	if incident.Policy.LatestState && snapshot == nil {
+		return session.restartPreparedAttempt(ctx, incident)
+	}
 	if session.claimExpired(incident) {
 		if err := session.setTerminal(ctx, incident, store.RescueFailed, codeNoPaidAction); err != nil {
 			return err
@@ -31,19 +35,25 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 	if err != nil {
 		return err
 	}
-	sponsorNonce, err := session.sponsorNonce(ctx)
-	if err != nil {
-		return session.beforeSignedFailure(ctx, incident, err)
-	}
-	if sponsorNonce != incident.SponsorNonce {
-		failure := newError("rescue.sponsor_nonce", domain.ErrorRPCTransient, codeNonceRead, true, false, nil)
-		return session.beforeSignedFailure(ctx, incident, failure)
+	if snapshot == nil {
+		sponsorNonce, err := session.sponsorNonce(ctx)
+		if err != nil {
+			return session.beforeSignedFailure(ctx, incident, err)
+		}
+		if sponsorNonce != incident.SponsorNonce {
+			return session.beforeSignedFailure(ctx, incident, newError("rescue.sponsor_nonce", domain.ErrorRPCTransient, codeNonceRead, true, false, nil))
+		}
 	}
 	data, asset, err := session.operationData(incident)
 	if err != nil {
 		return session.beforeSignedFailure(ctx, incident, err)
 	}
-	fees, err := session.readFees(ctx, asset)
+	var fees FeeQuote
+	if snapshot != nil {
+		fees = snapshot.fees
+	} else {
+		fees, err = session.readFees(ctx, asset)
+	}
 	if err != nil {
 		return session.beforeSignedFailure(ctx, incident, err)
 	}
@@ -65,17 +75,27 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 	}
 
 	unknown := isTokenOperation(incident.Kind) && !incident.Trusted
-	budgetBlock, err := session.finality.Finalized(ctx)
+	var budgetBlock rpc.BlockRef
+	if snapshot != nil {
+		budgetBlock = snapshot.block
+	} else {
+		budgetBlock, err = session.finality.Finalized(ctx)
+	}
 	if err != nil || budgetBlock.Hash == (common.Hash{}) {
 		return session.beforeSignedFailure(ctx, incident, contextOrError(ctx, "rescue.budget_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err))
 	}
-	if coordinator.feePolicy.EstimatedBaseFees {
+	if coordinator.feePolicy.EstimatedBaseFees && snapshot == nil {
 		extra, estimateErr := rpc.EstimateBaseAdditionalFee(ctx, session.finality, budgetBlock, len(data), gas)
 		if estimateErr != nil || extra.Cmp(coordinator.feePolicy.Overhead.ToBig()) > 0 {
 			return session.beforeSignedFailure(ctx, incident, newError("rescue.l2_fee_estimate", domain.ErrorBudget, codeBudgetExceeded, true, false, estimateErr))
 		}
 	}
-	sponsorBalance, err := session.nativeBalanceAt(ctx, budgetBlock, coordinator.sponsor)
+	var sponsorBalance *big.Int
+	if snapshot != nil {
+		sponsorBalance = snapshot.sponsor
+	} else {
+		sponsorBalance, err = session.nativeBalanceAt(ctx, budgetBlock, coordinator.sponsor)
+	}
 	if err != nil {
 		return session.beforeSignedFailure(ctx, incident, err)
 	}
@@ -152,12 +172,13 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 		return session.releaseBeforeSigned(ctx, incident, reservation.ID, newError("rescue.fees", domain.ErrorRPCInvalidResponse, codeFeeInvalid, true, true, nil))
 	}
 
-	// Это намеренно последнее чтение RPC перед подписанием авторизации.
+	// В быстром режиме это единственное чтение nonce source и последнее RPC
+	// перед авторизацией; проверки резерва используют снимок текущей попытки.
 	sourceNonce, err := session.checkedPendingNonce(ctx, coordinator.source)
 	if err != nil {
 		return session.releaseBeforeSigned(ctx, incident, reservation.ID, err)
 	}
-	if sourceNonce != incident.SourceNonce {
+	if !incident.Policy.LatestState && sourceNonce != incident.SourceNonce {
 		return session.releaseBeforeSigned(ctx, incident, reservation.ID, newError("rescue.source_nonce", domain.ErrorRPCTransient, codeNonceRead, true, false, nil))
 	}
 	authorizationRequest := types.SetCodeAuthorization{ChainID: *chainU256, Address: coordinator.rescuer, Nonce: sourceNonce}
@@ -190,14 +211,33 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 		Value:             value.ToBig(),
 		AuthorizationList: []types.SetCodeAuthorization{authorization},
 	}
-	simulationBlock, err := session.finality.Finalized(ctx)
+	simulationBlock := budgetBlock
+	if snapshot == nil {
+		simulationBlock, err = session.finality.Finalized(ctx)
+	}
 	if err != nil || simulationBlock.Hash == (common.Hash{}) {
 		return session.releaseBeforeSigned(ctx, incident, reservation.ID, contextOrError(ctx, "rescue.simulation_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err))
 	}
-	if err := SimulateEIP7702At(ctx, session.finality, simulationBlock, simulation); err != nil {
-		return session.releaseBeforeSigned(ctx, incident, reservation.ID, contextOrError(ctx, "rescue.simulation_quorum", domain.ErrorRPCTransient, codeSimulation, true, false, err))
+	if snapshot != nil {
+		err = parallelReads(ctx,
+			func(ctx context.Context) error {
+				return SimulateEIP7702At(ctx, snapshot.reader, simulationBlock, simulation)
+			},
+			func(ctx context.Context) error {
+				_, err := EstimateEIP7702Gas(ctx, session.reader, simulation)
+				return err
+			},
+			func(ctx context.Context) error {
+				return session.requireCanonicalHeader(ctx, snapshot.block.Number, snapshot.block.Hash)
+			},
+		)
+	} else {
+		err = SimulateEIP7702At(ctx, session.finality, simulationBlock, simulation)
+		if err == nil {
+			_, err = EstimateEIP7702Gas(ctx, session.reader, simulation)
+		}
 	}
-	if _, err := EstimateEIP7702Gas(ctx, session.reader, simulation); err != nil {
+	if err != nil {
 		return session.releaseBeforeSigned(ctx, incident, reservation.ID, contextOrError(ctx, "rescue.simulation", domain.ErrorRPCTransient, codeSimulation, true, false, err))
 	}
 
@@ -214,6 +254,9 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 			return err
 		}
 		var signErr error
+		if incident.Policy.LatestState && session.cachedAttempt(incident) == nil {
+			return newError("rescue.snapshot_expired", domain.ErrorRPCTransient, codeRetryPending, true, false, nil)
+		}
 		if session.claimExpired(incident) {
 			return newError("rescue.claim_expired", domain.ErrorConfiguration, codeNoPaidAction, false, false, nil)
 		}
@@ -240,6 +283,7 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 
 	now := coordinator.clock.Now()
 	incident.Status = store.RescueSigned
+	incident.SourceNonce = sourceNonce
 	incident.TxHash = signed.Hash()
 	incident.SignedTransaction = append([]byte(nil), encoded...)
 	incident.ReconcileUntil = now.Add(incident.Policy.FinalityTimeout)
@@ -507,16 +551,25 @@ func (session *Session) readFees(ctx context.Context, asset FeeAsset) (FeeQuote,
 	readContext, cancel := context.WithTimeout(ctx, session.coordinator.feeReadTimeout)
 	defer cancel()
 
-	head, err := session.reader.HeaderByNumber(readContext, nil)
+	var head *types.Header
+	var gasPrice *big.Int
+	err := parallelReads(readContext,
+		func(ctx context.Context) error {
+			var err error
+			head, err = session.reader.HeaderByNumber(ctx, nil)
+			return err
+		},
+		func(ctx context.Context) error {
+			var err error
+			gasPrice, err = session.reader.SuggestGasPrice(ctx)
+			return err
+		},
+	)
 	if err != nil {
 		return FeeQuote{}, contextOrError(readContext, "rescue.fees_header", domain.ErrorRPCTransient, codeFeeRead, true, true, err)
 	}
 	if head == nil || head.BaseFee == nil || head.BaseFee.Sign() <= 0 {
 		return FeeQuote{}, newError("rescue.fees_header", domain.ErrorRPCInvalidResponse, codeFeeInvalid, true, true, nil)
-	}
-	gasPrice, err := session.reader.SuggestGasPrice(readContext)
-	if err != nil {
-		return FeeQuote{}, contextOrError(readContext, "rescue.fees_gas_price", domain.ErrorRPCTransient, codeFeeRead, true, true, err)
 	}
 	if gasPrice == nil || gasPrice.Sign() <= 0 {
 		return FeeQuote{}, newError("rescue.fees_gas_price", domain.ErrorRPCInvalidResponse, codeFeeInvalid, true, true, nil)

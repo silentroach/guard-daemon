@@ -546,9 +546,11 @@ func newTestService(
 	caller rpc.ContractCaller,
 	logs rpc.LogSubscriber,
 	heads rpc.HeadSubscriber,
+	fast ...bool,
 ) *Service {
 	t.Helper()
 	service, err := NewService(Dependencies{
+		Fast:      len(fast) > 0 && fast[0],
 		Contracts: caller, Finalized: finalized, LogSubscriber: logs, HeadSubscriber: heads,
 		Codec: newTestCodec(t), Clock: clock.Real{}, Observer: observability.Discard{}, Store: handoff,
 		Source: source, Network: network, Generation: 1, LookbackBlocks: lookback, ReadTimeout: time.Second,

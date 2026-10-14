@@ -161,14 +161,26 @@ func (reader *QuorumReader) Close() {
 }
 
 func (reader *QuorumReader) Finalized(ctx context.Context) (BlockRef, error) {
+	return reader.commonHead(ctx, big.NewInt(int64(gethrpc.FinalizedBlockNumber)))
+}
+
+// Latest agrees on the newest height available to every provider. This is an
+// inclusion view, not a claim of finality.
+func (reader *QuorumReader) Latest(ctx context.Context) (BlockRef, error) {
+	return reader.commonHead(ctx, nil)
+}
+
+func (reader *QuorumReader) commonHead(ctx context.Context, tag *big.Int) (BlockRef, error) {
 	headers, err := collectProviders(reader, ctx, func(callCtx context.Context, provider HistoricalReader) (*types.Header, error) {
-		return provider.HeaderByNumber(callCtx, big.NewInt(int64(gethrpc.FinalizedBlockNumber)))
+		return provider.HeaderByNumber(callCtx, tag)
 	})
 	if err != nil {
 		return BlockRef{}, err
 	}
 
 	minimum := ^uint64(0)
+	var first BlockRef
+	agree := true
 	for _, header := range headers {
 		ref, refErr := blockRefFromHeader(header, nil)
 		if refErr != nil {
@@ -177,6 +189,14 @@ func (reader *QuorumReader) Finalized(ctx context.Context) (BlockRef, error) {
 		if ref.Number < minimum {
 			minimum = ref.Number
 		}
+		if first.Hash == (common.Hash{}) {
+			first = ref
+		} else if first != ref {
+			agree = false
+		}
+	}
+	if agree {
+		return first, nil
 	}
 	return reader.Header(ctx, minimum)
 }
@@ -385,6 +405,10 @@ func (reader *QuorumReader) BalanceAt(ctx context.Context, block BlockRef, accou
 	if err := reader.requireCanonicalBlock(ctx, block); err != nil {
 		return nil, err
 	}
+	return reader.balanceAtHash(ctx, block, account)
+}
+
+func (reader *QuorumReader) balanceAtHash(ctx context.Context, block BlockRef, account common.Address) (*big.Int, error) {
 	balances, err := collectProviders(reader, ctx, func(callCtx context.Context, provider HistoricalReader) (*big.Int, error) {
 		return provider.BalanceAtHash(callCtx, account, block.Hash)
 	})
@@ -421,6 +445,10 @@ func (reader *QuorumReader) CallContract(ctx context.Context, block BlockRef, ca
 	if err := reader.requireCanonicalBlock(ctx, block); err != nil {
 		return nil, err
 	}
+	return reader.callAtHash(ctx, block, call)
+}
+
+func (reader *QuorumReader) callAtHash(ctx context.Context, block BlockRef, call ethereum.CallMsg) ([]byte, error) {
 	responses, err := collectProviders(reader, ctx, func(callCtx context.Context, provider HistoricalReader) ([]byte, error) {
 		return provider.CallContractAtHash(callCtx, cloneCallMsg(call), block.Hash)
 	})
@@ -469,6 +497,19 @@ func (reader *QuorumReader) Receipt(ctx context.Context, transaction common.Hash
 	if err != nil {
 		return nil, err
 	}
+	return reader.receiptBelow(ctx, transaction, finalized.Number)
+}
+
+// MinedReceipt checks provider agreement and canonical inclusion without waiting
+// for finality. It must not be used to settle a budget or report final success.
+func (reader *QuorumReader) MinedReceipt(ctx context.Context, transaction common.Hash) (*types.Receipt, error) {
+	if transaction == (common.Hash{}) {
+		return nil, ErrMalformedResponse
+	}
+	return reader.receiptBelow(ctx, transaction, ^uint64(0))
+}
+
+func (reader *QuorumReader) receiptBelow(ctx context.Context, transaction common.Hash, ceiling uint64) (*types.Receipt, error) {
 	receipts, err := collectProviders(reader, ctx, func(callCtx context.Context, provider HistoricalReader) (*types.Receipt, error) {
 		return provider.TransactionReceipt(callCtx, transaction)
 	})
@@ -497,7 +538,7 @@ func (reader *QuorumReader) Receipt(ctx context.Context, transaction common.Hash
 	}
 
 	number := agreed.BlockNumber.Uint64()
-	if number > finalized.Number {
+	if number > ceiling {
 		return nil, ErrUnfinalizedReceipt
 	}
 	canonical, err := reader.Header(ctx, number)

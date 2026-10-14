@@ -728,7 +728,7 @@ func (store *BoltStore) indexCandidateBlock(tx *bolt.Tx, candidate domain.Rescue
 }
 
 func candidateBlockIndexKey(candidate domain.RescueCandidate) []byte {
-	if candidate.BlockHash == (common.Hash{}) {
+	if candidate.BlockHash == (common.Hash{}) || candidate.Kind == domain.CandidateFastToken {
 		return nil
 	}
 	key := make([]byte, 0, 8+common.HashLength+len(candidate.ID))

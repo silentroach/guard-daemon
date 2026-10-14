@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	rescueRecordVersion     = byte(2)
-	maxErrorCodeBytes       = 128
-	maxSignedTransactionLen = 128 << 10
+	rescueRecordVersion       = byte(2)
+	latestRescueRecordVersion = byte(3)
+	maxErrorCodeBytes         = 128
+	maxSignedTransactionLen   = 128 << 10
 )
 
 func (store *BoltStore) PutRescueIncident(ctx context.Context, incident RescueIncident) (RescueIncident, error) {
@@ -326,6 +327,9 @@ func encodeRescueIncident(incident RescueIncident) ([]byte, error) {
 	code := []byte(incident.LastCode)
 	result := make([]byte, 0, 400+len(code)+len(incident.SignedTransaction))
 	result = append(result, rescueRecordVersion)
+	if incident.Policy.LatestState {
+		result[0] = latestRescueRecordVersion
+	}
 	result = append(result, incident.ID[:]...)
 	result = append(result, incident.Parent[:]...)
 	result = append(result, incident.Candidate[:]...)
@@ -358,6 +362,9 @@ func encodeRescueIncident(incident RescueIncident) ([]byte, error) {
 	result = append(result, code...)
 	result = appendTime(result, incident.CreatedAt)
 	result = appendTime(result, incident.UpdatedAt)
+	if incident.Policy.LatestState {
+		result = append(result, 1)
+	}
 	return result, nil
 }
 
@@ -371,7 +378,7 @@ func decodeRescueIncidentV2(data []byte) (RescueIncident, error) {
 
 func decodeRescueIncidentForSchema(data []byte, allowLegacyTokenSuccess bool) (RescueIncident, error) {
 	const fixedSize = 1 + 32 + 32 + 32 + 8 + 1 + 20 + 8 + 1 + 4 + 8 + 8 + 1 + 4 + 8 + 8 + 32 + 4 + 8 + 32 + 32 + 32 + 12 + 12 + 2 + 12 + 12
-	if len(data) < fixedSize || data[0] != rescueRecordVersion {
+	if len(data) < fixedSize || (data[0] != rescueRecordVersion && (data[0] != latestRescueRecordVersion || allowLegacyTokenSuccess)) {
 		return RescueIncident{}, errInvalidRecord
 	}
 	offset := 1
@@ -449,7 +456,17 @@ func decodeRescueIncidentForSchema(data []byte, allowLegacyTokenSuccess bool) (R
 	if incident.CreatedAt, ok = readTime(data, &offset); !ok {
 		return RescueIncident{}, errInvalidRecord
 	}
-	if incident.UpdatedAt, ok = readTime(data, &offset); !ok || offset != len(data) {
+	if incident.UpdatedAt, ok = readTime(data, &offset); !ok {
+		return RescueIncident{}, errInvalidRecord
+	}
+	if data[0] == latestRescueRecordVersion {
+		if offset >= len(data) || data[offset] != 1 {
+			return RescueIncident{}, errInvalidRecord
+		}
+		incident.Policy.LatestState = true
+		offset++
+	}
+	if offset != len(data) {
 		return RescueIncident{}, errInvalidRecord
 	}
 	validated := incident
@@ -588,7 +605,13 @@ func validRescueTransition(current, next RescueIncident) bool {
 	case RescuePending:
 		return (next.Status == RescuePrepared || next.Status == RescueRetryable) && next.Attempts == 1
 	case RescuePrepared:
-		if next.Attempts != current.Attempts || !sameRescuePreparation(current, next) {
+		prepared := current
+		// Source nonce is read immediately before authorization signing. Once
+		// Signed is durable it remains immutable through every later transition.
+		if next.Status == RescueSigned {
+			prepared.SourceNonce = next.SourceNonce
+		}
+		if next.Attempts != current.Attempts || !sameRescuePreparation(prepared, next) {
 			return false
 		}
 		return (next.Status == RescueSigned && next.ReconcileUntil.Sub(next.UpdatedAt) >= next.Policy.FinalityTimeout) ||

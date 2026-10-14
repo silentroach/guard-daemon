@@ -48,6 +48,7 @@ const (
 	CandidateNative
 	CandidatePeriodic
 	CandidateClaim
+	CandidateFastToken
 )
 
 type CandidateID [sha256.Size]byte
@@ -80,6 +81,19 @@ func NewLogCandidate(network NetworkID, source common.Address, token Token, bloc
 		BlockNumber: blockNumber,
 		TxHash:      txHash,
 		LogIndex:    logIndex,
+	}
+	candidate.ID = candidateID(candidate)
+	return candidate
+}
+
+// NewFastTokenCandidate is a balance-check hint from an agreed, unfinalized log.
+// Its queue record is independent of the finalized scanner's checkpoint.
+func NewFastTokenCandidate(network NetworkID, source common.Address, token Token, blockHash, txHash common.Hash, blockNumber uint64, logIndex uint, dryRun bool) RescueCandidate {
+	candidate := NewLogCandidate(network, source, token, blockHash, txHash, blockNumber, logIndex)
+	candidate.Kind = CandidateFastToken
+	// A dry-run acknowledgement must not consume the corresponding paid job.
+	if dryRun {
+		candidate.Observation = 1
 	}
 	candidate.ID = candidateID(candidate)
 	return candidate
@@ -129,6 +143,10 @@ func ValidateCandidate(candidate RescueCandidate) error {
 		return ErrInvalidCandidate
 	}
 	switch candidate.Kind {
+	case CandidateFastToken:
+		if candidate.Token.Address == (common.Address{}) || candidate.BlockHash == (common.Hash{}) || candidate.TxHash == (common.Hash{}) || candidate.Observation > 1 {
+			return ErrInvalidCandidate
+		}
 	case CandidateClaim:
 		if candidate.Token.Address == (common.Address{}) || candidate.TxHash == (common.Hash{}) || candidate.BlockNumber != 0 || candidate.BlockHash != (common.Hash{}) {
 			return ErrInvalidCandidate

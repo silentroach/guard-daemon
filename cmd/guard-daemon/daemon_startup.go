@@ -283,6 +283,7 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 			}
 			coordinator, err = rescue.NewCoordinator(rescue.Config{
 				Claim:              preparedNetwork.configured.Claim,
+				LatestState:        preparedNetwork.configured.LatestState,
 				Network:            network,
 				Source:             runtimeConfig.SourceAddress,
 				Sponsor:            runtimeConfig.SponsorAddress,

@@ -23,15 +23,33 @@ func EstimateBaseAdditionalFee(ctx context.Context, reader pinnedFeeCaller, bloc
 	if ctx == nil || reader == nil || calldataBytes < 0 || calldataBytes > 64<<10 || gas == 0 {
 		return nil, ErrMalformedResponse
 	}
-	l1, err := baseOracleFee(ctx, reader, block, []byte{0xf1, 0xc7, 0xa5, 0x8b}, uint64(calldataBytes)+1024)
-	if err != nil {
-		return nil, err
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type response struct {
+		value *big.Int
+		err   error
 	}
-	operator, err := baseOracleFee(ctx, reader, block, []byte{0x27, 0x5a, 0xed, 0xd2}, gas)
-	if err != nil {
-		return nil, err
+	results := make(chan response, 2)
+	go func() {
+		value, err := baseOracleFee(ctx, reader, block, []byte{0xf1, 0xc7, 0xa5, 0x8b}, uint64(calldataBytes)+1024)
+		results <- response{value, err}
+	}()
+	go func() {
+		value, err := baseOracleFee(ctx, reader, block, []byte{0x27, 0x5a, 0xed, 0xd2}, gas)
+		results <- response{value, err}
+	}()
+	total := new(big.Int)
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			return nil, result.err
+		}
+		total.Add(total, result.value)
 	}
-	return addBaseFees(l1, operator)
+	if total.BitLen() > 256 {
+		return nil, ErrMalformedResponse
+	}
+	return total, nil
 }
 
 func baseOracleFee(ctx context.Context, reader pinnedFeeCaller, block BlockRef, selector []byte, value uint64) (*big.Int, error) {

@@ -226,7 +226,7 @@ type reconcilingTokenPolicySession struct {
 }
 
 func (session *tokenPolicySession) Handle(ctx context.Context, candidate domain.RescueCandidate) error {
-	if candidate.Kind == domain.CandidateToken || candidate.Kind == domain.CandidateClaim {
+	if candidate.Kind == domain.CandidateToken || candidate.Kind == domain.CandidateClaim || candidate.Kind == domain.CandidateFastToken {
 		if candidate.Token.Address == (common.Address{}) {
 			return processError("daemon.token_policy", domain.ErrorConfiguration, errorTokenForbidden, false, nil)
 		}
@@ -410,7 +410,7 @@ func consumeCandidates(ctx context.Context, network domain.NetworkID, queue stor
 		if shouldReplay(handleError) {
 			retryAt := serviceClock.Now().Add(candidateRetryDelay)
 			var scheduled interface{ NextRetryAt() time.Time }
-			if errors.As(handleError, &scheduled) && scheduled.NextRetryAt().After(retryAt) {
+			if errors.As(handleError, &scheduled) && scheduled.NextRetryAt().After(serviceClock.Now()) {
 				retryAt = scheduled.NextRetryAt()
 			}
 			if err := queue.Nack(ctx, candidate.ID, incidentID, retryAt); err != nil {

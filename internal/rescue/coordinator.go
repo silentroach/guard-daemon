@@ -132,6 +132,7 @@ type FinalityReader interface {
 // ProcessFence приобретаются службой до создания координатора.
 type Config struct {
 	Claim              *domain.ClaimPlan
+	LatestState        bool
 	Network            domain.Network
 	Source             common.Address
 	Sponsor            common.Address
@@ -169,6 +170,7 @@ type TrustedTokenValuePolicy struct {
 // для заданных сети и спонсора.
 type Coordinator struct {
 	claim                  *domain.ClaimPlan
+	latestState            bool
 	network                domain.Network
 	source                 common.Address
 	sponsor                common.Address
@@ -218,13 +220,17 @@ type Coordinator struct {
 // Session связывает координатор с одним поколением основного RPC и одним поставщиком
 // финализированных данных, подтверждённых кворумом.
 type Session struct {
-	coordinator   *Coordinator
-	generation    uint64
-	reader        RPCReader
-	finality      FinalityReader
-	broadcaster   rpc.Broadcaster
-	lastFinalized rpc.BlockRef
-	rpcSucceeded  bool
+	attempt          *attemptSnapshot
+	lastReceiptScan  rpc.BlockRef
+	lastPendingProbe time.Time
+	recoverLatest    bool
+	coordinator      *Coordinator
+	generation       uint64
+	reader           RPCReader
+	finality         FinalityReader
+	broadcaster      rpc.Broadcaster
+	lastFinalized    rpc.BlockRef
+	rpcSucceeded     bool
 }
 
 func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner TransactionSigner, serviceClock clock.Clock, observer observability.Observer) (*Coordinator, error) {
@@ -314,6 +320,7 @@ func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner
 	}
 
 	coordinator := &Coordinator{
+		latestState:            config.LatestState,
 		network:                network,
 		source:                 config.Source,
 		sponsor:                config.Sponsor,
@@ -466,6 +473,11 @@ func (coordinator *Coordinator) NewSession(ctx context.Context, generation uint6
 	if ctx == nil || reader == nil || finality == nil || broadcaster == nil {
 		return nil, newError("rescue.session", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 	}
+	if coordinator.latestState {
+		if _, ok := finality.(latestReader); !ok {
+			return nil, newError("rescue.latest_reader", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+		}
+	}
 	if err := coordinator.validateProcessFence(); err != nil {
 		coordinator.recordFailure(domain.CandidateID{}, common.Hash{}, err)
 		return nil, err
@@ -509,15 +521,39 @@ func (session *Session) Handle(ctx context.Context, candidate domain.RescueCandi
 
 	coordinator.operationMu.Lock()
 	defer coordinator.operationMu.Unlock()
+	defer func() { session.attempt = nil }()
 	session.rpcSucceeded = false
 	if coordinator.gate.Stopped() {
 		err := newError("rescue.emergency_stop", domain.ErrorSigning, codePaidActionsStopped, true, false, observability.ErrPaidActionsStopped)
 		coordinator.recordFailure(candidate.ID, common.Hash{}, err)
 		return err
 	}
+	if coordinator.latestState && candidate.BlockHash != (common.Hash{}) &&
+		(candidate.Kind == domain.CandidateToken || candidate.Kind == domain.CandidateNative) {
+		// Finalized backfill confirms history/discovery; do not put its whole
+		// backlog through the network-heavy signing path again. Existing durable
+		// operations from an earlier mode still need to finish normally.
+		id := domain.NewAssetIncidentID(candidate.ID, candidate.Kind, candidate.Token.Address)
+		_, found, err := coordinator.state.RescueIncident(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+	}
 
 	var err error
 	switch candidate.Kind {
+	case domain.CandidateFastToken:
+		if candidate.Observation == 1 {
+			return nil
+		}
+		if !coordinator.latestState {
+			err = newError("rescue.fast_mode", domain.ErrorConfiguration, codeUnsupportedCandidate, false, false, nil)
+		} else {
+			err = session.handleAsset(ctx, candidate, domain.CandidateToken, candidate.Token.Address, domain.IncidentID{})
+		}
 	case domain.CandidateClaim:
 		if coordinator.claim == nil || candidate.ID != domain.NewClaimCandidate(coordinator.network.ChainID, coordinator.source, *coordinator.claim).ID {
 			err = newError("rescue.claim_identity", domain.ErrorConfiguration, codeCandidateMismatch, false, false, nil)
@@ -551,7 +587,11 @@ func (session *Session) RunReconciliation(ctx context.Context) error {
 	if ctx == nil {
 		return newError("rescue.reconciliation", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 	}
-	ticker := session.coordinator.clock.NewTicker(reconciliationInterval(session.coordinator.retryDelay))
+	interval := reconciliationInterval(session.coordinator.retryDelay)
+	if session.coordinator.latestState || session.recoverLatest {
+		interval = time.Second
+	}
+	ticker := session.coordinator.clock.NewTicker(interval)
 	if ticker == nil {
 		return newError("rescue.reconciliation", domain.ErrorInternal, codeInvalidConfig, false, false, nil)
 	}
@@ -562,7 +602,13 @@ func (session *Session) RunReconciliation(ctx context.Context) error {
 		case <-ctx.Done():
 			return contextOrError(ctx, "rescue.reconciliation", domain.ErrorInternal, codeContextCanceled, false, false, ctx.Err())
 		case <-ticker.C():
-			if err := session.reconcileExpired(ctx); err != nil {
+			var err error
+			if session.coordinator.latestState || session.recoverLatest {
+				err = session.reconcileFast(ctx)
+			} else {
+				err = session.reconcileExpired(ctx)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -629,6 +675,11 @@ func (session *Session) reconcileExpired(ctx context.Context) error {
 	if err := session.refreshAmbiguousTelemetry(ctx); err != nil {
 		return err
 	}
+	return session.recordReconciliation(complete)
+}
+
+func (session *Session) recordReconciliation(complete bool) error {
+	coordinator := session.coordinator
 	if coordinator.alerts != nil {
 		var alertErr error
 		if complete {
@@ -710,6 +761,12 @@ func (session *Session) recoverPersisted(ctx context.Context) error {
 		}
 		if incident.Network != session.coordinator.network.ChainID {
 			return newError("rescue.state", domain.ErrorInternal, codeStateRead, false, true, nil)
+		}
+		if incident.Policy.LatestState && (statusNeedsReceipt(incident.Status) || incident.Status == store.RescuePending || incident.Status == store.RescuePrepared || incident.Status == store.RescueRetryable) {
+			if _, ok := session.finality.(latestReader); !ok {
+				return newError("rescue.latest_reader", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+			}
+			session.recoverLatest = true
 		}
 		if incidentHasSignedTransaction(*incident) {
 			if incident.SponsorNonce == ^uint64(0) {
