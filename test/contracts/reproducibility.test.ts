@@ -13,10 +13,18 @@ import { basename, join, resolve } from "node:path";
 import test from "node:test";
 
 import { compileContracts } from "../../scripts/compileContracts.js";
+import { compileClaimFixtures } from "./claimFixtures.js";
 
 interface ContractArtifact {
   readonly abi: readonly { readonly name?: string; readonly type: string }[];
 }
+
+test("Go claim integration fixtures match their Solidity sources", async () => {
+  const saved: unknown = JSON.parse(
+    await readFile("internal/rescue/testdata/claim-contracts.json", "utf8"),
+  );
+  assert.deepStrictEqual(compileClaimFixtures(), saved);
+});
 
 const artifactDigests = async (
   directory: string,

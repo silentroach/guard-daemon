@@ -47,6 +47,7 @@ const (
 	CandidateToken CandidateKind = iota + 1
 	CandidateNative
 	CandidatePeriodic
+	CandidateClaim
 )
 
 type CandidateID [sha256.Size]byte
@@ -128,6 +129,10 @@ func ValidateCandidate(candidate RescueCandidate) error {
 		return ErrInvalidCandidate
 	}
 	switch candidate.Kind {
+	case CandidateClaim:
+		if candidate.Token.Address == (common.Address{}) || candidate.TxHash == (common.Hash{}) || candidate.BlockNumber != 0 || candidate.BlockHash != (common.Hash{}) {
+			return ErrInvalidCandidate
+		}
 	case CandidateToken:
 		if candidate.Token.Address == (common.Address{}) {
 			return ErrInvalidCandidate

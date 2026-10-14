@@ -89,7 +89,7 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 	}
 
 	var sourceAfter, destinationAfter *big.Int
-	if incident.Kind == domain.CandidateToken {
+	if isTokenOperation(incident.Kind) {
 		sourceAfter, err = session.tokenBalanceAt(ctx, postBlock, incident.Asset, session.coordinator.source)
 		if err == nil {
 			destinationAfter, err = session.tokenBalanceAt(ctx, postBlock, incident.Asset, session.coordinator.destination)
@@ -106,7 +106,10 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 	if err := session.canonicalProofEnd(ctx, incident, receipt, postBlock); err != nil {
 		return session.postconditionAmbiguous(ctx, incident, err)
 	}
-	sourceBefore := new(big.Int).SetBytes(incident.SourceBefore[:])
+	sourceBefore, err := session.requiredDestinationDelta(incident)
+	if err != nil {
+		return session.postconditionAmbiguous(ctx, incident, err)
+	}
 	destinationBefore := new(big.Int).SetBytes(incident.DestinationBefore[:])
 	deltaValid := destinationAfter.Cmp(destinationBefore) >= 0 && new(big.Int).Sub(destinationAfter, destinationBefore).Cmp(sourceBefore) >= 0
 	if sourceAfter.Sign() != 0 || !deltaValid {
@@ -116,7 +119,7 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 		return newError("rescue.post_balance", domain.ErrorPostcondition, codePostcondition, false, false, nil)
 	}
 	status := store.RescueTrustedSuccess
-	if incident.Kind == domain.CandidateToken {
+	if isTokenOperation(incident.Kind) {
 		status = store.RescueTokenReported
 	}
 	if err := session.setTerminal(ctx, incident, status, ""); err != nil {
@@ -127,14 +130,14 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 }
 
 func (session *Session) commitReceiptCost(ctx context.Context, incident *store.RescueIncident, receipt *types.Receipt, postBlock rpc.BlockRef) error {
-	if session.coordinator.feePolicy.UnboundedAdditionalFees {
+	if session.coordinator.feePolicy.UnboundedAdditionalFees && !session.coordinator.feePolicy.EstimatedBaseFees {
 		return newError("rescue.budget_actual", domain.ErrorConfiguration, codeInvalidConfig, false, true, nil)
 	}
 	transaction, err := session.validatePersistedTransaction(incident)
 	if err != nil {
 		return err
 	}
-	if receipt.GasUsed > transaction.Gas() {
+	if receipt.GasUsed > transaction.Gas() || receipt.EffectiveGasPrice.Cmp(transaction.GasFeeCap()) > 0 {
 		return newError("rescue.budget_actual", domain.ErrorRPCInvalidResponse, codeReceiptInvalid, true, true, nil)
 	}
 	fee, overflow := uint256.FromBig(receipt.EffectiveGasPrice)
@@ -144,6 +147,34 @@ func (session *Session) commitReceiptCost(ctx context.Context, incident *store.R
 	executionCost, err := maximumFeeCost(receipt.GasUsed, fee, &uint256.Int{})
 	if err != nil {
 		return session.budgetError("rescue.budget_actual", err)
+	}
+	if session.coordinator.feePolicy.EstimatedBaseFees {
+		reader, ok := session.finality.(interface {
+			BaseAdditionalFee(context.Context, *types.Receipt) (*big.Int, error)
+		})
+		if !ok {
+			return newError("rescue.budget_l2_fee", domain.ErrorConfiguration, codeInvalidConfig, false, true, nil)
+		}
+		extra, feeErr := reader.BaseAdditionalFee(ctx, receipt)
+		if feeErr != nil || extra == nil || extra.Sign() < 0 {
+			return newError("rescue.budget_l2_fee", domain.ErrorRPCTransient, codeFeeRead, true, true, feeErr)
+		}
+		extraCost, overflow := uint256.FromBig(extra)
+		if overflow {
+			return newError("rescue.budget_l2_fee", domain.ErrorRPCInvalidResponse, codeFeeInvalid, false, true, nil)
+		}
+		if _, overflow := executionCost.AddOverflow(&executionCost, extraCost); overflow {
+			return session.budgetError("rescue.budget_actual", ErrFeeCostOverflow)
+		}
+	}
+	if receipt.Status == types.ReceiptStatusSuccessful {
+		value, valueErr := session.operationValue(incident)
+		if valueErr != nil {
+			return valueErr
+		}
+		if _, overflow := executionCost.AddOverflow(&executionCost, &value); overflow {
+			return session.budgetError("rescue.budget_actual", ErrFeeCostOverflow)
+		}
 	}
 	reservation, err := session.ensureReservation(ctx, incident, transaction)
 	if err != nil {

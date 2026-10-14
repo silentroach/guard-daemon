@@ -9,6 +9,7 @@ import (
 )
 
 const rescuerABI = `[
+	{"name":"executeAndSweep","type":"function","stateMutability":"payable","inputs":[{"name":"target","type":"address"},{"name":"data","type":"bytes"},{"name":"tokens","type":"address[]"}],"outputs":[]},
 	{"name":"sweepAll","type":"function","stateMutability":"nonpayable","inputs":[{"name":"tokens","type":"address[]"}],"outputs":[]},
 	{"name":"sweepEth","type":"function","stateMutability":"nonpayable","inputs":[],"outputs":[]},
 	{"name":"destination","type":"function","stateMutability":"view","inputs":[],"outputs":[{"type":"address"}]}
@@ -32,6 +33,10 @@ func (codec *RescuerCodec) PackSweepAll(tokens []common.Address) ([]byte, error)
 
 func (codec *RescuerCodec) PackSweepEth() ([]byte, error) {
 	return codec.contractABI.Pack("sweepEth")
+}
+
+func (codec *RescuerCodec) PackExecuteAndSweep(target common.Address, data []byte, tokens []common.Address) ([]byte, error) {
+	return codec.contractABI.Pack("executeAndSweep", target, data, tokens)
 }
 
 func (codec *RescuerCodec) PackDestination() ([]byte, error) {

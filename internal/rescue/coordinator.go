@@ -131,6 +131,7 @@ type FinalityReader interface {
 // Config содержит неизменяемые значения одного координатора сети. Lease и
 // ProcessFence приобретаются службой до создания координатора.
 type Config struct {
+	Claim              *domain.ClaimPlan
 	Network            domain.Network
 	Source             common.Address
 	Sponsor            common.Address
@@ -167,6 +168,7 @@ type TrustedTokenValuePolicy struct {
 // Coordinator последовательно выделяет nonce, подписывает и отправляет транзакции
 // для заданных сети и спонсора.
 type Coordinator struct {
+	claim                  *domain.ClaimPlan
 	network                domain.Network
 	source                 common.Address
 	sponsor                common.Address
@@ -277,7 +279,10 @@ func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner
 	if !config.Gate.Stopped() && len(trustedTokenValues) != len(trustedTokens) {
 		return nil, newError("rescue.token_values", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 	}
-	if !config.Gate.Stopped() && config.FeePolicy.UnboundedAdditionalFees {
+	if config.FeePolicy.EstimatedBaseFees && config.Network.ChainID != 8453 {
+		return nil, newError("rescue.fee_model", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+	}
+	if !config.Gate.Stopped() && config.FeePolicy.UnboundedAdditionalFees && !config.FeePolicy.EstimatedBaseFees {
 		return nil, newError("rescue.fee_model", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 	}
 	allowedUntrustedTokens := make(map[common.Address]struct{})
@@ -344,6 +349,21 @@ func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner
 		alerts:                 config.Alerts,
 		health:                 config.Health,
 		leaseLost:              make(chan struct{}),
+	}
+	if config.Claim != nil {
+		plan := config.Claim.Clone()
+		_, allowed := configuredTokens[plan.Token]
+		if plan.Validate() != nil || !allowed || plan.Target == config.Source || plan.Target == config.Sponsor ||
+			plan.Target == config.Destination || plan.Target == network.Rescuer || plan.MaximumCost.Gt(&config.FeePolicy.TransactionCostCap) {
+			return nil, newError("rescue.claim_config", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+		}
+		if _, trusted := trustedTokens[plan.Token]; !trusted && plan.MaximumCost.Gt(&config.FeePolicy.UnknownTokenCostCap) {
+			return nil, newError("rescue.claim_config", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
+		}
+		if policy, trusted := trustedTokenValues[plan.Token]; trusted && (plan.MaximumCost.Gt(&policy.MaximumCost) || plan.MinimumReceived.Lt(&policy.MinimumBalance)) {
+			return nil, newError("rescue.claim_config", domain.ErrorConfiguration, codeMinimumValue, false, false, nil)
+		}
+		coordinator.claim = &plan
 	}
 	coordinator.structured, _ = observer.(observability.StructuredObserver)
 	return coordinator, nil
@@ -498,6 +518,12 @@ func (session *Session) Handle(ctx context.Context, candidate domain.RescueCandi
 
 	var err error
 	switch candidate.Kind {
+	case domain.CandidateClaim:
+		if coordinator.claim == nil || candidate.ID != domain.NewClaimCandidate(coordinator.network.ChainID, coordinator.source, *coordinator.claim).ID {
+			err = newError("rescue.claim_identity", domain.ErrorConfiguration, codeCandidateMismatch, false, false, nil)
+		} else {
+			err = session.handleAsset(ctx, candidate, domain.CandidateClaim, candidate.Token.Address, domain.IncidentID{})
+		}
 	case domain.CandidateToken:
 		err = session.handleAsset(ctx, candidate, domain.CandidateToken, candidate.Token.Address, domain.IncidentID{})
 	case domain.CandidateNative:
@@ -577,6 +603,11 @@ func (session *Session) reconcileExpired(ctx context.Context) error {
 	complete := true
 	for index := range incidents {
 		incident := &incidents[index]
+		if incident.Kind == domain.CandidateClaim && (statusNeedsReceipt(incident.Status) || incident.Status == store.RescuePending || incident.Status == store.RescuePrepared || incident.Status == store.RescueRetryable) {
+			if _, err := session.claimFor(incident); err != nil {
+				return err
+			}
+		}
 		if incident.Network != coordinator.network.ChainID {
 			err = newError("rescue.reconciliation_state", domain.ErrorInternal, codeStateRead, false, true, nil)
 			coordinator.recordFailure(incident.Candidate, common.Hash{}, err)
@@ -672,6 +703,11 @@ func (session *Session) recoverPersisted(ctx context.Context) error {
 	}
 	for index := range incidents {
 		incident := &incidents[index]
+		if incident.Kind == domain.CandidateClaim && (statusNeedsReceipt(incident.Status) || incident.Status == store.RescuePending || incident.Status == store.RescuePrepared || incident.Status == store.RescueRetryable) {
+			if _, err := session.claimFor(incident); err != nil {
+				return err
+			}
+		}
 		if incident.Network != session.coordinator.network.ChainID {
 			return newError("rescue.state", domain.ErrorInternal, codeStateRead, false, true, nil)
 		}

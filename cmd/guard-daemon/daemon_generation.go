@@ -89,6 +89,13 @@ func (network *networkProcess) runGeneration(ctx context.Context, generation uin
 		return processError("daemon.session", domain.ErrorRPCTransient, errorSessionFailed, true, err)
 	}
 	defer session.Close()
+	if network.mode.IsLive() && !network.emergencyStopped && network.configured.Claim != nil {
+		candidate := domain.NewClaimCandidate(network.network.ChainID, network.source, *network.configured.Claim)
+		candidate.Generation = generation
+		if _, err := network.handoff.Put(generationContext, candidate); err != nil {
+			return err
+		}
+	}
 	if err := updateQueueDepth(generationContext, network.network.ChainID, network.handoff, network.metrics); err != nil {
 		return err
 	}

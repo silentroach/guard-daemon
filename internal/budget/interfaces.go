@@ -44,6 +44,9 @@ type NetworkPolicy struct {
 	Limits                  Limits
 	TransactionOverhead     uint256.Int
 	EmergencySponsorReserve uint256.Int
+	// AllowFeeOverrun records an actual L2 fee above its estimate and blocks new
+	// reservations. It never hides an already incurred charge.
+	AllowFeeOverrun bool
 }
 
 // Policy задаёт глобальные лимиты и ограничения для каждой обслуживаемой сети.

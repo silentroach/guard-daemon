@@ -42,10 +42,11 @@ type sponsorKey struct {
 }
 
 type scopeUsage struct {
-	reserved  uint256.Int
-	hourSpent uint256.Int
-	daySpent  uint256.Int
-	allSpent  uint256.Int
+	feeOverrun bool
+	reserved   uint256.Int
+	hourSpent  uint256.Int
+	daySpent   uint256.Int
+	allSpent   uint256.Int
 }
 
 type aggregateUsage struct {
@@ -431,7 +432,7 @@ func (ledger *BudgetLedger) CommitFinalized(ctx context.Context, charge Finalize
 	return ledger.transition(ctx, charge.ReservationID, charge.ObservedAt, func(reservation *Reservation, now time.Time) error {
 		switch reservation.State {
 		case ReservationExposed:
-			if reservation.TxHash != charge.TxHash || charge.Actual.Gt(&reservation.Maximum) {
+			if reservation.TxHash != charge.TxHash || (charge.Actual.Gt(&reservation.Maximum) && !ledger.networks[reservation.Request.Network].AllowFeeOverrun) {
 				return ErrStateConflict
 			}
 			reservation.State = ReservationCommitted
@@ -503,6 +504,9 @@ func (ledger *BudgetLedger) CheckSponsorCapacity(ctx context.Context, id Reserva
 			return err
 		}
 		policy := ledger.networks[reservation.Request.Network]
+		if usage.global.feeOverrun {
+			return ErrBudgetExceeded
+		}
 		reserved := usage.sponsors[sponsorKey{network: reservation.Request.Network, sponsor: reservation.Request.Sponsor}]
 		if !sponsorHasCapacity(balance, policy.EmergencySponsorReserve, reserved, uint256.Int{}) {
 			return ErrSponsorReserve
@@ -807,7 +811,7 @@ func (ledger *BudgetLedger) validateReservation(reservation Reservation) error {
 			return ErrCorrupt
 		}
 	case ReservationCommitted:
-		if reservation.TxHash == (common.Hash{}) || reservation.Actual.IsZero() || reservation.Actual.Gt(&reservation.Maximum) ||
+		if reservation.TxHash == (common.Hash{}) || reservation.Actual.IsZero() || (reservation.Actual.Gt(&reservation.Maximum) && !network.AllowFeeOverrun) ||
 			!validPersistentTime(reservation.ExposedAt) || reservation.ExposedAt.Before(reservation.CreatedAt) || reservation.UpdatedAt.Before(reservation.ExposedAt) {
 			return ErrCorrupt
 		}
@@ -898,6 +902,10 @@ func (ledger *BudgetLedger) collectUsage(tx *bolt.Tx, now time.Time) (aggregateU
 			}
 			usage.sponsors[key] = sponsorReserved
 		case ReservationCommitted:
+			if reservation.Actual.Gt(&reservation.Maximum) {
+				usage.global.feeOverrun = true
+				network.feeOverrun = true
+			}
 			if addChecked(&usage.global.allSpent, reservation.Actual) != nil || addChecked(&network.allSpent, reservation.Actual) != nil {
 				return ErrCorrupt
 			}
@@ -959,6 +967,9 @@ func addChecked(target *uint256.Int, value uint256.Int) error {
 }
 
 func scopeWithinLimits(limits Limits, usage scopeUsage) bool {
+	if usage.feeOverrun {
+		return true
+	}
 	return fitsExisting(limits.PerHour, usage.hourSpent, usage.reserved) &&
 		fitsExisting(limits.PerDay, usage.daySpent, usage.reserved) &&
 		fitsExisting(limits.Cumulative, usage.allSpent, usage.reserved)
@@ -974,7 +985,7 @@ func fitsExisting(limit, spent, reserved uint256.Int) bool {
 }
 
 func checkScopeBudget(limits Limits, usage scopeUsage, maximum uint256.Int) error {
-	if maximum.Gt(&limits.PerTransaction) || !hasCapacity(limits.PerHour, usage.hourSpent, usage.reserved, maximum) ||
+	if usage.feeOverrun || maximum.Gt(&limits.PerTransaction) || !hasCapacity(limits.PerHour, usage.hourSpent, usage.reserved, maximum) ||
 		!hasCapacity(limits.PerDay, usage.daySpent, usage.reserved, maximum) ||
 		!hasCapacity(limits.Cumulative, usage.allSpent, usage.reserved, maximum) {
 		return ErrBudgetExceeded
@@ -1009,6 +1020,12 @@ func sponsorHasCapacity(balance, emergency, reserved, requested uint256.Int) boo
 }
 
 func makeScopeSnapshot(limits Limits, usage scopeUsage) (ScopeSnapshot, error) {
+	if usage.feeOverrun {
+		return ScopeSnapshot{
+			Spent:    Totals{PerHour: usage.hourSpent, PerDay: usage.daySpent, Cumulative: usage.allSpent},
+			Reserved: Totals{PerHour: usage.reserved, PerDay: usage.reserved, Cumulative: usage.reserved},
+		}, nil
+	}
 	remainingHour, ok := remaining(limits.PerHour, usage.hourSpent, usage.reserved)
 	if !ok {
 		return ScopeSnapshot{}, ErrCorrupt

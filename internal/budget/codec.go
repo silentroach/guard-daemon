@@ -30,6 +30,13 @@ func encodePolicy(policy Policy) []byte {
 		result = appendUint256(result, network.TransactionOverhead)
 		result = appendUint256(result, network.EmergencySponsorReserve)
 	}
+	// Preserve the existing encoding for bounded policies.
+	for _, network := range networks {
+		if network.AllowFeeOverrun {
+			result = append(result, []byte("estimated-fees/v1")...)
+			result = appendUint64(result, uint64(network.Network))
+		}
+	}
 	return result
 }
 

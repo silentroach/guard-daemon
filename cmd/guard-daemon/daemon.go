@@ -226,7 +226,7 @@ type reconcilingTokenPolicySession struct {
 }
 
 func (session *tokenPolicySession) Handle(ctx context.Context, candidate domain.RescueCandidate) error {
-	if candidate.Kind == domain.CandidateToken {
+	if candidate.Kind == domain.CandidateToken || candidate.Kind == domain.CandidateClaim {
 		if candidate.Token.Address == (common.Address{}) {
 			return processError("daemon.token_policy", domain.ErrorConfiguration, errorTokenForbidden, false, nil)
 		}

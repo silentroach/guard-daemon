@@ -237,7 +237,7 @@ func (store *BoltStore) PruneRescueIncidents(ctx context.Context, retain int) er
 			if decodeErr != nil || len(key) != len(incident.ID) || !bytes.Equal(key, incident.ID[:]) || incident.Network != store.network {
 				return errCorrupt
 			}
-			if isTerminalRescueStatus(incident.Status) {
+			if isTerminalRescueStatus(incident.Status) && incident.Kind != domain.CandidateClaim {
 				terminals = append(terminals, terminalIncident{id: incident.ID, updatedAt: incident.UpdatedAt})
 			}
 			return nil
@@ -478,7 +478,7 @@ func validateRescueIncident(incident RescueIncident) error {
 		if incident.Asset != (common.Address{}) {
 			return errInvalidRecord
 		}
-	case domain.CandidateToken:
+	case domain.CandidateToken, domain.CandidateClaim:
 		if incident.Asset == (common.Address{}) {
 			return errInvalidRecord
 		}
@@ -541,10 +541,10 @@ func validateRescueIncident(incident RescueIncident) error {
 	default:
 		return errInvalidRecord
 	}
-	if incident.Status == RescueTrustedSuccess && (!incident.Trusted || incident.Kind == domain.CandidateToken) {
+	if incident.Status == RescueTrustedSuccess && (!incident.Trusted || incident.Kind == domain.CandidateToken || incident.Kind == domain.CandidateClaim) {
 		return errInvalidRecord
 	}
-	if incident.Status == RescueTokenReported && incident.Kind != domain.CandidateToken {
+	if incident.Status == RescueTokenReported && incident.Kind != domain.CandidateToken && incident.Kind != domain.CandidateClaim {
 		return errInvalidRecord
 	}
 	return nil

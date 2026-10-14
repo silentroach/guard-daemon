@@ -107,6 +107,7 @@ func runtimeBudgetPolicy(runtimeConfig config.Runtime) (budget.Policy, error) {
 		policy.Networks = append(policy.Networks, budget.NetworkPolicy{
 			Network: network.ChainID, Sponsor: runtimeConfig.SponsorAddress, Limits: limits,
 			TransactionOverhead: *overhead, EmergencySponsorReserve: *reserve,
+			AllowFeeOverrun: economic.EstimatedBaseFees,
 		})
 	}
 	return policy, nil
@@ -178,12 +179,18 @@ func rescuePolicy(network config.Network) (rescue.FeePolicy, uint256.Int, map[co
 		Network:                 network.ChainID,
 		MaxFeePerGas:            *converted[0],
 		MaxPriorityFeePerGas:    *converted[1],
+		EstimatedBaseFees:       economic.EstimatedBaseFees,
 		TokenGasLimit:           economic.TokenGasLimit,
 		NativeGasLimit:          economic.NativeGasLimit,
 		Overhead:                *converted[2],
 		UnknownTokenCostCap:     *converted[3],
 		TransactionCostCap:      *converted[5],
 		UnboundedAdditionalFees: economic.UnboundedAdditionalFees,
+	}
+	if economic.MinPriorityFeePerGasWei != nil {
+		if economic.MinPriorityFeePerGasWei.Sign() < 0 || policy.MinPriorityFeePerGas.SetFromBig(economic.MinPriorityFeePerGasWei) {
+			return rescue.FeePolicy{}, uint256.Int{}, nil, errors.New("invalid minimum priority fee")
+		}
 	}
 	tokenValues := make(map[common.Address]rescue.TrustedTokenValuePolicy, len(economic.TokenValueRules))
 	for _, rule := range economic.TokenValueRules {

@@ -42,6 +42,7 @@ type Network struct {
 	TrustedTokens       []common.Address
 	AllowUnknownTokens  bool
 	EconomicPolicy      EconomicPolicy
+	Claim               *domain.ClaimPlan
 }
 
 // Format исключает RPC URL и путь к манифесту из форматированного вывода.
@@ -280,6 +281,10 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 	if err != nil {
 		return Network{}, err
 	}
+	claim, err := loadClaim(lookup, suffix, definition.chainID, tokens)
+	if err != nil {
+		return Network{}, err
+	}
 
 	return Network{
 		Name:                definition.name,
@@ -293,6 +298,7 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 		TrustedTokens:       trustedTokens,
 		AllowUnknownTokens:  allowUnknown,
 		EconomicPolicy:      economicPolicy,
+		Claim:               claim,
 	}, nil
 }
 

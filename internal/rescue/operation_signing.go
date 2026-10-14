@@ -11,6 +11,7 @@ import (
 	"guard-daemon/internal/budget"
 	"guard-daemon/internal/domain"
 	"guard-daemon/internal/observability"
+	"guard-daemon/internal/rpc"
 	"guard-daemon/internal/store"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -20,6 +21,16 @@ import (
 
 func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *store.RescueIncident) error {
 	coordinator := session.coordinator
+	if session.claimExpired(incident) {
+		if err := session.setTerminal(ctx, incident, store.RescueFailed, codeNoPaidAction); err != nil {
+			return err
+		}
+		return nil
+	}
+	value, err := session.operationValue(incident)
+	if err != nil {
+		return err
+	}
 	sponsorNonce, err := session.sponsorNonce(ctx)
 	if err != nil {
 		return session.beforeSignedFailure(ctx, incident, err)
@@ -37,11 +48,32 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 		return session.beforeSignedFailure(ctx, incident, err)
 	}
 	gas := fees.GasLimit
+	if incident.Kind == domain.CandidateClaim {
+		plan, planErr := session.claimFor(incident)
+		if planErr != nil {
+			return planErr
+		}
+		gas = plan.GasLimit
+		feeCap, _ := uint256.FromBig(fees.FeeCap)
+		fees.MaximumCost, err = maximumFeeCost(gas, feeCap, &coordinator.feePolicy.Overhead)
+		if err != nil {
+			return session.beforeSignedFailure(ctx, incident, err)
+		}
+	}
+	if _, overflow := fees.MaximumCost.AddOverflow(&fees.MaximumCost, &value); overflow {
+		return session.beforeSignedFailure(ctx, incident, ErrFeeCostOverflow)
+	}
 
-	unknown := incident.Kind == domain.CandidateToken && !incident.Trusted
+	unknown := isTokenOperation(incident.Kind) && !incident.Trusted
 	budgetBlock, err := session.finality.Finalized(ctx)
 	if err != nil || budgetBlock.Hash == (common.Hash{}) {
 		return session.beforeSignedFailure(ctx, incident, contextOrError(ctx, "rescue.budget_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err))
+	}
+	if coordinator.feePolicy.EstimatedBaseFees {
+		extra, estimateErr := rpc.EstimateBaseAdditionalFee(ctx, session.finality, budgetBlock, len(data), gas)
+		if estimateErr != nil || extra.Cmp(coordinator.feePolicy.Overhead.ToBig()) > 0 {
+			return session.beforeSignedFailure(ctx, incident, newError("rescue.l2_fee_estimate", domain.ErrorBudget, codeBudgetExceeded, true, false, estimateErr))
+		}
 	}
 	sponsorBalance, err := session.nativeBalanceAt(ctx, budgetBlock, coordinator.sponsor)
 	if err != nil {
@@ -61,7 +93,10 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 		return session.admissionBlocked(incident, admissionErr)
 	}
 	reservationMaximum := coordinator.feePolicy.TransactionCostCap
-	if incident.Kind == domain.CandidateNative {
+	if incident.Kind == domain.CandidateClaim {
+		plan, _ := session.claimFor(incident)
+		reservationMaximum = plan.MaximumCost
+	} else if incident.Kind == domain.CandidateNative {
 		value, valueErr := EvaluateMinimumValue(coordinator.feePolicy, FeeAssetNative, new(big.Int).SetBytes(incident.SourceBefore[:]), coordinator.nativeMinimum, reservationMaximum)
 		if valueErr != nil || !value.Allowed {
 			return session.beforeSignedFailure(ctx, incident, newError("rescue.minimum_value", domain.ErrorPostcondition, codeMinimumValue, false, false, valueErr))
@@ -131,6 +166,9 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 		if err := coordinator.guardSigning(ctx); err != nil {
 			return err
 		}
+		if session.claimExpired(incident) {
+			return newError("rescue.claim_expired", domain.ErrorConfiguration, codeNoPaidAction, false, false, nil)
+		}
 		if err := session.recheckSponsorReserve(ctx, reservation.ID); err != nil {
 			return err
 		}
@@ -149,6 +187,7 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 	simulation := EIP7702SimulationRequest{
 		Sponsor: coordinator.sponsor, Source: coordinator.source, GasLimit: gas,
 		GasTipCap: fees.TipCap, GasFeeCap: fees.FeeCap, Data: data,
+		Value:             value.ToBig(),
 		AuthorizationList: []types.SetCodeAuthorization{authorization},
 	}
 	simulationBlock, err := session.finality.Finalized(ctx)
@@ -164,7 +203,7 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 
 	transaction := types.NewTx(&types.SetCodeTx{
 		ChainID: chainU256, Nonce: incident.SponsorNonce, To: coordinator.source, Gas: gas,
-		GasTipCap: tip, GasFeeCap: feeCap, Data: data, AuthList: []types.SetCodeAuthorization{authorization},
+		GasTipCap: tip, GasFeeCap: feeCap, Data: data, Value: &value, AuthList: []types.SetCodeAuthorization{authorization},
 	})
 	var signed *types.Transaction
 	err = coordinator.gate.Do(func() error {
@@ -175,6 +214,9 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 			return err
 		}
 		var signErr error
+		if session.claimExpired(incident) {
+			return newError("rescue.claim_expired", domain.ErrorConfiguration, codeNoPaidAction, false, false, nil)
+		}
 		signed, signErr = coordinator.transactioner.SignTransaction(ctx, transaction, chainID)
 		return signErr
 	})
@@ -216,6 +258,14 @@ func (session *Session) signSubmitAndConfirm(ctx context.Context, incident *stor
 }
 
 func (session *Session) operationData(incident *store.RescueIncident) ([]byte, FeeAsset, error) {
+	if incident.Kind == domain.CandidateClaim {
+		plan, err := session.claimFor(incident)
+		if err != nil {
+			return nil, 0, err
+		}
+		data, err := session.coordinator.rescuerCodec.PackExecuteAndSweep(plan.Target, plan.Data, []common.Address{plan.Token})
+		return data, FeeAssetToken, err
+	}
 	if incident.Kind == domain.CandidateToken {
 		data, err := session.coordinator.rescuerCodec.PackSweepAll([]common.Address{incident.Asset})
 		if err != nil || len(data) == 0 {
@@ -237,7 +287,7 @@ func validSignedOperation(signed, unsigned *types.Transaction) bool {
 	if signed == nil || signed.Type() != types.SetCodeTxType || signed.Nonce() != unsigned.Nonce() || signed.To() == nil || unsigned.To() == nil ||
 		*signed.To() != *unsigned.To() || !bytes.Equal(signed.Data(), unsigned.Data()) || signed.Gas() != unsigned.Gas() ||
 		signed.ChainId().Cmp(unsigned.ChainId()) != 0 || signed.GasTipCap().Cmp(unsigned.GasTipCap()) != 0 ||
-		signed.GasFeeCap().Cmp(unsigned.GasFeeCap()) != 0 || signed.Value().Sign() != 0 || len(signed.AccessList()) != 0 {
+		signed.GasFeeCap().Cmp(unsigned.GasFeeCap()) != 0 || signed.Value().Cmp(unsigned.Value()) != 0 || len(signed.AccessList()) != 0 {
 		return false
 	}
 	authorizations := signed.SetCodeAuthorizations()
@@ -256,11 +306,22 @@ func (session *Session) validatePersistedTransaction(incident *store.RescueIncid
 	reencoded, err := transaction.MarshalBinary()
 	if err != nil || !bytes.Equal(reencoded, incident.SignedTransaction) || transaction.Hash() != incident.TxHash ||
 		transaction.Type() != types.SetCodeTxType || transaction.Nonce() != incident.SponsorNonce || transaction.To() == nil ||
-		*transaction.To() != session.coordinator.source || transaction.Value().Sign() != 0 {
+		*transaction.To() != session.coordinator.source {
 		return nil, newError("rescue.signed_payload", domain.ErrorInternal, codeSignedPayloadInvalid, false, true, err)
 	}
 	data, asset, err := session.operationData(incident)
 	gas, gasOK := session.coordinator.feePolicy.gasLimit(asset)
+	value, valueErr := session.operationValue(incident)
+	if valueErr != nil || transaction.Value().Cmp(value.ToBig()) != 0 {
+		return nil, newError("rescue.signed_payload", domain.ErrorInternal, codeSignedPayloadInvalid, false, true, nil)
+	}
+	if incident.Kind == domain.CandidateClaim {
+		plan, planErr := session.claimFor(incident)
+		if planErr != nil {
+			return nil, planErr
+		}
+		gas = plan.GasLimit
+	}
 	if err != nil || !gasOK || !bytes.Equal(transaction.Data(), data) || transaction.Gas() != gas ||
 		transaction.GasTipCap().Sign() <= 0 || transaction.GasFeeCap().Sign() <= 0 ||
 		transaction.ChainId().Cmp(big.NewInt(int64(session.coordinator.network.ChainID))) != 0 || len(transaction.AccessList()) != 0 {

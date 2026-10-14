@@ -52,7 +52,7 @@ func (session *Session) handleAsset(ctx context.Context, candidate domain.Rescue
 		parent = domain.NewIncidentID(candidate.ID)
 	}
 	trusted := kind == domain.CandidateNative
-	if kind == domain.CandidateToken {
+	if isTokenOperation(kind) {
 		_, trusted = coordinator.trustedTokens[asset]
 	}
 	now := coordinator.clock.Now()
@@ -118,14 +118,14 @@ func (session *Session) resumeIncident(ctx context.Context, incident *store.Resc
 			return retryPendingError(true)
 		}
 		sourceBefore := new(big.Int).SetBytes(incident.SourceBefore[:])
-		if sourceBefore.Sign() == 0 || (incident.Kind == domain.CandidateNative && sourceBefore.Cmp(session.coordinator.nativeThreshold) <= 0) {
+		if incident.Kind != domain.CandidateClaim && (sourceBefore.Sign() == 0 || (incident.Kind == domain.CandidateNative && sourceBefore.Cmp(session.coordinator.nativeThreshold) <= 0)) {
 			if err := session.setTerminal(ctx, incident, store.RescueFailed, codeNoPaidAction); err != nil {
 				return err
 			}
 			return nil
 		}
 		_, explicitlyAllowed := session.coordinator.allowedUntrustedTokens[incident.Asset]
-		if incident.Kind == domain.CandidateToken && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens && !explicitlyAllowed {
+		if isTokenOperation(incident.Kind) && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens && !explicitlyAllowed {
 			if err := session.setTerminal(ctx, incident, store.RescueFailed, codeUnknownToken); err != nil {
 				return err
 			}
@@ -169,7 +169,7 @@ func (session *Session) prepareAndSubmit(ctx context.Context, incident *store.Re
 	session.lastFinalized = block
 
 	var sourceBefore, destinationBefore *big.Int
-	if incident.Kind == domain.CandidateToken {
+	if isTokenOperation(incident.Kind) {
 		sourceBefore, err = session.tokenBalanceAt(ctx, block, incident.Asset, session.coordinator.source)
 		if err == nil {
 			destinationBefore, err = session.tokenBalanceAt(ctx, block, incident.Asset, session.coordinator.destination)
@@ -196,7 +196,7 @@ func (session *Session) prepareAndSubmit(ctx context.Context, incident *store.Re
 	}
 
 	setPreparedAttempt(incident, attempt, block, sourceBytes, destinationBytes)
-	if sourceBefore.Sign() == 0 || (incident.Kind == domain.CandidateNative && sourceBefore.Cmp(session.coordinator.nativeThreshold) <= 0) {
+	if incident.Kind != domain.CandidateClaim && (sourceBefore.Sign() == 0 || (incident.Kind == domain.CandidateNative && sourceBefore.Cmp(session.coordinator.nativeThreshold) <= 0)) {
 		if err := session.updateIncident(ctx, incident); err != nil {
 			return err
 		}
@@ -206,7 +206,7 @@ func (session *Session) prepareAndSubmit(ctx context.Context, incident *store.Re
 		return nil
 	}
 	_, explicitlyAllowed := session.coordinator.allowedUntrustedTokens[incident.Asset]
-	if incident.Kind == domain.CandidateToken && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens && !explicitlyAllowed {
+	if isTokenOperation(incident.Kind) && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens && !explicitlyAllowed {
 		if err := session.updateIncident(ctx, incident); err != nil {
 			return err
 		}

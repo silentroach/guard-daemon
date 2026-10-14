@@ -29,10 +29,12 @@ type EconomicPolicy struct {
 	SponsorMinimumBalanceWei          *big.Int
 	MaxFeePerGasWei                   *big.Int
 	MaxPriorityFeePerGasWei           *big.Int
+	MinPriorityFeePerGasWei           *big.Int
 	TokenGasLimit                     uint64
 	NativeGasLimit                    uint64
 	TransactionOverheadWei            *big.Int
 	UnboundedAdditionalFees           bool
+	EstimatedBaseFees                 bool
 	NativeMinimumNetValueWei          *big.Int
 	UnknownTokenMaxTransactionCostWei *big.Int
 	TokenValueRules                   []TokenValueRule
@@ -56,6 +58,7 @@ func (policy EconomicPolicy) Clone() EconomicPolicy {
 	result.SponsorMinimumBalanceWei = cloneBigInt(policy.SponsorMinimumBalanceWei)
 	result.MaxFeePerGasWei = cloneBigInt(policy.MaxFeePerGasWei)
 	result.MaxPriorityFeePerGasWei = cloneBigInt(policy.MaxPriorityFeePerGasWei)
+	result.MinPriorityFeePerGasWei = cloneBigInt(policy.MinPriorityFeePerGasWei)
 	result.TransactionOverheadWei = cloneBigInt(policy.TransactionOverheadWei)
 	result.NativeMinimumNetValueWei = cloneBigInt(policy.NativeMinimumNetValueWei)
 	result.UnknownTokenMaxTransactionCostWei = cloneBigInt(policy.UnknownTokenMaxTransactionCostWei)
@@ -104,6 +107,10 @@ func economicProfileFor(network string) economicProfile {
 }
 
 func loadEconomicPolicy(lookup func(string) (string, bool), suffix string, profile economicProfile, global RuntimePolicy, trustedTokens []common.Address) (EconomicPolicy, error) {
+	feeMode, feeModeSet := lookup("NETWORK_FEE_MODE_" + suffix)
+	if feeModeSet && feeMode != "bounded" && (feeMode != "estimated" || suffix != "BASE") {
+		return EconomicPolicy{}, fmt.Errorf("environment variable NETWORK_FEE_MODE_%s must be bounded, or estimated for Base", suffix)
+	}
 	maxCostName := "NETWORK_MAX_TRANSACTION_COST_WEI_" + suffix
 	maxCost, err := loadPositiveDecimal(lookup, maxCostName, boundedDefault(defaultNetworkMaxTransactionCostWei, global.MaxTransactionCostWei))
 	if err != nil {
@@ -138,6 +145,14 @@ func loadEconomicPolicy(lookup func(string) (string, bool), suffix string, profi
 	maxPriority, err := loadPositiveDecimal(lookup, maxPriorityName, profile.maxPriorityFeePerGasWei)
 	if err != nil {
 		return EconomicPolicy{}, err
+	}
+	minPriorityName := "MIN_PRIORITY_FEE_PER_GAS_WEI_" + suffix
+	minPriority, err := loadNonNegativeDecimal(lookup, minPriorityName, "0")
+	if err != nil {
+		return EconomicPolicy{}, err
+	}
+	if minPriority.Cmp(maxPriority) > 0 {
+		return EconomicPolicy{}, fmt.Errorf("environment variable %s must not exceed %s", minPriorityName, maxPriorityName)
 	}
 	tokenGasName := "TOKEN_GAS_LIMIT_" + suffix
 	tokenGas, err := loadPositiveUint64(lookup, tokenGasName, defaultTokenGasLimit)
@@ -217,10 +232,12 @@ func loadEconomicPolicy(lookup func(string) (string, bool), suffix string, profi
 		SponsorMinimumBalanceWei:          reserve,
 		MaxFeePerGasWei:                   maxFee,
 		MaxPriorityFeePerGasWei:           maxPriority,
+		MinPriorityFeePerGasWei:           minPriority,
 		TokenGasLimit:                     tokenGas,
 		NativeGasLimit:                    nativeGas,
 		TransactionOverheadWei:            overhead,
 		UnboundedAdditionalFees:           profile.unboundedAdditionalFees,
+		EstimatedBaseFees:                 feeMode == "estimated",
 		NativeMinimumNetValueWei:          nativeMinimum,
 		UnknownTokenMaxTransactionCostWei: unknownMax,
 		TokenValueRules:                   valueRules,

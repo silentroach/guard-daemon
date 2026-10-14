@@ -198,6 +198,9 @@ func (session *Session) guardPersistedSend(ctx context.Context, incident *store.
 }
 
 func (session *Session) sendPersisted(ctx context.Context, incident *store.RescueIncident, transaction *types.Transaction) (bool, error) {
+	if session.claimExpired(incident) {
+		return false, newError("rescue.claim_expired", domain.ErrorConfiguration, codeNoPaidAction, false, true, nil)
+	}
 	reservation, err := session.ensureReservation(ctx, incident, transaction)
 	if err != nil {
 		return false, err
@@ -273,7 +276,13 @@ func (session *Session) ensureReservation(ctx context.Context, incident *store.R
 		return budget.Reservation{}, newError("rescue.budget_restore", domain.ErrorRPCInvalidResponse, codeBalanceDecode, true, true, nil)
 	}
 	maximum := session.coordinator.feePolicy.TransactionCostCap
-	if incident.Kind == domain.CandidateToken && !incident.Trusted {
+	if incident.Kind == domain.CandidateClaim {
+		plan, err := session.claimFor(incident)
+		if err != nil {
+			return budget.Reservation{}, err
+		}
+		maximum = plan.MaximumCost
+	} else if incident.Kind == domain.CandidateToken && !incident.Trusted {
 		maximum = session.coordinator.feePolicy.UnknownTokenCostCap
 	} else if incident.Kind == domain.CandidateToken {
 		value, ok := session.coordinator.trustedTokenValues[incident.Asset]
