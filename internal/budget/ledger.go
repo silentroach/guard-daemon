@@ -254,8 +254,26 @@ func (ledger *BudgetLedger) initialize(tx *bolt.Tx, fingerprint [32]byte, now ti
 	if len(storedFingerprint) != len(fingerprint) || storedPolicy == nil {
 		return false, ErrCorrupt
 	}
-	if !bytes.Equal(storedFingerprint, fingerprint[:]) || !bytes.Equal(storedPolicy, encodePolicy(ledger.policy)) {
+	if !bytes.Equal(storedFingerprint, fingerprint[:]) {
 		return false, ErrPolicyMismatch
+	}
+	if !bytes.Equal(storedPolicy, encodePolicy(ledger.policy)) {
+		// Only the one-way Base bounded -> estimated transition is compatible.
+		// All limits, identities and other networks must remain byte-identical.
+		previous := Policy{Global: ledger.policy.Global, Networks: append([]NetworkPolicy(nil), ledger.policy.Networks...)}
+		changed := false
+		for index := range previous.Networks {
+			if previous.Networks[index].Network == 8453 && previous.Networks[index].AllowFeeOverrun {
+				previous.Networks[index].AllowFeeOverrun = false
+				changed = true
+			}
+		}
+		if !changed || !bytes.Equal(storedPolicy, encodePolicy(previous)) {
+			return false, ErrPolicyMismatch
+		}
+		if err := meta.Put(ledgerPolicyKey, encodePolicy(ledger.policy)); err != nil {
+			return false, err
+		}
 	}
 	if !bytes.Equal(meta.Get(ledgerMaxRecordsKey), encodeUint32(ledger.maxRecords)) {
 		return false, ErrPolicyMismatch

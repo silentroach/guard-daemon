@@ -27,7 +27,7 @@ type claimDocument struct {
 	ValidUntil         uint64 `json:"validUntil"`
 }
 
-func loadClaim(lookup func(string) (string, bool), suffix string, chain domain.NetworkID, tokens []domain.Token) (*domain.ClaimPlan, error) {
+func loadClaim(lookup func(string) (string, bool), suffix string, chain domain.NetworkID, tokens []domain.Token, allowUnknown bool) (*domain.ClaimPlan, error) {
 	name := "CLAIM_REQUEST_" + suffix
 	path, present := lookup(name)
 	if !present {
@@ -66,6 +66,9 @@ func loadClaim(lookup func(string) (string, bool), suffix string, chain domain.N
 	}
 	if plan.Validate() != nil {
 		return nil, failure
+	}
+	if allowUnknown {
+		return &plan, nil
 	}
 	for _, token := range tokens {
 		if token.Address == plan.Token {

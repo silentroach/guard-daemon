@@ -9,7 +9,7 @@ import (
 )
 
 func TestClaimRequestIsBoundToEnabledChainAndToken(t *testing.T) {
-	for _, scenario := range []string{"valid", "wrong chain", "unlisted token", "negative payment", "missing minimum"} {
+	for _, scenario := range []string{"valid", "all unknown token", "wrong chain", "unlisted token", "negative payment", "missing minimum"} {
 		t.Run(scenario, func(t *testing.T) {
 			values := validEnvironment()
 			values["TOKEN_MODE_BASE"] = "allowlist"
@@ -20,6 +20,10 @@ func TestClaimRequestIsBoundToEnabledChainAndToken(t *testing.T) {
 				GasLimit: 300000, MaximumCostWei: "1000000000000000", ValidUntil: 1893456000,
 			}
 			switch scenario {
+			case "all unknown token":
+				values["TOKEN_MODE_BASE"] = "all"
+				delete(values, "TOKEN_ALLOWLIST_BASE")
+				document.Token = "0x3000000000000000000000000000000000000003"
 			case "wrong chain":
 				document.ChainID = 1
 			case "unlisted token":
@@ -39,7 +43,7 @@ func TestClaimRequestIsBoundToEnabledChainAndToken(t *testing.T) {
 			}
 			values["CLAIM_REQUEST_BASE"] = path
 			runtime, err := LoadFrom(mapLookup(values))
-			if scenario == "valid" {
+			if scenario == "valid" || scenario == "all unknown token" {
 				if err != nil || runtime.Networks[0].Claim == nil {
 					t.Fatalf("claim was not loaded: %v", err)
 				}

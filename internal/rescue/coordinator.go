@@ -360,7 +360,7 @@ func NewCoordinator(config Config, authorizer AuthorizationSigner, transactioner
 	if config.Claim != nil {
 		plan := config.Claim.Clone()
 		_, allowed := configuredTokens[plan.Token]
-		if plan.Validate() != nil || !allowed || plan.Target == config.Source || plan.Target == config.Sponsor ||
+		if plan.Validate() != nil || (!allowed && !network.AllowUnknownTokens) || plan.Target == config.Source || plan.Target == config.Sponsor ||
 			plan.Target == config.Destination || plan.Target == network.Rescuer || plan.MaximumCost.Gt(&config.FeePolicy.TransactionCostCap) {
 			return nil, newError("rescue.claim_config", domain.ErrorConfiguration, codeInvalidConfig, false, false, nil)
 		}
@@ -550,10 +550,20 @@ func (session *Session) Handle(ctx context.Context, candidate domain.RescueCandi
 			return nil
 		}
 		if !coordinator.latestState {
-			err = newError("rescue.fast_mode", domain.ErrorConfiguration, codeUnsupportedCandidate, false, false, nil)
-		} else {
-			err = session.handleAsset(ctx, candidate, domain.CandidateToken, candidate.Token.Address, domain.IncidentID{})
+			id := domain.NewAssetIncidentID(candidate.ID, domain.CandidateToken, candidate.Token.Address)
+			var stored store.RescueIncident
+			var found bool
+			stored, found, err = coordinator.state.RescueIncident(ctx, id)
+			if err != nil {
+				err = newError("rescue.state_get", domain.ErrorInternal, codeStateRead, true, true, err)
+			} else if !found || !stored.Policy.LatestState || !sameIncidentIdentity(stored, candidate, domain.CandidateToken, candidate.Token.Address) {
+				err = newError("rescue.fast_mode", domain.ErrorConfiguration, codeUnsupportedCandidate, false, false, nil)
+			}
+			if err != nil {
+				break
+			}
 		}
+		err = session.handleAsset(ctx, candidate, domain.CandidateToken, candidate.Token.Address, domain.IncidentID{})
 	case domain.CandidateClaim:
 		if coordinator.claim == nil || candidate.ID != domain.NewClaimCandidate(coordinator.network.ChainID, coordinator.source, *coordinator.claim).ID {
 			err = newError("rescue.claim_identity", domain.ErrorConfiguration, codeCandidateMismatch, false, false, nil)

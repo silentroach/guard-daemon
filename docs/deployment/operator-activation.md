@@ -184,6 +184,7 @@ if /usr/bin/printenv DEPLOYER_PRIVATE_KEY >/dev/null; then exit 1; fi
 /usr/lib/guard-daemon/deployment/<releaseCommit>/node_modules/tsx/dist/cli.mjs
 /usr/lib/guard-daemon/deployment/<releaseCommit>/scripts/deployRescuerV2.ts
 --chain-id <chainId>
+--fee-mode <feeMode>
 --destination <destinationAddress>
 --sponsor <sponsorAddress>
 --manifest /var/lib/guard-daemon-operator/deployment-manifests/rescuer-v2-<chainId>-<releaseCommit>.json
@@ -194,6 +195,9 @@ if /usr/bin/printenv DEPLOYER_PRIVATE_KEY >/dev/null; then exit 1; fi
 --max-total-cost-wei <maxTotalCostWei>
 --broadcast
 ```
+
+Для Base (`chainId=8453`) диспетчер подставляет `feeMode=estimated`;
+для остальных сетей — `bounded`.
 
 Ключ подписанта транзакции развёртывания и RPC URL с данными доступа передаются
 процессу только через защищённый операторский канал и не записываются в

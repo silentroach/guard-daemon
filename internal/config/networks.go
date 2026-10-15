@@ -282,7 +282,7 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 	if err != nil {
 		return Network{}, err
 	}
-	claim, err := loadClaim(lookup, suffix, definition.chainID, tokens)
+	claim, err := loadClaim(lookup, suffix, definition.chainID, tokens, allowUnknown)
 	if err != nil {
 		return Network{}, err
 	}

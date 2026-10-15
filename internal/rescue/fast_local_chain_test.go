@@ -113,7 +113,7 @@ func (reader *prefetchedPrimary) PendingNonceAt(ctx context.Context, address com
 }
 
 func TestLocalChain_FastUnknownSweepPrefetchAndFinalAccounting(t *testing.T) {
-	for _, name := range []string{"finalized result", "orphaned prestate still charges fee", "unmined accepted transaction is retried", "reorg before signing stops payment"} {
+	for _, name := range []string{"finalized result", "orphaned prestate still charges fee", "unmined accepted transaction is retried", "reorg before signing stops payment", "persisted pending after disabling latest"} {
 		reorg := name == "orphaned prestate still charges fee"
 		unmined := name == "unmined accepted transaction is retried"
 		preSignReorg := name == "reorg before signing stops payment"
@@ -185,6 +185,24 @@ func TestLocalChain_FastUnknownSweepPrefetchAndFinalAccounting(t *testing.T) {
 			}
 			finality.finalizedCalls.Store(0)
 			candidate := domain.NewFastTokenCandidate(localChainID, source, domain.Token{Address: token}, depositReceipt.BlockHash, deposit.Hash(), depositReceipt.BlockNumber.Uint64(), 0, false)
+			if name == "persisted pending after disabling latest" {
+				now := coordinator.clock.Now()
+				_, err := state.PutRescueIncident(ctx, store.RescueIncident{
+					ID: domain.NewAssetIncidentID(candidate.ID, domain.CandidateToken, token), Parent: domain.NewIncidentID(candidate.ID),
+					Candidate: candidate.ID, Network: localChainID, Kind: domain.CandidateToken, Asset: token, Generation: 1,
+					Policy: store.RescuePolicySnapshot{LatestState: true, MaxAttempts: 1, RetryDelay: time.Second, FinalityTimeout: time.Second},
+					Status: store.RescuePending, CreatedAt: now, UpdatedAt: now,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				coordinator.latestState = false
+				session, err = coordinator.NewSession(ctx, 2, primary, finality, sender)
+				if err != nil {
+					t.Fatal(err)
+				}
+				finality.finalizedCalls.Store(0)
+			}
 			if preSignReorg {
 				finality.orphan = depositReceipt.BlockNumber.Uint64()
 			}
@@ -230,16 +248,18 @@ func TestLocalChain_FastUnknownSweepPrefetchAndFinalAccounting(t *testing.T) {
 			// The corresponding finalized candidate must not trigger another payment
 			// while the earlier operation for the same asset is unresolved.
 			duplicate := domain.NewLogCandidate(localChainID, source, domain.Token{Address: token}, depositReceipt.BlockHash, deposit.Hash(), depositReceipt.BlockNumber.Uint64(), 0)
-			if err := session.Handle(ctx, duplicate); err != nil {
-				t.Fatalf("finalized duplicate: %v", err)
-			}
-			periodic := domain.NewTokenReconciliationCandidate(localChainID, source, domain.Token{Address: token}, 1, 7)
-			var pending fastPendingError
-			if err := session.Handle(ctx, periodic); !errors.As(err, &pending) {
-				t.Fatalf("same-asset retry was not deferred: %v", err)
-			}
-			if primary.sourceReads.Load() != 1 {
-				t.Fatal("duplicate signed a new authorization")
+			if name != "persisted pending after disabling latest" {
+				if err := session.Handle(ctx, duplicate); err != nil {
+					t.Fatalf("finalized duplicate: %v", err)
+				}
+				periodic := domain.NewTokenReconciliationCandidate(localChainID, source, domain.Token{Address: token}, 1, 7)
+				var pending fastPendingError
+				if err := session.Handle(ctx, periodic); !errors.As(err, &pending) {
+					t.Fatalf("same-asset retry was not deferred: %v", err)
+				}
+				if primary.sourceReads.Load() != 1 {
+					t.Fatal("duplicate signed a new authorization")
+				}
 			}
 			if unmined {
 				session.lastReceiptScan = finality.finalized
