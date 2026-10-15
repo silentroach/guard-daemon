@@ -17,7 +17,7 @@ func TestEconomicPolicyDefaultsAndOverrides(t *testing.T) {
 		{
 			name:    "base defaults",
 			want:    [10]string{"80000000000000", "150000000000000", "250000000000000", "400000000000000", "20000000000000000", "50000000", "2000000", "5000000000000", "1000000000000000", "20000000000000"},
-			wantGas: [2]uint64{300000, 100000},
+			wantGas: [2]uint64{180000, 100000},
 		},
 		{
 			name: "explicit values",
@@ -78,7 +78,7 @@ func TestEconomicPolicyRejectsHierarchyOverflowAndUnsafeGasBounds(t *testing.T) 
 		{name: "priority fee above max fee", field: "MAX_PRIORITY_FEE_PER_GAS_WEI_BASE", value: "50000001"},
 		{name: "token gas violates per-tx", field: "TOKEN_GAS_LIMIT_BASE", value: "1500001"},
 		{name: "native gas violates per-tx", field: "NATIVE_GAS_LIMIT_BASE", value: "1500001"},
-		{name: "overhead violates per-tx", field: "CHAIN_OVERHEAD_MAX_WEI_BASE", value: "65000000000001"},
+		{name: "overhead violates per-tx", field: "CHAIN_OVERHEAD_MAX_WEI_BASE", value: "71000000000001"},
 		{name: "unknown cap above network per-tx", field: "UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE", value: "80000000000001"},
 		{name: "uint256 overflow", field: "MAX_FEE_PER_GAS_WEI_BASE", value: "115792089237316195423570985008687907853269984665640564039457584007913129639936"},
 		{name: "gas uint64 overflow", field: "TOKEN_GAS_LIMIT_BASE", value: "18446744073709551616"},
@@ -123,6 +123,13 @@ func TestEveryNetworkUsesItsOwnBoundedEconomicProfile(t *testing.T) {
 				t.Fatalf("networks %s and %s share one fee, tip, and overhead profile", definition.name, other)
 			}
 			seen[profile] = definition.name
+			wantTokenGas := uint64(300000)
+			if definition.name == "base" {
+				wantTokenGas = 180000
+			}
+			if policy.TokenGasLimit != wantTokenGas {
+				t.Fatalf("token gas limit = %d, want %d", policy.TokenGasLimit, wantTokenGas)
+			}
 
 			maximum := new(big.Int).Mul(new(big.Int).SetUint64(policy.TokenGasLimit), policy.MaxFeePerGasWei)
 			maximum.Add(maximum, policy.TransactionOverheadWei)

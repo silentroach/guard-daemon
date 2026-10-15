@@ -15,6 +15,7 @@ const (
 	defaultNetworkCumulativeBudgetWei        = "400000000000000"
 	defaultNetworkSponsorMinimumBalanceWei   = "20000000000000000"
 	defaultTokenGasLimit                     = "300000"
+	defaultBaseTokenGasLimit                 = "180000"
 	defaultNativeGasLimit                    = "100000"
 	defaultNativeMinimumNetValueWei          = "1000000000000000"
 	defaultUnknownTokenMaxTransactionCostWei = "20000000000000"
@@ -155,7 +156,11 @@ func loadEconomicPolicy(lookup func(string) (string, bool), suffix string, profi
 		return EconomicPolicy{}, fmt.Errorf("environment variable %s must not exceed %s", minPriorityName, maxPriorityName)
 	}
 	tokenGasName := "TOKEN_GAS_LIMIT_" + suffix
-	tokenGas, err := loadPositiveUint64(lookup, tokenGasName, defaultTokenGasLimit)
+	tokenGasDefault := defaultTokenGasLimit
+	if suffix == "BASE" {
+		tokenGasDefault = defaultBaseTokenGasLimit
+	}
+	tokenGas, err := loadPositiveUint64(lookup, tokenGasName, tokenGasDefault)
 	if err != nil {
 		return EconomicPolicy{}, err
 	}

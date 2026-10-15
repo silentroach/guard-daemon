@@ -80,7 +80,7 @@ func TestPublicConfigurationDocumentsOnlySupportedFields(t *testing.T) {
 		"NETWORK_DAILY_BUDGET_WEI_BASE":               defaultNetworkDailyBudgetWei,
 		"NETWORK_CUMULATIVE_BUDGET_WEI_BASE":          defaultNetworkCumulativeBudgetWei,
 		"NETWORK_SPONSOR_MIN_BALANCE_WEI_BASE":        defaultNetworkSponsorMinimumBalanceWei,
-		"TOKEN_GAS_LIMIT_BASE":                        defaultTokenGasLimit,
+		"TOKEN_GAS_LIMIT_BASE":                        defaultBaseTokenGasLimit,
 		"NATIVE_GAS_LIMIT_BASE":                       defaultNativeGasLimit,
 		"NATIVE_MIN_NET_VALUE_WEI_BASE":               defaultNativeMinimumNetValueWei,
 		"UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE": defaultUnknownTokenMaxTransactionCostWei,
