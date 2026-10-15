@@ -905,6 +905,33 @@ func testRescueIncident(options OpenOptions, generation byte, trusted bool) Resc
 	}
 }
 
+func TestRescuePrestateModeSurvivesReopenAlongsideLegacyRecords(t *testing.T) {
+	ctx := context.Background()
+	options := testOpenOptions(nil)
+	path := filepath.Join(t.TempDir(), "modes.db")
+	db := openTestStore(t, path, options)
+	legacy := testRescueIncident(options, 1, true)
+	latest := testRescueIncident(options, 2, true)
+	latest.Policy.LatestState = true
+	for _, incident := range []RescueIncident{legacy, latest} {
+		if _, err := db.PutRescueIncident(ctx, incident); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db = reopenTestStore(t, db, path, options)
+	defer db.Close()
+	for _, expected := range []RescueIncident{legacy, latest} {
+		stored, found, err := db.RescueIncident(ctx, expected.ID)
+		if err != nil || !found || stored.Policy != expected.Policy {
+			t.Fatalf("persisted prestate mode: %+v, %v", stored.Policy, err)
+		}
+	}
+	latest.Policy.LatestState = false
+	if _, err := db.PutRescueIncident(ctx, latest); !errors.Is(err, errConflict) {
+		t.Fatalf("prestate mode was silently changed: %v", err)
+	}
+}
+
 func downgradeStoreToV1(tx *bolt.Tx) error {
 	if err := tx.DeleteBucket(rescueStateBucket); err != nil {
 		return err

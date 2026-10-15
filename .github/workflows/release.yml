@@ -77,7 +77,7 @@ jobs:
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
           package_dir="$RUNNER_TEMP/package"
-          mkdir -p "$package_dir/artifacts/contracts" "$package_dir/deployments/schema" release-assets
+          mkdir -p "$package_dir/artifacts/contracts" "$package_dir/deployments/schema" "$package_dir/scripts" release-assets
           binary=guard-daemon
           if [[ "$GOOS" == windows ]]; then
             binary+=.exe
@@ -87,15 +87,16 @@ jobs:
             -o "$package_dir/$binary" ./cmd/guard-daemon
           cp README.md LICENSE .env.example "$package_dir/"
           cp -R docs packaging "$package_dir/"
+          cp scripts/install-systemd.sh scripts/check-systemd-health.sh scripts/verify-systemd-account.sh "$package_dir/scripts/"
           cp artifacts/contracts/RescuerV2.json "$package_dir/artifacts/contracts/"
           cp deployments/schema/rescuer-manifest.schema.json "$package_dir/deployments/schema/"
           archive="guard-daemon_${TAG}_${GOOS}_${GOARCH}"
           if [[ "$GOOS" == windows ]]; then
             (cd "$package_dir" && zip -r "$GITHUB_WORKSPACE/release-assets/$archive.zip" \
-              "$binary" README.md LICENSE .env.example docs packaging artifacts deployments)
+              "$binary" README.md LICENSE .env.example docs packaging artifacts deployments scripts)
           else
             tar -czf "release-assets/$archive.tar.gz" -C "$package_dir" \
-              "$binary" README.md LICENSE .env.example docs packaging artifacts deployments
+              "$binary" README.md LICENSE .env.example docs packaging artifacts deployments scripts
           fi
       - name: Upload packaged binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

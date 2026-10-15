@@ -2,6 +2,7 @@ package rescue
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	"time"
 
@@ -52,7 +53,7 @@ func (session *Session) handleAsset(ctx context.Context, candidate domain.Rescue
 		parent = domain.NewIncidentID(candidate.ID)
 	}
 	trusted := kind == domain.CandidateNative
-	if kind == domain.CandidateToken {
+	if isTokenOperation(kind) {
 		_, trusted = coordinator.trustedTokens[asset]
 	}
 	now := coordinator.clock.Now()
@@ -71,6 +72,7 @@ func (session *Session) handleAsset(ctx context.Context, candidate domain.Rescue
 		Generation: generation,
 		Trusted:    trusted,
 		Policy: store.RescuePolicySnapshot{
+			LatestState:     coordinator.latestState,
 			MaxAttempts:     coordinator.maxAttempts,
 			RetryDelay:      coordinator.retryDelay,
 			FinalityTimeout: coordinator.finalityTimeout,
@@ -105,6 +107,12 @@ func sameIncidentIdentity(incident store.RescueIncident, candidate domain.Rescue
 }
 
 func (session *Session) resumeIncident(ctx context.Context, incident *store.RescueIncident) error {
+	if session.coordinator.latestState && !incident.Policy.LatestState &&
+		(incident.Status == store.RescuePending || incident.Status == store.RescuePrepared || incident.Status == store.RescueRetryable) {
+		if err := session.checkFastInFlight(ctx, incident); err != nil {
+			return err
+		}
+	}
 	switch incident.Status {
 	case store.RescueTrustedSuccess, store.RescueTokenReported, store.RescueLostRace, store.RescueExhausted, store.RescueFailed:
 		return session.pruneTerminal(ctx)
@@ -114,18 +122,18 @@ func (session *Session) resumeIncident(ctx context.Context, incident *store.Resc
 		}
 		return session.reconcileOnce(ctx, incident)
 	case store.RescuePrepared:
-		if session.coordinator.nonceBlocked {
+		if session.coordinator.nonceBlocked && !session.coordinator.latestState {
 			return retryPendingError(true)
 		}
 		sourceBefore := new(big.Int).SetBytes(incident.SourceBefore[:])
-		if sourceBefore.Sign() == 0 || (incident.Kind == domain.CandidateNative && sourceBefore.Cmp(session.coordinator.nativeThreshold) <= 0) {
+		if incident.Kind != domain.CandidateClaim && (sourceBefore.Sign() == 0 || (incident.Kind == domain.CandidateNative && sourceBefore.Cmp(session.coordinator.nativeThreshold) <= 0)) {
 			if err := session.setTerminal(ctx, incident, store.RescueFailed, codeNoPaidAction); err != nil {
 				return err
 			}
 			return nil
 		}
 		_, explicitlyAllowed := session.coordinator.allowedUntrustedTokens[incident.Asset]
-		if incident.Kind == domain.CandidateToken && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens && !explicitlyAllowed {
+		if isTokenOperation(incident.Kind) && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens && !explicitlyAllowed {
 			if err := session.setTerminal(ctx, incident, store.RescueFailed, codeUnknownToken); err != nil {
 				return err
 			}
@@ -133,7 +141,7 @@ func (session *Session) resumeIncident(ctx context.Context, incident *store.Resc
 		}
 		return session.signSubmitAndConfirm(ctx, incident)
 	case store.RescuePending, store.RescueRetryable:
-		if session.coordinator.nonceBlocked {
+		if session.coordinator.nonceBlocked && !session.coordinator.latestState {
 			return retryPendingError(true)
 		}
 		now := session.coordinator.clock.Now()
@@ -161,15 +169,32 @@ func retryPendingError(ambiguous bool) error {
 
 func (session *Session) prepareAndSubmit(ctx context.Context, incident *store.RescueIncident) error {
 	attempt := incident.Attempts + 1
-	block, err := session.finality.Finalized(ctx)
+	var block rpc.BlockRef
+	var err error
+	var prefetched *attemptSnapshot
+	if incident.Policy.LatestState {
+		prefetched, err = session.prefetchAttempt(ctx, incident, attempt)
+		if err == nil {
+			block = prefetched.block
+			session.attempt = prefetched
+		}
+	} else {
+		block, err = session.finality.Finalized(ctx)
+	}
 	if err != nil || block.Hash == (common.Hash{}) {
+		var pending fastPendingError
+		if errors.As(err, &pending) {
+			return err
+		}
 		failure := contextOrError(ctx, "rescue.prestate_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err)
 		return session.preparationFailure(ctx, incident, attempt, session.lastFinalized, nil, nil, failure)
 	}
 	session.lastFinalized = block
 
 	var sourceBefore, destinationBefore *big.Int
-	if incident.Kind == domain.CandidateToken {
+	if prefetched != nil {
+		sourceBefore, destinationBefore = prefetched.source, prefetched.destination
+	} else if isTokenOperation(incident.Kind) {
 		sourceBefore, err = session.tokenBalanceAt(ctx, block, incident.Asset, session.coordinator.source)
 		if err == nil {
 			destinationBefore, err = session.tokenBalanceAt(ctx, block, incident.Asset, session.coordinator.destination)
@@ -196,7 +221,7 @@ func (session *Session) prepareAndSubmit(ctx context.Context, incident *store.Re
 	}
 
 	setPreparedAttempt(incident, attempt, block, sourceBytes, destinationBytes)
-	if sourceBefore.Sign() == 0 || (incident.Kind == domain.CandidateNative && sourceBefore.Cmp(session.coordinator.nativeThreshold) <= 0) {
+	if incident.Kind != domain.CandidateClaim && (sourceBefore.Sign() == 0 || (incident.Kind == domain.CandidateNative && sourceBefore.Cmp(session.coordinator.nativeThreshold) <= 0)) {
 		if err := session.updateIncident(ctx, incident); err != nil {
 			return err
 		}
@@ -206,7 +231,7 @@ func (session *Session) prepareAndSubmit(ctx context.Context, incident *store.Re
 		return nil
 	}
 	_, explicitlyAllowed := session.coordinator.allowedUntrustedTokens[incident.Asset]
-	if incident.Kind == domain.CandidateToken && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens && !explicitlyAllowed {
+	if isTokenOperation(incident.Kind) && !incident.Trusted && !session.coordinator.network.AllowUnknownTokens && !explicitlyAllowed {
 		if err := session.updateIncident(ctx, incident); err != nil {
 			return err
 		}
@@ -216,13 +241,21 @@ func (session *Session) prepareAndSubmit(ctx context.Context, incident *store.Re
 		return newError("rescue.token_policy", domain.ErrorConfiguration, codeUnknownToken, false, false, nil)
 	}
 
-	sponsorNonce, err := session.sponsorNonce(ctx)
+	var sponsorNonce uint64
+	if prefetched != nil {
+		sponsorNonce = prefetched.sponsorNonce
+	} else {
+		sponsorNonce, err = session.sponsorNonce(ctx)
+	}
 	if err != nil {
 		return session.preparationFailure(ctx, incident, attempt, block, sourceBefore, destinationBefore, err)
 	}
-	sourceNonce, err := session.checkedPendingNonce(ctx, session.coordinator.source)
-	if err != nil {
-		return session.preparationFailure(ctx, incident, attempt, block, sourceBefore, destinationBefore, err)
+	var sourceNonce uint64
+	if !incident.Policy.LatestState {
+		sourceNonce, err = session.checkedPendingNonce(ctx, session.coordinator.source)
+		if err != nil {
+			return session.preparationFailure(ctx, incident, attempt, block, sourceBefore, destinationBefore, err)
+		}
 	}
 	incident.SponsorNonce = sponsorNonce
 	incident.SourceNonce = sourceNonce

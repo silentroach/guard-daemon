@@ -42,6 +42,8 @@ type Network struct {
 	TrustedTokens       []common.Address
 	AllowUnknownTokens  bool
 	EconomicPolicy      EconomicPolicy
+	Claim               *domain.ClaimPlan
+	LatestState         bool
 }
 
 // Format исключает RPC URL и путь к манифесту из форматированного вывода.
@@ -280,6 +282,14 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 	if err != nil {
 		return Network{}, err
 	}
+	claim, err := loadClaim(lookup, suffix, definition.chainID, tokens, allowUnknown)
+	if err != nil {
+		return Network{}, err
+	}
+	confirmation, configured := lookup("NETWORK_CONFIRMATION_MODE_" + suffix)
+	if configured && confirmation != "finalized" && confirmation != "latest" {
+		return Network{}, fmt.Errorf("environment variable NETWORK_CONFIRMATION_MODE_%s must be finalized or latest", suffix)
+	}
 
 	return Network{
 		Name:                definition.name,
@@ -293,6 +303,8 @@ func loadNetwork(lookup func(string) (string, bool), mode Mode, definition netwo
 		TrustedTokens:       trustedTokens,
 		AllowUnknownTokens:  allowUnknown,
 		EconomicPolicy:      economicPolicy,
+		Claim:               claim,
+		LatestState:         confirmation == "latest",
 	}, nil
 }
 

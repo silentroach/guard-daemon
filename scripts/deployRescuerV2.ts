@@ -36,6 +36,7 @@ import {
   sourceProvenance,
 } from "./deployment.js";
 import { verifyCanonicalArtifact } from "./verifyArtifacts.js";
+import { estimateBaseDeploymentFees } from "./baseFees.js";
 
 interface BaseCLIOptions {
   readonly chainId: bigint;
@@ -97,6 +98,7 @@ const optionNames: ReadonlySet<string> = new Set([
   "--chain-id",
   "--confirmations",
   "--destination",
+  "--fee-mode",
   "--gas-limit",
   "--manifest",
   "--max-fee-per-gas-wei",
@@ -110,8 +112,14 @@ const optionNames: ReadonlySet<string> = new Set([
   "--sponsor",
 ]);
 
-const broadcastChainIDs: ReadonlySet<bigint> = new Set([1n, 56n, 137n, 31337n]);
-const productionChainIDs: ReadonlySet<bigint> = new Set([1n, 56n, 137n]);
+const broadcastChainIDs: ReadonlySet<bigint> = new Set([
+  1n,
+  56n,
+  137n,
+  8453n,
+  31337n,
+]);
+const productionChainIDs: ReadonlySet<bigint> = new Set([1n, 56n, 137n, 8453n]);
 const productionRecoveryDirectory =
   "/var/lib/guard-daemon-operator/deployment-recovery";
 const productionManifestDirectory =
@@ -226,7 +234,13 @@ export const parseCLIOptions = (
   const releaseCandidatePath = requiredValue(values, "--release-candidate");
   if (!broadcastChainIDs.has(chainId)) {
     throw new DeploymentInputError(
-      "Broadcast is allowed only for chain IDs 1, 56, 137, and local chain ID 31337",
+      "Broadcast is allowed only for chain IDs 1, 56, 137, 8453, and local chain ID 31337",
+    );
+  }
+  const feeMode = values.get("--fee-mode") ?? "bounded";
+  if (chainId === 8453n ? feeMode !== "estimated" : feeMode !== "bounded") {
+    throw new DeploymentInputError(
+      "Base requires --fee-mode estimated; other chains require bounded fees",
     );
   }
   const rpcURLArgument = values.get("--rpc-url");
@@ -1076,6 +1090,24 @@ export const runDeployment = async (
         type: 2,
         value: 0n,
       };
+      const creationBytes = getBytes(planned.data).length;
+      const checkBaseEstimate = async (): Promise<void> => {
+        if (options.chainId !== 8453n) return;
+        const additional = await estimateBaseDeploymentFees(
+          provider,
+          creationBytes,
+          options.gasLimit,
+        );
+        if (
+          options.gasLimit * options.maxFeePerGas + additional >
+          options.maxTotalCost
+        ) {
+          throw new DeploymentInputError(
+            "Base execution and additional fee estimate exceed --max-total-cost-wei",
+          );
+        }
+      };
+      await checkBaseEstimate();
       const rawSignedTransaction =
         await wallet.signTransaction(transactionRequest);
       const signedTransaction = Transaction.from(rawSignedTransaction);
@@ -1121,6 +1153,7 @@ export const runDeployment = async (
         recoveryDirectory,
         recoveryRequirements,
       );
+      await checkBaseEstimate();
       const transaction =
         await provider.broadcastTransaction(rawSignedTransaction);
       if (transaction.hash !== signedTransaction.hash) {

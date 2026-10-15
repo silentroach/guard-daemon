@@ -134,6 +134,7 @@ func reservedEnvironmentName(name string) bool {
 		"MAX_NEW_UNKNOWN_",
 		"MAX_PRIORITY_",
 		"MAX_TRANSACTION_",
+		"MIN_PRIORITY_",
 		"NATIVE_",
 		"NETWORK_",
 		"RATE_LIMIT_",

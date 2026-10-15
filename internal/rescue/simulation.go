@@ -34,6 +34,7 @@ type EIP7702SimulationRequest struct {
 	GasTipCap         *big.Int
 	GasFeeCap         *big.Int
 	Data              []byte
+	Value             *big.Int
 	AuthorizationList []types.SetCodeAuthorization
 }
 
@@ -68,12 +69,13 @@ func SimulateEIP7702At(ctx context.Context, simulator PinnedCallSimulator, block
 func validSimulationRequest(request EIP7702SimulationRequest) bool {
 	return request.Sponsor != (common.Address{}) && request.Source != (common.Address{}) && request.Sponsor != request.Source &&
 		request.GasLimit > 0 && len(request.Data) > 0 && len(request.AuthorizationList) > 0 &&
+		(request.Value == nil || (request.Value.Sign() >= 0 && request.Value.BitLen() <= 256)) &&
 		validSimulationFee(request.GasTipCap) && validSimulationFee(request.GasFeeCap) && request.GasFeeCap.Cmp(request.GasTipCap) >= 0
 }
 
 func simulationCall(request EIP7702SimulationRequest) ethereum.CallMsg {
 	source := request.Source
-	return ethereum.CallMsg{
+	call := ethereum.CallMsg{
 		From:              request.Sponsor,
 		To:                &source,
 		Gas:               request.GasLimit,
@@ -82,6 +84,10 @@ func simulationCall(request EIP7702SimulationRequest) ethereum.CallMsg {
 		Data:              append([]byte(nil), request.Data...),
 		AuthorizationList: append([]types.SetCodeAuthorization(nil), request.AuthorizationList...),
 	}
+	if request.Value != nil && request.Value.Sign() != 0 {
+		call.Value = new(big.Int).Set(request.Value)
+	}
+	return call
 }
 
 func validSimulationFee(value *big.Int) bool {

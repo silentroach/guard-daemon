@@ -48,6 +48,22 @@ func TestBuildFeeQuoteRejectsUnderpricedCap(t *testing.T) {
 	}
 }
 
+func TestBuildFeeQuoteUsesPriorityFloorWithinCaps(t *testing.T) {
+	policy := testFeePolicy()
+	policy.MinPriorityFeePerGas.SetUint64(15)
+	quote, err := BuildFeeQuote(policy, FeeAssetToken, big.NewInt(100), big.NewInt(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quote.TipCap.Int64() != 15 || quote.FeeCap.Int64() != 215 {
+		t.Fatalf("quote = %+v", quote)
+	}
+	policy.MaxFeePerGas.SetUint64(110)
+	if _, err := BuildFeeQuote(policy, FeeAssetToken, big.NewInt(100), big.NewInt(101)); !errors.Is(err, ErrFeeUnderpriced) {
+		t.Fatalf("floor bypassed fee cap: %v", err)
+	}
+}
+
 func TestBuildFeeQuoteRejectsMalformedInputs(t *testing.T) {
 	policy := testFeePolicy()
 	tests := []struct {

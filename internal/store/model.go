@@ -51,6 +51,7 @@ const (
 )
 
 type RescuePolicySnapshot struct {
+	LatestState     bool
 	MaxAttempts     uint32
 	RetryDelay      time.Duration
 	FinalityTimeout time.Duration

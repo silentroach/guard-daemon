@@ -75,6 +75,8 @@ type WatchStore interface {
 }
 
 type Dependencies struct {
+	Fast           bool
+	DryRun         bool
 	Contracts      rpc.ContractCaller
 	Finalized      rpc.FinalizedReader
 	LogSubscriber  rpc.LogSubscriber
@@ -92,6 +94,9 @@ type Dependencies struct {
 }
 
 type Service struct {
+	fast             bool
+	dryRun           bool
+	fastSeen         map[uint64]common.Hash
 	contracts        rpc.ContractCaller
 	finalized        rpc.FinalizedReader
 	logSubscriber    rpc.LogSubscriber
@@ -123,6 +128,13 @@ func NewService(dependencies Dependencies) (*Service, error) {
 		dependencies.LookbackBlocks > maximumLookbackBlocks || dependencies.ReadTimeout <= 0 {
 		return nil, ErrInvalidDependencies
 	}
+	if dependencies.Fast {
+		if _, ok := dependencies.Finalized.(interface {
+			Latest(context.Context) (rpc.BlockRef, error)
+		}); !ok {
+			return nil, ErrInvalidDependencies
+		}
+	}
 
 	knownTokens := make(map[common.Address]domain.Token, len(dependencies.Network.Tokens))
 	allowedTokens := make(map[common.Address]struct{}, len(dependencies.Network.Tokens))
@@ -137,6 +149,9 @@ func NewService(dependencies Dependencies) (*Service, error) {
 	}
 
 	return &Service{
+		fast:           dependencies.Fast,
+		dryRun:         dependencies.DryRun,
+		fastSeen:       make(map[uint64]common.Hash),
 		contracts:      dependencies.Contracts,
 		finalized:      dependencies.Finalized,
 		logSubscriber:  dependencies.LogSubscriber,
@@ -188,13 +203,31 @@ func PolicyFingerprint(network domain.Network, lookbackBlocks uint64) [sha256.Si
 }
 
 func (service *Service) Run(ctx context.Context) error {
+	if !service.fast {
+		return service.runLive(ctx)
+	}
+	if ctx == nil {
+		return ErrInvalidDependencies
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan error, 2)
+	go func() { results <- service.runLive(runCtx) }()
+	go func() { results <- service.runFinalizedBackfill(runCtx) }()
+	first := <-results
+	cancel()
+	<-results
+	return first
+}
+
+func (service *Service) runLive(ctx context.Context) error {
 	if ctx == nil {
 		return ErrInvalidDependencies
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := service.scan(ctx); err != nil {
+	if err := service.scanLive(ctx); err != nil {
 		return err
 	}
 	if service.ready != nil {
@@ -274,7 +307,7 @@ func (service *Service) watchSubscriptions(ctx context.Context, query ethereum.F
 
 	// Повторное сканирование устраняет риск пропуска событий между первоначальным
 	// поиском пропущенных блоков и регистрацией подписки.
-	if err := service.scan(ctx); err != nil {
+	if err := service.scanLive(ctx); err != nil {
 		return err
 	}
 
@@ -335,7 +368,7 @@ func (service *Service) watchSubscriptions(ctx context.Context, query ethereum.F
 				service.recordFailure(eventReadFailed, errorInvalidHead)
 				continue
 			}
-			if err := service.scan(ctx); err != nil {
+			if err := service.scanLive(ctx); err != nil {
 				return err
 			}
 		case <-headErrors:
@@ -348,7 +381,7 @@ func (service *Service) watchSubscriptions(ctx context.Context, query ethereum.F
 			if !ok {
 				return service.failure("watcher.ticker", domain.ErrorInternal, errorTickerClosed, false, nil)
 			}
-			if err := service.scan(ctx); err != nil {
+			if err := service.scanLive(ctx); err != nil {
 				return err
 			}
 		case _, ok := <-reconcileTicker.C():
@@ -385,7 +418,7 @@ func (service *Service) poll(ctx context.Context) error {
 			if !ok {
 				return service.failure("watcher.ticker", domain.ErrorInternal, errorTickerClosed, false, nil)
 			}
-			if err := service.scan(ctx); err != nil {
+			if err := service.scanLive(ctx); err != nil {
 				return err
 			}
 		case _, ok := <-reconcileTicker.C():
@@ -449,7 +482,9 @@ func (service *Service) scan(ctx context.Context) error {
 			return service.readFailure("watcher.block.logs", errorLogRead, logErr)
 		}
 		candidates := make([]domain.RescueCandidate, 0, len(logs)+1)
-		candidates = append(candidates, domain.NewBlockCandidate(service.networkID, domain.CandidateNative, service.source, block.Hash, number))
+		if !service.fast {
+			candidates = append(candidates, domain.NewBlockCandidate(service.networkID, domain.CandidateNative, service.source, block.Hash, number))
+		}
 		seenLogs := make(map[domain.CandidateID]struct{}, len(logs))
 		for _, logEntry := range logs {
 			if logEntry.BlockNumber != number || logEntry.BlockHash != block.Hash || logEntry.Removed {
@@ -511,6 +546,9 @@ func (service *Service) observeLog(ctx context.Context, logEntry types.Log) erro
 	}
 	service.recordCandidate(candidate, result)
 	if !logEntry.Removed {
+		if service.fast {
+			return service.scanFast(ctx)
+		}
 		return nil
 	}
 	if err := service.store.MarkRemoved(ctx, candidate.ID); err != nil {
@@ -559,10 +597,14 @@ func (service *Service) reconcile(ctx context.Context) error {
 		if _, configured := service.allowedTokens[address]; configured {
 			continue
 		}
+		token := service.fallbackToken(address)
+		if !service.fast {
+			token = service.resolveToken(ctx, address)
+		}
 		candidate := domain.NewTokenReconciliationCandidate(
 			service.networkID,
 			service.source,
-			service.resolveToken(ctx, address),
+			token,
 			service.generation,
 			observation,
 		)

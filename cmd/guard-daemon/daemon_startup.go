@@ -185,6 +185,19 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 			return nil, processError("daemon.store", domain.ErrorInternal, errorStoreFailed, false, openErr)
 		}
 		prepared[index].handoff = handoff
+		pending, replayErr := handoff.Replay(ctx, network.ChainID)
+		if replayErr != nil {
+			return nil, processError("daemon.claim_queue", domain.ErrorInternal, errorStoreFailed, false, replayErr)
+		}
+		for _, candidate := range pending {
+			if candidate.Kind != domain.CandidateClaim {
+				continue
+			}
+			plan := prepared[index].configured.Claim
+			if plan == nil || candidate.ID != domain.NewClaimCandidate(network.ChainID, runtimeConfig.SourceAddress, *plan).ID {
+				return nil, processError("daemon.claim_queue", domain.ErrorConfiguration, errorStartupInvalid, false, nil)
+			}
+		}
 	}
 	if runtimeConfig.Mode.IsLive() {
 		openedBudget, openErr := dependencies.openBudget(runtimeConfig, prepared)
@@ -269,6 +282,8 @@ func newDaemon(ctx context.Context, runtimeConfig config.Runtime, dependencies d
 				return nil, processError("daemon.rescue_policy", domain.ErrorConfiguration, errorStartupInvalid, false, policyErr)
 			}
 			coordinator, err = rescue.NewCoordinator(rescue.Config{
+				Claim:              preparedNetwork.configured.Claim,
+				LatestState:        preparedNetwork.configured.LatestState,
 				Network:            network,
 				Source:             runtimeConfig.SourceAddress,
 				Sponsor:            runtimeConfig.SponsorAddress,

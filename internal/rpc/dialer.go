@@ -73,7 +73,7 @@ func DialQuorum(ctx context.Context, endpoints []ProviderEndpoint, timeout time.
 		if err != nil {
 			return nil, nil, err
 		}
-		return &historicalReaderFacade{HistoricalReader: backend}, backend.Close, nil
+		return &baseHistoricalReader{HistoricalReader: &historicalReaderFacade{HistoricalReader: backend}, client: backend}, backend.Close, nil
 	})
 }
 

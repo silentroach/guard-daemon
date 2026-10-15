@@ -1359,6 +1359,7 @@ func TestCoordinatorUsesDurableStoreTransitions(t *testing.T) {
 type rigOptions struct {
 	tokens                  []common.Address
 	allowUnknown            bool
+	claim                   *domain.ClaimPlan
 	nativeThreshold         *big.Int
 	state                   *memoryState
 	clock                   *fakeClock
@@ -1485,6 +1486,7 @@ func buildTestRig(t testing.TB, options rigOptions) (*testRig, error) {
 		Budget: options.budget,
 	}, rig.clock)
 	coordinatorConfig.FeePolicy.UnboundedAdditionalFees = options.unboundedAdditionalFees
+	coordinatorConfig.Claim = options.claim
 	coordinator, err := NewCoordinator(coordinatorConfig, rig.authorizer, rig.transactioner, rig.clock, observability.Discard{})
 	if err != nil {
 		return nil, err

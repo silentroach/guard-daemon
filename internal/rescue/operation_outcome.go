@@ -53,6 +53,24 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 		}
 		return newError("rescue.receipt", domain.ErrorPostcondition, codeReverted, false, false, nil)
 	}
+	if incident.Policy.LatestState {
+		orphaned := incident.SnapshotBlockNumber >= receipt.BlockNumber.Uint64()
+		if !orphaned {
+			header, err := session.finality.Header(ctx, incident.SnapshotBlockNumber)
+			if err != nil {
+				return session.postconditionAmbiguous(ctx, incident, err)
+			}
+			orphaned = header.Hash != incident.SnapshotBlockHash
+		}
+		if orphaned {
+			// The fee is final even when the earlier balance snapshot belonged to
+			// an orphaned branch. Do not claim a successful asset transfer from it.
+			if err := session.setTerminal(ctx, incident, store.RescueFailed, "rescue_prestate_reorg"); err != nil {
+				return err
+			}
+			return newError("rescue.prestate_reorg", domain.ErrorPostcondition, codePostcondition, false, false, nil)
+		}
+	}
 
 	code, err := session.finality.CodeAt(ctx, postBlock, session.coordinator.source)
 	if err != nil {
@@ -89,7 +107,7 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 	}
 
 	var sourceAfter, destinationAfter *big.Int
-	if incident.Kind == domain.CandidateToken {
+	if isTokenOperation(incident.Kind) {
 		sourceAfter, err = session.tokenBalanceAt(ctx, postBlock, incident.Asset, session.coordinator.source)
 		if err == nil {
 			destinationAfter, err = session.tokenBalanceAt(ctx, postBlock, incident.Asset, session.coordinator.destination)
@@ -106,7 +124,10 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 	if err := session.canonicalProofEnd(ctx, incident, receipt, postBlock); err != nil {
 		return session.postconditionAmbiguous(ctx, incident, err)
 	}
-	sourceBefore := new(big.Int).SetBytes(incident.SourceBefore[:])
+	sourceBefore, err := session.requiredDestinationDelta(incident)
+	if err != nil {
+		return session.postconditionAmbiguous(ctx, incident, err)
+	}
 	destinationBefore := new(big.Int).SetBytes(incident.DestinationBefore[:])
 	deltaValid := destinationAfter.Cmp(destinationBefore) >= 0 && new(big.Int).Sub(destinationAfter, destinationBefore).Cmp(sourceBefore) >= 0
 	if sourceAfter.Sign() != 0 || !deltaValid {
@@ -116,7 +137,7 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 		return newError("rescue.post_balance", domain.ErrorPostcondition, codePostcondition, false, false, nil)
 	}
 	status := store.RescueTrustedSuccess
-	if incident.Kind == domain.CandidateToken {
+	if isTokenOperation(incident.Kind) {
 		status = store.RescueTokenReported
 	}
 	if err := session.setTerminal(ctx, incident, status, ""); err != nil {
@@ -127,14 +148,14 @@ func (session *Session) applyReceipt(ctx context.Context, incident *store.Rescue
 }
 
 func (session *Session) commitReceiptCost(ctx context.Context, incident *store.RescueIncident, receipt *types.Receipt, postBlock rpc.BlockRef) error {
-	if session.coordinator.feePolicy.UnboundedAdditionalFees {
+	if session.coordinator.feePolicy.UnboundedAdditionalFees && !session.coordinator.feePolicy.EstimatedBaseFees {
 		return newError("rescue.budget_actual", domain.ErrorConfiguration, codeInvalidConfig, false, true, nil)
 	}
 	transaction, err := session.validatePersistedTransaction(incident)
 	if err != nil {
 		return err
 	}
-	if receipt.GasUsed > transaction.Gas() {
+	if receipt.GasUsed > transaction.Gas() || receipt.EffectiveGasPrice.Cmp(transaction.GasFeeCap()) > 0 {
 		return newError("rescue.budget_actual", domain.ErrorRPCInvalidResponse, codeReceiptInvalid, true, true, nil)
 	}
 	fee, overflow := uint256.FromBig(receipt.EffectiveGasPrice)
@@ -144,6 +165,34 @@ func (session *Session) commitReceiptCost(ctx context.Context, incident *store.R
 	executionCost, err := maximumFeeCost(receipt.GasUsed, fee, &uint256.Int{})
 	if err != nil {
 		return session.budgetError("rescue.budget_actual", err)
+	}
+	if session.coordinator.feePolicy.EstimatedBaseFees {
+		reader, ok := session.finality.(interface {
+			BaseAdditionalFee(context.Context, *types.Receipt) (*big.Int, error)
+		})
+		if !ok {
+			return newError("rescue.budget_l2_fee", domain.ErrorConfiguration, codeInvalidConfig, false, true, nil)
+		}
+		extra, feeErr := reader.BaseAdditionalFee(ctx, receipt)
+		if feeErr != nil || extra == nil || extra.Sign() < 0 {
+			return newError("rescue.budget_l2_fee", domain.ErrorRPCTransient, codeFeeRead, true, true, feeErr)
+		}
+		extraCost, overflow := uint256.FromBig(extra)
+		if overflow {
+			return newError("rescue.budget_l2_fee", domain.ErrorRPCInvalidResponse, codeFeeInvalid, false, true, nil)
+		}
+		if _, overflow := executionCost.AddOverflow(&executionCost, extraCost); overflow {
+			return session.budgetError("rescue.budget_actual", ErrFeeCostOverflow)
+		}
+	}
+	if receipt.Status == types.ReceiptStatusSuccessful {
+		value, valueErr := session.operationValue(incident)
+		if valueErr != nil {
+			return valueErr
+		}
+		if _, overflow := executionCost.AddOverflow(&executionCost, &value); overflow {
+			return session.budgetError("rescue.budget_actual", ErrFeeCostOverflow)
+		}
 	}
 	reservation, err := session.ensureReservation(ctx, incident, transaction)
 	if err != nil {
@@ -176,11 +225,13 @@ func (session *Session) blockTime(block rpc.BlockRef) time.Time {
 
 func (session *Session) canonicalProofStart(ctx context.Context, incident *store.RescueIncident, receipt *types.Receipt) (rpc.BlockRef, error) {
 	postBlock, err := session.finality.Finalized(ctx)
-	if err != nil || postBlock.Hash == (common.Hash{}) || postBlock.Number < incident.SnapshotBlockNumber || postBlock.Number < receipt.BlockNumber.Uint64() {
+	if err != nil || postBlock.Hash == (common.Hash{}) || (!incident.Policy.LatestState && postBlock.Number < incident.SnapshotBlockNumber) || postBlock.Number < receipt.BlockNumber.Uint64() {
 		return rpc.BlockRef{}, contextOrError(ctx, "rescue.post_finalized", domain.ErrorRPCTransient, codeFinalityRead, true, true, err)
 	}
-	if err := session.requireCanonicalHeader(ctx, incident.SnapshotBlockNumber, incident.SnapshotBlockHash); err != nil {
-		return rpc.BlockRef{}, err
+	if !incident.Policy.LatestState {
+		if err := session.requireCanonicalHeader(ctx, incident.SnapshotBlockNumber, incident.SnapshotBlockHash); err != nil {
+			return rpc.BlockRef{}, err
+		}
 	}
 	if err := session.requireCanonicalHeader(ctx, receipt.BlockNumber.Uint64(), receipt.BlockHash); err != nil {
 		return rpc.BlockRef{}, err
@@ -189,8 +240,10 @@ func (session *Session) canonicalProofStart(ctx context.Context, incident *store
 }
 
 func (session *Session) canonicalProofEnd(ctx context.Context, incident *store.RescueIncident, receipt *types.Receipt, expectedFinalized rpc.BlockRef) error {
-	if err := session.requireCanonicalHeader(ctx, incident.SnapshotBlockNumber, incident.SnapshotBlockHash); err != nil {
-		return err
+	if !incident.Policy.LatestState {
+		if err := session.requireCanonicalHeader(ctx, incident.SnapshotBlockNumber, incident.SnapshotBlockHash); err != nil {
+			return err
+		}
 	}
 	if err := session.requireCanonicalHeader(ctx, receipt.BlockNumber.Uint64(), receipt.BlockHash); err != nil {
 		return err

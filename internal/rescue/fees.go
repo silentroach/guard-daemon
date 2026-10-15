@@ -33,12 +33,14 @@ type FeePolicy struct {
 	Network                 domain.NetworkID
 	MaxFeePerGas            uint256.Int
 	MaxPriorityFeePerGas    uint256.Int
+	MinPriorityFeePerGas    uint256.Int
 	TokenGasLimit           uint64
 	NativeGasLimit          uint64
 	Overhead                uint256.Int
 	UnknownTokenCostCap     uint256.Int
 	TransactionCostCap      uint256.Int
 	UnboundedAdditionalFees bool
+	EstimatedBaseFees       bool
 }
 
 type FeeQuote struct {
@@ -66,12 +68,17 @@ func BuildFeeQuote(policy FeePolicy, asset FeeAsset, baseFee, suggestedPrice *bi
 		return FeeQuote{}, ErrInvalidFeeInput
 	}
 	suggested, ok := positiveUint256(suggestedPrice)
-	if !ok || suggested.Cmp(&base) <= 0 {
+	if !ok || (suggested.Cmp(&base) <= 0 && policy.MinPriorityFeePerGas.IsZero()) {
 		return FeeQuote{}, ErrInvalidFeeInput
 	}
 
 	var tip uint256.Int
-	tip.Sub(&suggested, &base)
+	if suggested.Cmp(&base) > 0 {
+		tip.Sub(&suggested, &base)
+	}
+	if tip.Cmp(&policy.MinPriorityFeePerGas) < 0 {
+		tip.Set(&policy.MinPriorityFeePerGas)
+	}
 	if tip.Cmp(&policy.MaxPriorityFeePerGas) > 0 {
 		tip.Set(&policy.MaxPriorityFeePerGas)
 	}
@@ -107,6 +114,7 @@ func BuildFeeQuote(policy FeePolicy, asset FeeAsset, baseFee, suggestedPrice *bi
 
 func validFeePolicy(policy FeePolicy) bool {
 	return policy.Network > 0 && !policy.MaxFeePerGas.IsZero() && !policy.MaxPriorityFeePerGas.IsZero() &&
+		policy.MinPriorityFeePerGas.Cmp(&policy.MaxPriorityFeePerGas) <= 0 &&
 		!policy.TransactionCostCap.IsZero() && policy.MaxPriorityFeePerGas.Cmp(&policy.MaxFeePerGas) <= 0 &&
 		policy.TokenGasLimit > 0 && policy.NativeGasLimit > 0
 }

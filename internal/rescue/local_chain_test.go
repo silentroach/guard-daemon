@@ -602,7 +602,7 @@ func localChainDeployRescuer(t *testing.T, ctx context.Context, backend *simulat
 	return contractABI, rescuer, nextNonce
 }
 
-func localChainCoordinator(t *testing.T, sourceKey, sponsorKey *ecdsa.PrivateKey, destination, rescuer common.Address, policy string) (*Coordinator, *store.BoltStore) {
+func localChainCoordinator(t *testing.T, sourceKey, sponsorKey *ecdsa.PrivateKey, destination, rescuer common.Address, policy string, claims ...domain.ClaimPlan) (*Coordinator, *store.BoltStore) {
 	t.Helper()
 	ctx := context.Background()
 	source := crypto.PubkeyToAddress(sourceKey.PublicKey)
@@ -666,6 +666,15 @@ func localChainCoordinator(t *testing.T, sourceKey, sponsorKey *ecdsa.PrivateKey
 		RetryDelay:      time.Second,
 		ReceiptTimeout:  time.Second,
 	}, testClock)
+	if len(claims) != 0 {
+		plan := claims[0].Clone()
+		coordinatorConfig.Claim = &plan
+		coordinatorConfig.Network.Tokens = []domain.Token{{Address: plan.Token}}
+		coordinatorConfig.TrustedTokens = []common.Address{plan.Token}
+		coordinatorConfig.TrustedTokenValues = map[common.Address]TrustedTokenValuePolicy{
+			plan.Token: {MinimumBalance: *uint256.NewInt(1), MaximumCost: coordinatorConfig.FeePolicy.TransactionCostCap},
+		}
+	}
 	coordinator, err := NewCoordinator(coordinatorConfig, authorizer, transactioner, testClock, observability.Discard{})
 	if err != nil {
 		t.Fatalf("NewCoordinator() returned an error: %v", err)

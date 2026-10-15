@@ -53,9 +53,10 @@
    `source` и `sponsor`.
 5. Роль `sponsor` использует отдельный горячий кошелёк с ограниченным балансом; `source`,
    `sponsor` и `destination` попарно различны.
-6. Сеть поддерживает EIP-7702 и имеет ограничиваемую транзакцией модель полной
-   стоимости газа. Дополнительная комиссия без верхнего предела блокирует
-   активацию.
+6. Сеть поддерживает EIP-7702. Для `1`, `56` и `137` применяется ограничиваемая
+   транзакцией модель полной комиссии. Для Base (`8453`) отдельно выбирается
+   `--fee-mode estimated`: L1/operator fee оценивается перед подписью и отправкой,
+   но полный расход не имеет протокольного потолка.
 
 План без отправки безопасно проверяется локально командой из
 `local-verification.md`. Детерминированные адреса оттуда нельзя переносить в
@@ -183,6 +184,7 @@ if /usr/bin/printenv DEPLOYER_PRIVATE_KEY >/dev/null; then exit 1; fi
 /usr/lib/guard-daemon/deployment/<releaseCommit>/node_modules/tsx/dist/cli.mjs
 /usr/lib/guard-daemon/deployment/<releaseCommit>/scripts/deployRescuerV2.ts
 --chain-id <chainId>
+--fee-mode <feeMode>
 --destination <destinationAddress>
 --sponsor <sponsorAddress>
 --manifest /var/lib/guard-daemon-operator/deployment-manifests/rescuer-v2-<chainId>-<releaseCommit>.json
@@ -193,6 +195,9 @@ if /usr/bin/printenv DEPLOYER_PRIVATE_KEY >/dev/null; then exit 1; fi
 --max-total-cost-wei <maxTotalCostWei>
 --broadcast
 ```
+
+Для Base (`chainId=8453`) диспетчер подставляет `feeMode=estimated`;
+для остальных сетей — `bounded`.
 
 Ключ подписанта транзакции развёртывания и RPC URL с данными доступа передаются
 процессу только через защищённый операторский канал и не записываются в
@@ -205,7 +210,7 @@ if /usr/bin/printenv DEPLOYER_PRIVATE_KEY >/dev/null; then exit 1; fi
 в `/etc/guard-daemon/manifests/` и только затем явно указывает её в конфигурации
 демона. CLI развёртывания не изменяет `/etc`.
 
-Для идентификаторов публичных сетей `1`, `56` и `137` CLI всегда использует
+Для идентификаторов публичных сетей `1`, `56`, `137` и `8453` CLI всегда использует
 `/var/lib/guard-daemon-operator/deployment-recovery`; параметра для
 переопределения нет. `--recovery-directory` разрешён и обязателен только для
 локального идентификатора сети `31337`. Назначенный оператор с правами root

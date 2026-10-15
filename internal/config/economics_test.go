@@ -16,26 +16,26 @@ func TestEconomicPolicyDefaultsAndOverrides(t *testing.T) {
 	}{
 		{
 			name:    "base defaults",
-			want:    [10]string{"8000000000000000", "15000000000000000", "25000000000000000", "40000000000000000", "20000000000000000", "20000000000", "2000000000", "500000000000000", "1000000000000000", "2000000000000000"},
-			wantGas: [2]uint64{300000, 100000},
+			want:    [10]string{"80000000000000", "150000000000000", "250000000000000", "400000000000000", "20000000000000000", "50000000", "2000000", "5000000000000", "1000000000000000", "20000000000000"},
+			wantGas: [2]uint64{180000, 100000},
 		},
 		{
 			name: "explicit values",
 			configure: func(values map[string]string) {
-				values["NETWORK_MAX_TRANSACTION_COST_WEI_BASE"] = "9000000000000000"
-				values["NETWORK_HOURLY_BUDGET_WEI_BASE"] = "18000000000000000"
-				values["NETWORK_DAILY_BUDGET_WEI_BASE"] = "28000000000000000"
-				values["NETWORK_CUMULATIVE_BUDGET_WEI_BASE"] = "45000000000000000"
+				values["NETWORK_MAX_TRANSACTION_COST_WEI_BASE"] = "18000000000000"
+				values["NETWORK_HOURLY_BUDGET_WEI_BASE"] = "18000000000000"
+				values["NETWORK_DAILY_BUDGET_WEI_BASE"] = "28000000000000"
+				values["NETWORK_CUMULATIVE_BUDGET_WEI_BASE"] = "45000000000000"
 				values["NETWORK_SPONSOR_MIN_BALANCE_WEI_BASE"] = "21000000000000000"
-				values["MAX_FEE_PER_GAS_WEI_BASE"] = "10000000000"
-				values["MAX_PRIORITY_FEE_PER_GAS_WEI_BASE"] = "1000000000"
+				values["MAX_FEE_PER_GAS_WEI_BASE"] = "25000000"
+				values["MAX_PRIORITY_FEE_PER_GAS_WEI_BASE"] = "1000000"
 				values["TOKEN_GAS_LIMIT_BASE"] = "400000"
 				values["NATIVE_GAS_LIMIT_BASE"] = "120000"
-				values["CHAIN_OVERHEAD_MAX_WEI_BASE"] = "1000000000000000"
+				values["CHAIN_OVERHEAD_MAX_WEI_BASE"] = "1000000000000"
 				values["NATIVE_MIN_NET_VALUE_WEI_BASE"] = "2000000000000000"
-				values["UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE"] = "3000000000000000"
+				values["UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE"] = "3000000000000"
 			},
-			want:    [10]string{"9000000000000000", "18000000000000000", "28000000000000000", "45000000000000000", "21000000000000000", "10000000000", "1000000000", "1000000000000000", "2000000000000000", "3000000000000000"},
+			want:    [10]string{"18000000000000", "18000000000000", "28000000000000", "45000000000000", "21000000000000000", "25000000", "1000000", "1000000000000", "2000000000000000", "3000000000000"},
 			wantGas: [2]uint64{400000, 120000},
 		},
 	}
@@ -69,17 +69,17 @@ func TestEconomicPolicyRejectsHierarchyOverflowAndUnsafeGasBounds(t *testing.T) 
 		field string
 		value string
 	}{
-		{name: "network per-tx above global", field: "NETWORK_MAX_TRANSACTION_COST_WEI_BASE", value: "11000000000000000"},
-		{name: "network hour below per-tx", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "7000000000000000"},
-		{name: "network hour above global", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "21000000000000000"},
-		{name: "network day below hour", field: "NETWORK_DAILY_BUDGET_WEI_BASE", value: "14000000000000000"},
-		{name: "network cumulative below day", field: "NETWORK_CUMULATIVE_BUDGET_WEI_BASE", value: "24000000000000000"},
+		{name: "network per-tx above global", field: "NETWORK_MAX_TRANSACTION_COST_WEI_BASE", value: "100000000000001"},
+		{name: "network hour below per-tx", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "79999999999999"},
+		{name: "network hour above global", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "200000000000001"},
+		{name: "network day below hour", field: "NETWORK_DAILY_BUDGET_WEI_BASE", value: "149999999999999"},
+		{name: "network cumulative below day", field: "NETWORK_CUMULATIVE_BUDGET_WEI_BASE", value: "249999999999999"},
 		{name: "network reserve below global", field: "NETWORK_SPONSOR_MIN_BALANCE_WEI_BASE", value: "19000000000000000"},
-		{name: "priority fee above max fee", field: "MAX_PRIORITY_FEE_PER_GAS_WEI_BASE", value: "21000000000"},
-		{name: "token gas violates per-tx", field: "TOKEN_GAS_LIMIT_BASE", value: "500000"},
-		{name: "native gas violates per-tx", field: "NATIVE_GAS_LIMIT_BASE", value: "400000"},
-		{name: "overhead violates per-tx", field: "CHAIN_OVERHEAD_MAX_WEI_BASE", value: "8000000000000000"},
-		{name: "unknown cap above network per-tx", field: "UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE", value: "9000000000000000"},
+		{name: "priority fee above max fee", field: "MAX_PRIORITY_FEE_PER_GAS_WEI_BASE", value: "50000001"},
+		{name: "token gas violates per-tx", field: "TOKEN_GAS_LIMIT_BASE", value: "1500001"},
+		{name: "native gas violates per-tx", field: "NATIVE_GAS_LIMIT_BASE", value: "1500001"},
+		{name: "overhead violates per-tx", field: "CHAIN_OVERHEAD_MAX_WEI_BASE", value: "71000000000001"},
+		{name: "unknown cap above network per-tx", field: "UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE", value: "80000000000001"},
 		{name: "uint256 overflow", field: "MAX_FEE_PER_GAS_WEI_BASE", value: "115792089237316195423570985008687907853269984665640564039457584007913129639936"},
 		{name: "gas uint64 overflow", field: "TOKEN_GAS_LIMIT_BASE", value: "18446744073709551616"},
 	}
@@ -96,7 +96,7 @@ func TestEconomicPolicyRejectsHierarchyOverflowAndUnsafeGasBounds(t *testing.T) 
 
 func TestEveryNetworkUsesItsOwnBoundedEconomicProfile(t *testing.T) {
 	wantProfiles := map[string][3]string{
-		"base":     {"20000000000", "2000000000", "500000000000000"},
+		"base":     {"50000000", "2000000", "5000000000000"},
 		"ethereum": {"25000000000", "3000000000", "0"},
 		"arbitrum": {"3000000000", "100000000", "1100000000000000"},
 		"optimism": {"4000000000", "50000000", "1200000000000000"},
@@ -123,6 +123,13 @@ func TestEveryNetworkUsesItsOwnBoundedEconomicProfile(t *testing.T) {
 				t.Fatalf("networks %s and %s share one fee, tip, and overhead profile", definition.name, other)
 			}
 			seen[profile] = definition.name
+			wantTokenGas := uint64(300000)
+			if definition.name == "base" {
+				wantTokenGas = 180000
+			}
+			if policy.TokenGasLimit != wantTokenGas {
+				t.Fatalf("token gas limit = %d, want %d", policy.TokenGasLimit, wantTokenGas)
+			}
 
 			maximum := new(big.Int).Mul(new(big.Int).SetUint64(policy.TokenGasLimit), policy.MaxFeePerGasWei)
 			maximum.Add(maximum, policy.TransactionOverheadWei)
@@ -136,7 +143,7 @@ func TestEveryNetworkUsesItsOwnBoundedEconomicProfile(t *testing.T) {
 func TestEconomicPolicyCloneDoesNotAliasBigIntegers(t *testing.T) {
 	values := validEnvironment()
 	address := networkRegistry()[0].tokens[0].Address.Hex()
-	values["TOKEN_VALUE_RULES_BASE"] = address + ":1000000:1000000000000000"
+	values["TOKEN_VALUE_RULES_BASE"] = address + ":1000000:20000000000000"
 	runtimeConfig, err := LoadFrom(mapLookup(values))
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +153,7 @@ func TestEconomicPolicyCloneDoesNotAliasBigIntegers(t *testing.T) {
 	cloned.MaxFeePerGasWei.SetInt64(1)
 	cloned.TransactionOverheadWei.SetInt64(2)
 	cloned.TokenValueRules[0].MinimumBalance.SetInt64(3)
-	if original.MaxFeePerGasWei.String() != "20000000000" || original.TransactionOverheadWei.String() != "500000000000000" {
+	if original.MaxFeePerGasWei.String() != "50000000" || original.TransactionOverheadWei.String() != "5000000000000" {
 		t.Fatal("EconomicPolicy.Clone reused mutable big.Int")
 	}
 	if original.TokenValueRules[0].MinimumBalance.String() != "1000000" {
@@ -160,7 +167,7 @@ func TestTokenValueRulesAreBoundToTrustedTokensAndNetworkCap(t *testing.T) {
 	tests := []string{
 		unknown + ":1:1",
 		known + ":0:1",
-		known + ":1:9000000000000000",
+		known + ":1:80000000000001",
 		known + ":1:1," + known + ":2:2",
 		known + ":broken:1",
 	}
@@ -181,6 +188,16 @@ func validEnvironmentForNetwork(definition networkDefinition) map[string]string 
 		"ENABLED_NETWORKS":    definition.name,
 	}
 	suffix := strings.ToUpper(definition.name)
+	if definition.name != "base" {
+		values["MAX_TRANSACTION_COST_WEI"] = "10000000000000000"
+		values["HOURLY_BUDGET_WEI"] = "20000000000000000"
+		values["DAILY_BUDGET_WEI"] = "30000000000000000"
+		values["CUMULATIVE_BUDGET_WEI"] = "50000000000000000"
+		values["NETWORK_MAX_TRANSACTION_COST_WEI_"+suffix] = "8000000000000000"
+		values["NETWORK_HOURLY_BUDGET_WEI_"+suffix] = "15000000000000000"
+		values["NETWORK_DAILY_BUDGET_WEI_"+suffix] = "25000000000000000"
+		values["NETWORK_CUMULATIVE_BUDGET_WEI_"+suffix] = "40000000000000000"
+	}
 	values["RPC_READ_1_HTTP_"+suffix] = fmt.Sprintf("https://read-one.invalid/%s", definition.name)
 	values["RPC_READ_1_WS_"+suffix] = fmt.Sprintf("wss://read-one.invalid/%s", definition.name)
 	values["RPC_READ_1_TRUST_DOMAIN_"+suffix] = "provider-one-" + definition.name
