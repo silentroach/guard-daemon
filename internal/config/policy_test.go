@@ -24,7 +24,7 @@ func TestPolicyDefaultsAndOverrides(t *testing.T) {
 	}{
 		{
 			name:              "safe defaults",
-			wantLimits:        [5]string{"20000000000000", "20000000000000", "30000000000000", "50000000000000", "20000000000000000"},
+			wantLimits:        [5]string{"100000000000000", "200000000000000", "300000000000000", "500000000000000", "20000000000000000"},
 			wantRate:          6,
 			wantAbuseWindow:   time.Hour,
 			wantUnknown:       16,
@@ -78,9 +78,9 @@ func TestPolicyRejectsInvalidValues(t *testing.T) {
 		{name: "zero cost", field: "MAX_TRANSACTION_COST_WEI", value: "0"},
 		{name: "negative cost", field: "MAX_TRANSACTION_COST_WEI", value: "-1"},
 		{name: "fractional cost", field: "MAX_TRANSACTION_COST_WEI", value: "1.5"},
-		{name: "hour below transaction", field: "HOURLY_BUDGET_WEI", value: "19999999999999"},
-		{name: "day below hour", field: "DAILY_BUDGET_WEI", value: "19999999999999"},
-		{name: "cumulative below day", field: "CUMULATIVE_BUDGET_WEI", value: "29999999999999"},
+		{name: "hour below transaction", field: "HOURLY_BUDGET_WEI", value: "99999999999999"},
+		{name: "day below hour", field: "DAILY_BUDGET_WEI", value: "199999999999999"},
+		{name: "cumulative below day", field: "CUMULATIVE_BUDGET_WEI", value: "299999999999999"},
 		{name: "uint256 overflow", field: "CUMULATIVE_BUDGET_WEI", value: "115792089237316195423570985008687907853269984665640564039457584007913129639936"},
 		{name: "zero minimum", field: "SPONSOR_MIN_BALANCE_WEI", value: "0"},
 		{name: "zero rate", field: "RATE_LIMIT_PER_MINUTE", value: "0"},

@@ -16,7 +16,7 @@ func TestEconomicPolicyDefaultsAndOverrides(t *testing.T) {
 	}{
 		{
 			name:    "base defaults",
-			want:    [10]string{"20000000000000", "20000000000000", "25000000000000", "40000000000000", "20000000000000000", "50000000", "2000000", "5000000000000", "1000000000000000", "20000000000000"},
+			want:    [10]string{"80000000000000", "150000000000000", "250000000000000", "400000000000000", "20000000000000000", "50000000", "2000000", "5000000000000", "1000000000000000", "20000000000000"},
 			wantGas: [2]uint64{300000, 100000},
 		},
 		{
@@ -65,24 +65,21 @@ func TestEconomicPolicyDefaultsAndOverrides(t *testing.T) {
 
 func TestEconomicPolicyRejectsHierarchyOverflowAndUnsafeGasBounds(t *testing.T) {
 	tests := []struct {
-		name      string
-		field     string
-		value     string
-		configure func(map[string]string)
+		name  string
+		field string
+		value string
 	}{
-		{name: "network per-tx above global", field: "NETWORK_MAX_TRANSACTION_COST_WEI_BASE", value: "21000000000000", configure: func(values map[string]string) {
-			values["NETWORK_HOURLY_BUDGET_WEI_BASE"] = "21000000000000"
-		}},
-		{name: "network hour below per-tx", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "19999999999999"},
-		{name: "network hour above global", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "21000000000000"},
-		{name: "network day below hour", field: "NETWORK_DAILY_BUDGET_WEI_BASE", value: "19999999999999"},
-		{name: "network cumulative below day", field: "NETWORK_CUMULATIVE_BUDGET_WEI_BASE", value: "24999999999999"},
+		{name: "network per-tx above global", field: "NETWORK_MAX_TRANSACTION_COST_WEI_BASE", value: "100000000000001"},
+		{name: "network hour below per-tx", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "79999999999999"},
+		{name: "network hour above global", field: "NETWORK_HOURLY_BUDGET_WEI_BASE", value: "200000000000001"},
+		{name: "network day below hour", field: "NETWORK_DAILY_BUDGET_WEI_BASE", value: "149999999999999"},
+		{name: "network cumulative below day", field: "NETWORK_CUMULATIVE_BUDGET_WEI_BASE", value: "249999999999999"},
 		{name: "network reserve below global", field: "NETWORK_SPONSOR_MIN_BALANCE_WEI_BASE", value: "19000000000000000"},
 		{name: "priority fee above max fee", field: "MAX_PRIORITY_FEE_PER_GAS_WEI_BASE", value: "50000001"},
-		{name: "token gas violates per-tx", field: "TOKEN_GAS_LIMIT_BASE", value: "300001"},
-		{name: "native gas violates per-tx", field: "NATIVE_GAS_LIMIT_BASE", value: "300001"},
-		{name: "overhead violates per-tx", field: "CHAIN_OVERHEAD_MAX_WEI_BASE", value: "5000000000001"},
-		{name: "unknown cap above network per-tx", field: "UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE", value: "20000000000001"},
+		{name: "token gas violates per-tx", field: "TOKEN_GAS_LIMIT_BASE", value: "1500001"},
+		{name: "native gas violates per-tx", field: "NATIVE_GAS_LIMIT_BASE", value: "1500001"},
+		{name: "overhead violates per-tx", field: "CHAIN_OVERHEAD_MAX_WEI_BASE", value: "65000000000001"},
+		{name: "unknown cap above network per-tx", field: "UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE", value: "80000000000001"},
 		{name: "uint256 overflow", field: "MAX_FEE_PER_GAS_WEI_BASE", value: "115792089237316195423570985008687907853269984665640564039457584007913129639936"},
 		{name: "gas uint64 overflow", field: "TOKEN_GAS_LIMIT_BASE", value: "18446744073709551616"},
 	}
@@ -91,9 +88,6 @@ func TestEconomicPolicyRejectsHierarchyOverflowAndUnsafeGasBounds(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			values := validEnvironment()
 			values[test.field] = test.value
-			if test.configure != nil {
-				test.configure(values)
-			}
 			_, err := LoadFrom(mapLookup(values))
 			assertErrorField(t, err, test.field, values)
 		})
@@ -166,7 +160,7 @@ func TestTokenValueRulesAreBoundToTrustedTokensAndNetworkCap(t *testing.T) {
 	tests := []string{
 		unknown + ":1:1",
 		known + ":0:1",
-		known + ":1:20000000000001",
+		known + ":1:80000000000001",
 		known + ":1:1," + known + ":2:2",
 		known + ":broken:1",
 	}

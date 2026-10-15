@@ -9,15 +9,15 @@ import (
 )
 
 const (
-	defaultNetworkMaxTransactionCostWei      = "20000000000000"
-	defaultNetworkHourlyBudgetWei            = "20000000000000"
-	defaultNetworkDailyBudgetWei             = "25000000000000"
-	defaultNetworkCumulativeBudgetWei        = "40000000000000"
+	defaultNetworkMaxTransactionCostWei      = "80000000000000"
+	defaultNetworkHourlyBudgetWei            = "150000000000000"
+	defaultNetworkDailyBudgetWei             = "250000000000000"
+	defaultNetworkCumulativeBudgetWei        = "400000000000000"
 	defaultNetworkSponsorMinimumBalanceWei   = "20000000000000000"
 	defaultTokenGasLimit                     = "300000"
 	defaultNativeGasLimit                    = "100000"
 	defaultNativeMinimumNetValueWei          = "1000000000000000"
-	defaultUnknownTokenMaxTransactionCostWei = "2000000000000000"
+	defaultUnknownTokenMaxTransactionCostWei = "20000000000000"
 )
 
 // EconomicPolicy задаёт проверенные ограничения расходов одной сети.
