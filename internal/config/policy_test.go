@@ -24,7 +24,7 @@ func TestPolicyDefaultsAndOverrides(t *testing.T) {
 	}{
 		{
 			name:              "safe defaults",
-			wantLimits:        [5]string{"10000000000000000", "20000000000000000", "30000000000000000", "50000000000000000", "20000000000000000"},
+			wantLimits:        [5]string{"20000000000000", "20000000000000", "30000000000000", "50000000000000", "20000000000000000"},
 			wantRate:          6,
 			wantAbuseWindow:   time.Hour,
 			wantUnknown:       16,
@@ -34,10 +34,11 @@ func TestPolicyDefaultsAndOverrides(t *testing.T) {
 			wantTimeout:       10 * time.Second,
 		},
 		{name: "explicit values", configure: func(values map[string]string) {
-			values["MAX_TRANSACTION_COST_WEI"] = "7000000000000000"
-			values["HOURLY_BUDGET_WEI"] = "8000000000000000"
-			values["DAILY_BUDGET_WEI"] = "9000000000000000"
-			values["CUMULATIVE_BUDGET_WEI"] = "11000000000000000"
+			values["MAX_TRANSACTION_COST_WEI"] = "16000000000000"
+			values["HOURLY_BUDGET_WEI"] = "17000000000000"
+			values["DAILY_BUDGET_WEI"] = "18000000000000"
+			values["CUMULATIVE_BUDGET_WEI"] = "19000000000000"
+			values["MAX_FEE_PER_GAS_WEI_BASE"] = "30000000"
 			values["SPONSOR_MIN_BALANCE_WEI"] = "13000000000000000"
 			values["RATE_LIMIT_PER_MINUTE"] = "17"
 			values["ABUSE_WINDOW"] = "37m"
@@ -47,7 +48,7 @@ func TestPolicyDefaultsAndOverrides(t *testing.T) {
 			values["EMERGENCY_STOP"] = "true"
 			values["ALERT_COOLDOWN"] = "23m"
 			values["RPC_READ_TIMEOUT"] = "2500ms"
-		}, wantLimits: [5]string{"7000000000000000", "8000000000000000", "9000000000000000", "11000000000000000", "13000000000000000"}, wantRate: 17, wantAbuseWindow: 37 * time.Minute, wantUnknown: 19, wantTokenAttempts: 5, wantEventAttempts: 7, wantEmergency: true, wantAlertCooldown: 23 * time.Minute, wantTimeout: 2500 * time.Millisecond},
+		}, wantLimits: [5]string{"16000000000000", "17000000000000", "18000000000000", "19000000000000", "13000000000000000"}, wantRate: 17, wantAbuseWindow: 37 * time.Minute, wantUnknown: 19, wantTokenAttempts: 5, wantEventAttempts: 7, wantEmergency: true, wantAlertCooldown: 23 * time.Minute, wantTimeout: 2500 * time.Millisecond},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -77,9 +78,9 @@ func TestPolicyRejectsInvalidValues(t *testing.T) {
 		{name: "zero cost", field: "MAX_TRANSACTION_COST_WEI", value: "0"},
 		{name: "negative cost", field: "MAX_TRANSACTION_COST_WEI", value: "-1"},
 		{name: "fractional cost", field: "MAX_TRANSACTION_COST_WEI", value: "1.5"},
-		{name: "hour below transaction", field: "HOURLY_BUDGET_WEI", value: "9999999999999999"},
-		{name: "day below hour", field: "DAILY_BUDGET_WEI", value: "19999999999999999"},
-		{name: "cumulative below day", field: "CUMULATIVE_BUDGET_WEI", value: "29999999999999999"},
+		{name: "hour below transaction", field: "HOURLY_BUDGET_WEI", value: "19999999999999"},
+		{name: "day below hour", field: "DAILY_BUDGET_WEI", value: "19999999999999"},
+		{name: "cumulative below day", field: "CUMULATIVE_BUDGET_WEI", value: "29999999999999"},
 		{name: "uint256 overflow", field: "CUMULATIVE_BUDGET_WEI", value: "115792089237316195423570985008687907853269984665640564039457584007913129639936"},
 		{name: "zero minimum", field: "SPONSOR_MIN_BALANCE_WEI", value: "0"},
 		{name: "zero rate", field: "RATE_LIMIT_PER_MINUTE", value: "0"},

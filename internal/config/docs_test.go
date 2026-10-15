@@ -83,10 +83,10 @@ func TestPublicConfigurationDocumentsOnlySupportedFields(t *testing.T) {
 		"TOKEN_GAS_LIMIT_BASE":                        defaultTokenGasLimit,
 		"NATIVE_GAS_LIMIT_BASE":                       defaultNativeGasLimit,
 		"NATIVE_MIN_NET_VALUE_WEI_BASE":               defaultNativeMinimumNetValueWei,
-		"UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE": defaultUnknownTokenMaxTransactionCostWei,
-		"MAX_FEE_PER_GAS_WEI_BASE":                    "20000000000",
-		"MAX_PRIORITY_FEE_PER_GAS_WEI_BASE":           "2000000000",
-		"CHAIN_OVERHEAD_MAX_WEI_BASE":                 "500000000000000",
+		"UNKNOWN_TOKEN_MAX_TRANSACTION_COST_WEI_BASE": defaultNetworkMaxTransactionCostWei,
+		"MAX_FEE_PER_GAS_WEI_BASE":                    "50000000",
+		"MAX_PRIORITY_FEE_PER_GAS_WEI_BASE":           "2000000",
+		"CHAIN_OVERHEAD_MAX_WEI_BASE":                 "5000000000000",
 	} {
 		if assignments[field] != want {
 			t.Errorf(".env.example: %s=%q, want %q", field, assignments[field], want)

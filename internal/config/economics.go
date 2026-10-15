@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	defaultNetworkMaxTransactionCostWei      = "8000000000000000"
-	defaultNetworkHourlyBudgetWei            = "15000000000000000"
-	defaultNetworkDailyBudgetWei             = "25000000000000000"
-	defaultNetworkCumulativeBudgetWei        = "40000000000000000"
+	defaultNetworkMaxTransactionCostWei      = "20000000000000"
+	defaultNetworkHourlyBudgetWei            = "20000000000000"
+	defaultNetworkDailyBudgetWei             = "25000000000000"
+	defaultNetworkCumulativeBudgetWei        = "40000000000000"
 	defaultNetworkSponsorMinimumBalanceWei   = "20000000000000000"
 	defaultTokenGasLimit                     = "300000"
 	defaultNativeGasLimit                    = "100000"
@@ -82,7 +82,7 @@ type economicProfile struct {
 func economicProfileFor(network string) economicProfile {
 	switch network {
 	case "base":
-		return economicProfile{"20000000000", "2000000000", "500000000000000", true}
+		return economicProfile{"50000000", "2000000", "5000000000000", true}
 	case "ethereum":
 		return economicProfile{"25000000000", "3000000000", "0", false}
 	case "arbitrum":

@@ -279,21 +279,7 @@ func TestSupportedEnvironmentFieldsIncludeEveryNetwork(t *testing.T) {
 func TestEveryRegisteredNetworkUsesItsDynamicFields(t *testing.T) {
 	for _, definition := range networkRegistry() {
 		t.Run(definition.name, func(t *testing.T) {
-			values := map[string]string{
-				"SOURCE_ADDRESS":      testAddress(1),
-				"SPONSOR_ADDRESS":     testAddress(2),
-				"DESTINATION_ADDRESS": testAddress(3),
-				"ENABLED_NETWORKS":    definition.name,
-			}
-			suffix := strings.ToUpper(definition.name)
-			values["RPC_READ_1_HTTP_"+suffix] = "https://read-one.invalid/" + definition.name
-			values["RPC_READ_1_WS_"+suffix] = "wss://read-one.invalid/" + definition.name
-			values["RPC_READ_1_TRUST_DOMAIN_"+suffix] = "provider-one-" + definition.name
-			values["RPC_READ_2_HTTP_"+suffix] = "https://read-two.invalid/" + definition.name
-			values["RPC_READ_2_WS_"+suffix] = "wss://read-two.invalid/" + definition.name
-			values["RPC_READ_2_TRUST_DOMAIN_"+suffix] = "provider-two-" + definition.name
-			values["RESCUER_MANIFEST_"+suffix] = "testdata/" + definition.name + "-manifest.json"
-
+			values := validEnvironmentForNetwork(definition)
 			runtimeConfig, err := LoadFrom(mapLookup(values))
 			if err != nil {
 				t.Fatal(err)
